@@ -1,0 +1,20 @@
+# Phase 2+: real models. Agents point their base URL at http://localhost:4000.
+model_list:
+  # OpenAI-compatible (any provider LiteLLM supports works here)
+  - model_name: poc-model
+    litellm_params:
+      model: os.environ/POC_MODEL            # e.g. gemini/gemini-2.5-flash, openai/gpt-4o-mini
+      api_key: os.environ/POC_MODEL_API_KEY
+
+  # Anthropic, so Claude Code can run through the proxy (ANTHROPIC_BASE_URL)
+  - model_name: claude-*
+    litellm_params:
+      model: anthropic/*
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  callbacks: memoryhub_capture.proxy_handler_instance
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

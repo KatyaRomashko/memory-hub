@@ -1,0 +1,4 @@
+litellm[proxy]>=1.75
+openai>=1.40
+# MemoryHub SDK from this repo: pip install -e ../../sdk
+pytest>=8

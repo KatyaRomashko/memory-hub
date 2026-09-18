@@ -1,0 +1,21 @@
+# Phase 1: no API keys needed. LiteLLM answers with a canned response, so the
+# whole capture path (proxy -> callback -> sink) can be exercised offline.
+model_list:
+  - model_name: poc-model
+    litellm_params:
+      model: openai/mock
+      api_key: not-needed
+      mock_response: "Got it, noted."
+
+  # Anthropic-shaped endpoint (/v1/messages) for the Claude Code scenario
+  - model_name: claude-mock
+    litellm_params:
+      model: anthropic/claude-mock
+      api_key: not-needed
+      mock_response: "Understood."
+
+litellm_settings:
+  callbacks: memoryhub_capture.proxy_handler_instance
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
