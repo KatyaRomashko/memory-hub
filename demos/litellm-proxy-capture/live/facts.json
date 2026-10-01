@@ -1,0 +1,70 @@
+{
+  "note": "Ground truth for the scripted demo conversation. Each entry says what SHOULD be true of the memory store afterwards. live/facts.py checks the store against it.",
+  "facts": [
+    {
+      "id": "backend-rust",
+      "kind": "expected",
+      "statement": "The backend is being migrated to Rust (a correction of an earlier decision to use Go).",
+      "query": "what language is the backend being migrated to?",
+      "all_of": ["rust"],
+      "note": "The correction. If only the Go version survives, the store is actively wrong, not merely incomplete."
+    },
+    {
+      "id": "docs-friday",
+      "kind": "expected",
+      "statement": "The API documentation is due Friday.",
+      "query": "when is the API documentation due?",
+      "all_of": ["friday"]
+    },
+    {
+      "id": "v2-compat",
+      "kind": "expected",
+      "statement": "The API must stay backwards compatible with v2 clients until the end of the year.",
+      "query": "how long must v2 clients keep working?",
+      "all_of": ["v2"]
+    },
+    {
+      "id": "ci-tekton",
+      "kind": "expected",
+      "statement": "CI is moving from Jenkins to Tekton.",
+      "query": "what is the CI system?",
+      "all_of": ["tekton"]
+    },
+    {
+      "id": "otel-tracing",
+      "kind": "expected",
+      "statement": "Every new service must ship with OpenTelemetry tracing from day one.",
+      "query": "what is required of every new service?",
+      "any_of": ["opentelemetry", "otel", "tracing"]
+    },
+    {
+      "id": "staging-deploy",
+      "kind": "expected",
+      "statement": "Staging is deployed with an AWS key and a registry token (the VALUES must not be stored).",
+      "query": "how is staging deployed?",
+      "any_of": ["staging", "deploy", "aws", "registry"],
+      "note": "The redaction case: the shape of the fact is worth remembering, the credential is not."
+    },
+    {
+      "id": "backend-go",
+      "kind": "must_not_be_current",
+      "statement": "The backend moves to Go.",
+      "all_of": ["go"],
+      "exclude_if_any_of": ["rust", "going", "algo", "golang-free"],
+      "note": "Superseded by backend-rust. Still being current means the correction did not land."
+    },
+    {
+      "id": "egg-recipe",
+      "kind": "noise",
+      "statement": "How to boil a soft egg.",
+      "query": "what is the CI system?",
+      "any_of": ["egg", "boil"],
+      "note": "Generic model output with no grounding in anything the user knows. Counts against precision when it comes back for an unrelated query."
+    }
+  ],
+  "must_never_appear": [
+    "AKIAIOSFODNN7EXAMPLE",
+    "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+    "hunter2"
+  ]
+}

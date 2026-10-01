@@ -35,7 +35,16 @@ SCENARIOS: dict[str, list[str]] = {
     ],
 }
 
-SYSTEM_PROMPT = "You are a concise, helpful assistant."
+# A verbose assistant reply lands in the extraction window, and the extraction
+# prompt has no rule that a fact must be grounded in what the participants said
+# or decided -- so the model's own suggestions become "memories" with thread
+# provenance, as if someone had agreed to them. --chatty shows that on purpose;
+# the terse default keeps the demo's memory readable.
+TERSE_PROMPT = (
+    "You are a concise, helpful assistant. Answer in at most three sentences. "
+    "Do not produce lists, plans or tutorials unless explicitly asked."
+)
+CHATTY_PROMPT = "You are a concise, helpful assistant."
 
 
 def main() -> None:
@@ -45,6 +54,9 @@ def main() -> None:
     p.add_argument("--model", default=os.environ.get("LLM_MODEL", "poc-model"))
     p.add_argument("--scenario", choices=sorted(SCENARIOS), default="preferences")
     p.add_argument("--interactive", action="store_true")
+    p.add_argument("--chatty", action="store_true",
+                   help="drop the brevity instruction, to show what a verbose "
+                        "assistant leaks into memory")
     p.add_argument("--stream", action="store_true", help="use streaming responses")
     p.add_argument("--session", help="send X-MemoryHub-Session (omit to test fingerprinting)")
     p.add_argument("--actor", help="send X-MemoryHub-Actor")
@@ -58,9 +70,10 @@ def main() -> None:
         headers["X-MemoryHub-Actor"] = args.actor
     client = OpenAI(base_url=args.base_url, api_key=args.api_key, default_headers=headers or None)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system",
+                 "content": CHATTY_PROMPT if args.chatty else TERSE_PROMPT}]
 
-    def turn(text: str) -> None:
+    def turn(text: str, *, echo: bool = True) -> None:
         messages.append({"role": "user", "content": text})
         extra = {"user": args.user} if args.user else {}
         if args.stream:
@@ -70,7 +83,8 @@ def main() -> None:
             resp = client.chat.completions.create(model=args.model, messages=messages, **extra)
             reply = resp.choices[0].message.content or ""
         messages.append({"role": "assistant", "content": reply})
-        print(f"\nuser> {text}\nagent> {reply}")
+        # in --interactive the user just typed the line; do not repeat it
+        print(f"\nuser> {text}\nagent> {reply}" if echo else f"agent> {reply}")
 
     if args.interactive:
         while True:
@@ -79,7 +93,7 @@ def main() -> None:
             except (EOFError, KeyboardInterrupt):
                 break
             if text:
-                turn(text)
+                turn(text, echo=False)
     else:
         for text in SCENARIOS[args.scenario]:
             turn(text)

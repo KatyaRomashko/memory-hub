@@ -52,6 +52,65 @@ def truncate_bytes(text: str, max_bytes: int) -> str:
     return head + TRUNCATION_MARKER
 
 
+# ── agent-written memory detection ───────────────────────────────────────
+#
+# MCP calls never reach the proxy: the agent talks to MemoryHub directly.
+# But the *decision* to call them is visible in the LLM traffic, because the
+# model answers with a tool_use block and the next request carries its
+# result. That is enough to tell "the agent saved this turn itself" from
+# "nobody saved anything", without the proxy knowing anything about MCP.
+
+DEFAULT_WRITE_TOOLS = r"write_memory|^memory$|memoryhub"
+_TOOL_CALL_RE = re.compile(r"^\[tool_(?:call|use) (?P<name>[^\]]*)\]\s*(?P<args>.*)$", re.DOTALL)
+_MEMORY_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def parse_tool_call(msg: Message) -> tuple[str, str] | None:
+    """Return (tool name, raw arguments) for a normalized tool_call message."""
+    if msg.role != "tool_call":
+        return None
+    m = _TOOL_CALL_RE.match(msg.content.strip())
+    if not m:
+        return None
+    return m.group("name").strip(), m.group("args").strip()
+
+
+def is_memory_write(msg: Message, pattern: re.Pattern) -> bool:
+    """True when this tool call looks like the agent writing a memory itself.
+
+    A read (``search``/``read``/``list``) does not count: the point is whether
+    the agent *stored* something, not whether it used MemoryHub at all.
+    """
+    parsed = parse_tool_call(msg)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if not pattern.search(name or ""):
+        return False
+    action = re.search(r'"action"\s*:\s*"(?P<a>[a-z_]+)"', args or "")
+    if action:
+        return action.group("a") in ("write", "update", "checkpoint", "relate")
+    # A dedicated tool name (write_memory) carries the intent by itself.
+    return "write" in (name or "").lower() or "update" in (name or "").lower()
+
+
+def find_agent_writes(messages: list[Message], pattern: re.Pattern) -> list[dict]:
+    """Memory writes the agent made itself, with the ids their results returned."""
+    found: list[dict] = []
+    for i, msg in enumerate(messages):
+        if not is_memory_write(msg, pattern):
+            continue
+        entry: dict = {"index": i, "tool": (parse_tool_call(msg) or ("", ""))[0], "memory_id": None}
+        for nxt in messages[i + 1: i + 4]:
+            if nxt.role == "tool_result":
+                found_id = _MEMORY_ID_RE.search(nxt.content)
+                if found_id:
+                    entry["memory_id"] = found_id.group(0)
+                break
+        found.append(entry)
+    return found
+
+
 # Roles accepted by MemoryHub's thread(action="append").
 _ROLE_MAP = {
     "user": "user",
@@ -233,6 +292,26 @@ def transcript(messages: list[Message], max_bytes: int = DEFAULT_MAX_MESSAGE_BYT
     return [Message(m.role, truncate_bytes(m.content, max_bytes)) for m in messages if m.role != "system"]
 
 
+def redact_messages(messages: list[Message], redactor) -> tuple[list[Message], dict[str, int]]:
+    """Strip credentials before anything is stored or hashed.
+
+    Applied to the *tracked* transcript, so the same message redacts to the
+    same text every time the client resends it and delta tracking is not
+    disturbed. ``redactor`` is anything callable returning
+    ``(text, {rule: hits})`` -- see ``redact.Redactor``.
+    """
+    if redactor is None:
+        return messages, {}
+    out: list[Message] = []
+    totals: dict[str, int] = {}
+    for m in messages:
+        text, hits = redactor(m.content)
+        for k, v in hits.items():
+            totals[k] = totals.get(k, 0) + v
+        out.append(Message(m.role, text) if text != m.content else m)
+    return out, totals
+
+
 def derive_session(slo: dict, messages: list[Message], kwargs: dict | None = None) -> SessionInfo:
     headers = request_headers(slo, kwargs)
     meta = slo.get("metadata") or {}
@@ -269,6 +348,10 @@ class SessionState:
     digests: list[str] = field(default_factory=list)
     user_turns: int = 0
     last_seen: float = field(default_factory=time.time)
+    # Turns the agent covered itself since the last extraction, and the ids of
+    # the memories it wrote (kept for provenance in the thread metadata).
+    agent_writes: int = 0
+    agent_memory_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -360,11 +443,19 @@ class Observation:
     completion_tokens: int | None
     latency_ms: float | None
     skipped: str | None = None
+    agent_writes: int = 0
+    agent_memory_ids: list[str] = field(default_factory=list)
+    extract_skipped: str | None = None
+    # {rule name: how many values that rule replaced in this request}
+    redactions: dict[str, int] = field(default_factory=dict)
     thread_id: str | None = None
     appended: int = 0
     extraction: dict | None = None
     extract_ms: float | None = None
     error: str | None = None
+    # "call" for an intercepted LLM call, "extraction" for the background
+    # extraction pass it triggered (see MemoryHubCaptureLogger._extract_later)
+    event: str = "call"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str)

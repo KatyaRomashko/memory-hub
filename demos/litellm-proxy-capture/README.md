@@ -31,7 +31,7 @@ and the research framing live in
 |---|---|
 | `memoryhub_capture.py` | LiteLLM `CustomLogger` callback (entry point) |
 | `capture_core.py` | Pure logic: message normalization, session key, delta, observations |
-| `sinks.py` | `JsonlSink`, `LocalSink` (personal edition), `MemoryHubSink` (cluster) |
+| `sinks.py` | `JsonlSink` (offline) and `MemoryHubSink` (SDK `thread` ops) |
 | `agent.py` | Memory-unaware agent with scripted scenarios |
 | `verify.py` | `report` observations, list/extract proxy threads, search memories |
 | `config.mock.yaml` | Offline proxy config (`mock_response`, no API keys) |
@@ -50,7 +50,7 @@ and the research framing live in
 ```bash
 cd demos/litellm-proxy-capture
 uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt -e ../../sdk -e "../../memoryhub-local[dream]"
+uv pip install -r requirements.txt -e ../../sdk
 cp .env.example .env    # fill in; never commit .env
 ```
 
@@ -64,6 +64,33 @@ python verify.py report                          # summary of out/observations.j
 less out/threads.jsonl                           # what would be written to MemoryHub
 ```
 
+## Hybrid: the agent writes when it can, the proxy covers the rest
+
+MCP traffic never reaches the proxy — the agent talks to MemoryHub directly.
+But the *decision* is visible: the model answers with a `tool_use` block and the
+next request carries its result, so the proxy can tell "the agent saved this
+turn itself" from "nobody saved anything", without knowing anything about MCP.
+
+| Turn | What the proxy does (`defer`, the default) |
+|---|---|
+| Agent called its memory tool | Append the turn to the thread, tag the messages with `agent_wrote_memory` and the returned memory ids, **do not** trigger extraction |
+| Agent wrote nothing | Append the turn and trigger extraction as usual |
+| Agent only *searched* memory | Counts as "wrote nothing" — a read is not a save |
+
+So the agent stays the fast path where it works, the transcript is always kept,
+and dreaming becomes the safety net for everything the agent skipped. Deferred
+turns are not lost: the extraction cursor does not move, so the next extraction
+pass (or `verify.py extract`) picks them up, and reconciliation deduplicates
+them against what the agent already wrote.
+
+`skip-thread` is the stricter variant: turns the agent covered are not stored at
+all. It saves storage but gives up the transcript and its provenance, so the
+default is `defer`.
+
+A side effect worth keeping: memories the agent writes itself carry no thread
+link. When the proxy sees the write, it records the returned memory id in the
+message metadata (`agent_memory_ids`), which restores that link.
+
 ## Personal edition (SQLite, no cluster)
 
 `MEMORYHUB_CAPTURE_SINK=local` writes into `memoryhub-local` — the same SQLite
@@ -73,11 +100,9 @@ extraction runs in the proxy process through the same pipeline as
 `memoryhub dream`, against any OpenAI-compatible endpoint.
 
 ```bash
-uv pip install -e ../../memoryhub-local[dream]     # once, plus httpx for the dream path
-./demo.sh real                                  # the 10-minute demo (DEMO.md)
-./run-poc-local.sh                              # offline checklist (fake extractor)
-./run-poc-local.sh real                         # real models from .env
-./run-poc-compare.sh                            # Phase 4 modes A–E
+uv pip install -e ../../memoryhub-local     # once, plus httpx for the dream path
+./run-poc-local.sh                          # offline: mock agent model + rule-based extractor
+./run-poc-local.sh real                     # real models from .env
 ```
 
 The run creates its own database under `out/local-data/`, so it never touches a
@@ -145,16 +170,16 @@ governed memory with thread provenance.
 
 ## Phase 4 — compare capture modes
 
-`./run-poc-compare.sh` (or `./run-poc-compare.sh real`) runs the same three
-scenarios under each mode on isolated databases and writes `out/compare.md`.
+Run the same scenarios under each mode and compare with `verify.py report` plus
+MemoryHub search results:
 
 | Mode | How |
 |---|---|
-| A. explicit | `agent_explicit.py` writes memories itself; capture off |
-| B. proxy only | this PoC, `EXTRACT_EVERY=2` |
-| C. dreaming only | proxy appends only (`EXTRACT_EVERY=0`), then `verify.py extract` |
-| D. proxy + dreaming | B, then `reextract` over the same threads |
-| E. explicit + proxy | A and B on one database — cross-source dedup |
+| A. explicit MCP only | agent with MemoryHub MCP, `MEMORYHUB_CAPTURE_ENABLED=false` |
+| B. proxy only | this PoC, `EXTRACT_EVERY>0` |
+| C. dreaming only | proxy appends only (`EXTRACT_EVERY=0`), then `verify.py extract` later (`memoryhub dream` works only on the local SQLite edition) |
+| D. proxy + dreaming | B, then a later extraction pass over the same threads |
+| E. explicit + proxy + dreaming | A + D — checks cross-source dedup |
 
 Measure: memory recall / false positives (`smalltalk` scenario should create
 nothing), duplicates and corrections (`correction` scenario: on the cluster
@@ -183,6 +208,8 @@ header to see how well fingerprinting alone groups a real session.
 | `MEMORYHUB_CAPTURE_SINK` | `jsonl` | `jsonl`, `local` (personal edition) or `memoryhub` (cluster) |
 | `MEMORYHUB_CAPTURE_EXTRACT_EVERY` | `0` | Trigger extraction every N user turns (0 = never) |
 | `MEMORYHUB_CAPTURE_TOOLS` | `false` | Also append `tool_call` / `tool_result` messages |
+| `MEMORYHUB_CAPTURE_WHEN_AGENT_WRITES` | `defer` | What to do with a turn the agent saved itself: `defer` (store the turn, leave extraction to a later dreaming pass), `extract` (ignore it, extract anyway), `skip-thread` (do not store that turn at all) |
+| `MEMORYHUB_CAPTURE_WRITE_TOOLS` | `write_memory\|^memory$\|memoryhub` | Regex over tool names that count as the agent writing memory; a `search`/`read` action never counts |
 | `MEMORYHUB_CAPTURE_MAX_MESSAGE_BYTES` | `8000` | Truncate longer messages (MemoryHub moves >8192 B to S3 and extraction then sees only a placeholder); `0` disables |
 | `MEMORYHUB_CAPTURE_IGNORE_MODELS` | – | Regex on model / model group to skip |
 | `MEMORYHUB_CAPTURE_SCOPE` / `_SCOPE_ID` | `user` / – | Thread scope (`project` uses `X-MemoryHub-Project` if sent) |

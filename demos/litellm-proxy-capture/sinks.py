@@ -3,8 +3,14 @@
 * **JsonlSink**     -- Phase 1: no MemoryHub needed; writes a local thread log.
 * **LocalSink**     -- personal edition: writes SQLite via memoryhub-local services.
 * **MemoryHubSink** -- cluster edition: SDK ``thread`` ops.
+* **HindsightSink**  -- a *different memory system* behind the same contract.
+* **ShadowSink**     -- fans one conversation out to two of the above at once.
 
-All three sinks expose the same async interface so the callback does not care.
+All sinks expose the same async interface so the callback does not care. That
+is the claim the gateway makes -- the transport layer is memory-system
+agnostic -- and ``HindsightSink`` plus ``ShadowSink`` are how it is tested
+rather than asserted: the same conversation goes into two stores, and what
+each one chose to remember can be compared afterwards.
 """
 
 from __future__ import annotations
@@ -310,8 +316,236 @@ class LocalSink:
             )
 
 
-def sink_from_env() -> Sink:
-    kind = os.environ.get("MEMORYHUB_CAPTURE_SINK", "jsonl").lower()
+class HindsightSink:
+    """Adapter for Hindsight (github.com/vectorize-io/hindsight), API 0.10.x.
+
+    Hindsight models memory very differently from MemoryHub, which is exactly
+    why it is the useful second provider:
+
+    * there is **no thread or message resource**. A whole conversation is
+      retained as ONE item, and re-retaining with the same ``document_id``
+      upserts it (the old version is deleted and reprocessed);
+    * **extraction is Hindsight's own job** and runs inside ``retain``. There
+      is no endpoint that writes a pre-formed memory row;
+    * the isolation boundary is a **bank**, which springs into existence on
+      first write. Nothing has to be created up front.
+
+    So the Sink contract maps on as:
+
+    ==================  ====================================================
+    ``ensure_thread``   pick the bank and document id; no network call
+    ``append``          buffer the message locally; no network call
+    ``extract``         retain the whole buffered conversation -- which is
+                        when Hindsight extracts -- then count what it kept
+    ==================  ====================================================
+
+    ``extract`` is driven by the same ``EXTRACT_EVERY`` cadence as MemoryHub's
+    dreaming pass, so both systems are asked to think at the same moments
+    about the same text. Retain is synchronous and calls an LLM, so it is slow
+    for the same reason dreaming is.
+
+    Restarting the proxy loses the buffer; the next retain then carries only
+    the messages seen since. Hindsight upserts by ``document_id``, so that
+    *shrinks* the document rather than duplicating it. Good enough for a demo,
+    wrong for production -- a real adapter would rebuild the buffer from the
+    primary store or keep it on disk.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        bank: str | None = None,
+        api_key: str | None = None,
+        timeout: float = 300.0,
+        context: str | None = None,
+    ) -> None:
+        self.base_url = (base_url or "http://localhost:8888").rstrip("/")
+        self.bank = bank or "memoryhub-proxy-demo"
+        self.api_key = api_key
+        self.timeout = timeout
+        self.context = context or (
+            "A conversation between a user and an AI assistant, captured "
+            "passively at an LLM gateway. Remember what the user stated about "
+            "their project, decisions and preferences."
+        )
+        self._buffers: dict[str, list[Message]] = {}
+        self._counts: dict[str, int] = {}
+        self._client: Any = None
+        self._lock = asyncio.Lock()
+
+    # -- transport ------------------------------------------------------
+
+    async def _http(self) -> Any:
+        if self._client is None:
+            import httpx  # litellm already depends on it
+
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout,
+                                             headers=headers)
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    def _path(self, suffix: str) -> str:
+        # `default` is a literal in the OSS build, not a tenant variable.
+        return f"/v1/default/banks/{self.bank}{suffix}"
+
+    async def health(self) -> dict:
+        client = await self._http()
+        r = await client.get("/health/live")
+        r.raise_for_status()
+        return {"live": r.json(), "base_url": self.base_url, "bank": self.bank}
+
+    # -- Sink contract --------------------------------------------------
+
+    async def ensure_thread(self, session: SessionInfo) -> ThreadHandle:
+        # The document id is the session key: stable across proxy restarts,
+        # and upsert semantics mean re-retaining it is safe.
+        doc_id = f"proxy-{session.key}"[:200]
+        self._buffers.setdefault(doc_id, [])
+        log.info("memoryhub_capture: hindsight bank=%s document=%s", self.bank, doc_id)
+        return ThreadHandle(doc_id)
+
+    async def append(self, thread_id: str, msg: Message, *, actor_id: str | None, metadata: dict) -> None:
+        async with self._lock:
+            self._buffers.setdefault(thread_id, []).append(msg)
+
+    def _render(self, messages: list[Message]) -> str:
+        """The conversation as one document.
+
+        Hindsight's own guidance: retain a full conversation as a single item
+        whose text "clearly conveys who said what and when". The sequence
+        numbers mirror what MemoryHub's extraction window shows, so the two
+        systems are reading the same thing in the same order.
+        """
+        lines = []
+        for i, m in enumerate(messages, start=1):
+            lines.append(f"{m.role} (message {i}): {m.content}")
+        return "\n".join(lines)
+
+    async def extract(self, thread_id: str) -> dict | None:
+        async with self._lock:
+            messages = list(self._buffers.get(thread_id, []))
+        if not messages:
+            return {"system": "hindsight", "extracted_count": 0, "windows_processed": 0,
+                    "cursor": 0, "failures": 0, "note": "nothing buffered"}
+
+        client = await self._http()
+        body = {
+            "items": [{
+                "content": self._render(messages),
+                "document_id": thread_id,
+                "context": self.context,
+                "metadata": {"source": "litellm-proxy", "poc": "WRIG-1482"},
+            }],
+            "async": False,
+        }
+        before = self._counts.get(thread_id, 0)
+        resp = await client.post(self._path("/memories"), json=body)
+        resp.raise_for_status()
+        retained = resp.json()
+
+        after, failures = before, 0
+        try:
+            listed = await client.get(self._path("/memories/list"),
+                                      params={"document_id": thread_id, "limit": 200})
+            listed.raise_for_status()
+            payload = listed.json()
+            items = payload.get("items") or []
+            after = payload.get("total", len(items))
+        except Exception as exc:  # listing is telemetry, not the write path
+            failures = 1
+            log.warning("memoryhub_capture: hindsight list failed: %s", exc)
+
+        self._counts[thread_id] = after
+        return {
+            "system": "hindsight",
+            "bank": self.bank,
+            "document_id": thread_id,
+            # shaped like MemoryHub's extraction result so one reader handles both
+            "extracted_count": max(after - before, 0),
+            "total_memories": after,
+            "windows_processed": 1,
+            "cursor": len(messages),
+            "failures": failures,
+            "retained": retained,
+        }
+
+    async def recall(self, query: str, *, limit: int = 5) -> list[dict]:
+        """Read path, used by live/facts.py -- not part of the Sink contract."""
+        client = await self._http()
+        r = await client.post(self._path("/memories/recall"),
+                              json={"query": query, "budget": "mid", "max_tokens": 2048})
+        r.raise_for_status()
+        return (r.json().get("results") or [])[:limit]
+
+
+class ShadowSink:
+    """Send one conversation into two memory systems at once.
+
+    The point is control of variables. Running the same task twice against two
+    memory systems does not compare them: memory changes the agent's answers,
+    so by the second turn the two runs are different conversations. Fanning one
+    live conversation out to both means identical input, identical sessions,
+    identical model -- the only difference is what each system did with it.
+
+    The primary decides everything the proxy does: its thread id is the one
+    tracked, its errors are the ones raised. The shadow can never affect
+    inference or the primary's state; its failures are logged and dropped.
+    """
+
+    def __init__(self, primary: Sink, shadow: Sink, *,
+                 primary_name: str = "primary", shadow_name: str = "shadow") -> None:
+        self.primary = primary
+        self.shadow = shadow
+        self.primary_name = primary_name
+        self.shadow_name = shadow_name
+        self._ids: dict[str, str] = {}   # primary thread id -> shadow thread id
+
+    async def _quietly(self, coro, what: str):
+        try:
+            return await coro
+        except Exception as exc:
+            log.warning("memoryhub_capture: shadow (%s) %s failed: %s", self.shadow_name, what, exc)
+            return None
+
+    async def ensure_thread(self, session: SessionInfo) -> ThreadHandle:
+        handle = await self.primary.ensure_thread(session)
+        mirrored = await self._quietly(self.shadow.ensure_thread(session), "ensure_thread")
+        if mirrored is not None:
+            self._ids[handle.thread_id] = mirrored.thread_id
+        return handle
+
+    async def append(self, thread_id: str, msg: Message, *, actor_id: str | None, metadata: dict) -> None:
+        await self.primary.append(thread_id, msg, actor_id=actor_id, metadata=metadata)
+        shadow_id = self._ids.get(thread_id)
+        if shadow_id:
+            await self._quietly(
+                self.shadow.append(shadow_id, msg, actor_id=actor_id,
+                                   metadata={**metadata, "shadow_of": thread_id}),
+                "append")
+
+    async def extract(self, thread_id: str) -> dict | None:
+        """Both systems think about the same text, in the same moment."""
+        result = await self.primary.extract(thread_id)
+        shadow_id = self._ids.get(thread_id)
+        shadow_result = None
+        if shadow_id:
+            t0 = time.monotonic()
+            shadow_result = await self._quietly(self.shadow.extract(shadow_id), "extract")
+            if isinstance(shadow_result, dict):
+                shadow_result["extract_ms"] = (time.monotonic() - t0) * 1000
+        out = dict(result or {})
+        out["shadow"] = {"sink": self.shadow_name, "result": shadow_result}
+        return out
+
+
+def _one_sink(kind: str) -> Sink:
+    kind = (kind or "jsonl").lower()
     if kind == "memoryhub":
         return MemoryHubSink(
             scope=os.environ.get("MEMORYHUB_CAPTURE_SCOPE", "user"),
@@ -326,6 +560,29 @@ def sink_from_env() -> Sink:
             extract_model_url=os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL") or None,
             extract_api_key=os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_API_KEY") or None,
         )
+    if kind == "hindsight":
+        return HindsightSink(
+            base_url=os.environ.get("MEMORYHUB_CAPTURE_HINDSIGHT_URL") or None,
+            bank=os.environ.get("MEMORYHUB_CAPTURE_HINDSIGHT_BANK") or None,
+            api_key=os.environ.get("MEMORYHUB_CAPTURE_HINDSIGHT_API_KEY") or None,
+        )
     if kind == "jsonl":
         return JsonlSink(os.environ.get("MEMORYHUB_CAPTURE_THREADS_LOG", "./out/threads.jsonl"))
-    raise ValueError(f"Unknown MEMORYHUB_CAPTURE_SINK={kind!r} (expected jsonl|local|memoryhub)")
+    raise ValueError(f"Unknown sink {kind!r} (expected jsonl|local|memoryhub|hindsight)")
+
+
+def sink_from_env() -> Sink:
+    """Build the sink, wrapping it in a shadow when a second one is configured.
+
+        MEMORYHUB_CAPTURE_SINK=local            # who answers and is tracked
+        MEMORYHUB_CAPTURE_SHADOW_SINK=hindsight # who also gets everything
+    """
+    primary_kind = os.environ.get("MEMORYHUB_CAPTURE_SINK", "jsonl")
+    shadow_kind = (os.environ.get("MEMORYHUB_CAPTURE_SHADOW_SINK") or "").strip()
+    primary = _one_sink(primary_kind)
+    if not shadow_kind or shadow_kind.lower() == "none":
+        return primary
+    log.info("memoryhub_capture: shadow mode -- primary=%s shadow=%s",
+             primary_kind.lower(), shadow_kind.lower())
+    return ShadowSink(primary, _one_sink(shadow_kind),
+                      primary_name=primary_kind.lower(), shadow_name=shadow_kind.lower())

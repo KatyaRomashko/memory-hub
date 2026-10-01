@@ -133,7 +133,7 @@ def test_system_reminders_stripped_and_long_text_truncated():
     only_reminder = normalize_messages([{"role": "user", "content": "<system-reminder>x</system-reminder>"}])
     assert only_reminder == []
 
-    long = "я" * 5000  # 10000 bytes
+    long = "é" * 5000  # U+00E9 is 2 bytes in UTF-8, so 10000 bytes
     cut = truncate_bytes(long, 8000)
     assert len(cut.encode()) <= 8000 and cut.endswith(TRUNCATION_MARKER)
     assert transcript([Message("user", long)])[0].content == cut

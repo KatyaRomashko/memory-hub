@@ -52,6 +52,23 @@ def report(path: str) -> None:
     print("streaming calls:", sum(bool(r.get("stream")) for r in rows))
     print("calls with tool traffic:", sum(bool(r["has_tool_traffic"]) for r in rows))
     print("messages appended:", sum(r["appended"] for r in captured))
+    # Count the intercepted calls only: the background extraction writes a second
+    # observation carrying the same counts, and clients resend the whole history
+    # every turn, so a naive sum reports the same secret over and over.
+    red = collections.Counter()
+    calls_with_secrets = 0
+    for r in rows:
+        if r.get("event") not in (None, "call"):
+            continue
+        hits = r.get("redactions") or {}
+        if hits:
+            calls_with_secrets += 1
+        for rule, n in hits.items():
+            red[rule] += n
+    print(f"redaction: {calls_with_secrets} call(s) carried credentials; "
+          f"{sum(red.values())} replacement(s) {dict(red) if red else ''}")
+    print("   note: a client resends its whole history every turn, so the same "
+          "secret is re-redacted on each call -- what matters is that none reached the store")
     errors = [r for r in rows if r.get("error")]
     print("errors:", len(errors))
     for msg, n in collections.Counter(r["error"] for r in errors).most_common(5):
@@ -135,6 +152,24 @@ async def local_main(cmd: str) -> None:
     from _local import open_backend
     state, _embed_kind = await open_backend()
 
+    async def resolve(db, ref: str) -> str | None:
+        """Accept a full id, an id prefix (what peek.py prints) or a session key."""
+        rows = (await db.execute(
+            select(ConversationThread).where(ConversationThread.tenant_id == TENANT_ID)
+        )).scalars().all()
+        hit = [t for t in rows if str(t.id) == ref] \
+            or [t for t in rows if str(t.id).startswith(ref)] \
+            or [t for t in rows if (t.a2a_context_id or "") == ref]
+        if not hit:
+            print(f"no thread matches {ref!r}; known: "
+                  + ", ".join(f"{str(t.id)[:8]} ({t.a2a_context_id})" for t in rows))
+            return None
+        if len(hit) > 1:
+            print(f"{ref!r} matches several threads: "
+                  + ", ".join(str(t.id)[:8] for t in hit))
+            return None
+        return str(hit[0].id)
+
     async def proxy_threads(db):
         rows = (await db.execute(
             select(ConversationThread).where(
@@ -189,14 +224,19 @@ async def local_main(cmd: str) -> None:
                     await run_extract(db, str(t.id))
         elif cmd == "reextract":
             if len(sys.argv) < 3:
-                print("usage: verify.py reextract THREAD_ID")
+                print("usage: verify.py reextract THREAD_ID|PREFIX|SESSION")
                 return
-            await run_extract(db, sys.argv[2], whole_thread=True)
+            target = await resolve(db, sys.argv[2])
+            if target:
+                await run_extract(db, target, whole_thread=True)
         elif cmd == "messages":
             if len(sys.argv) < 3:
                 print("usage: verify.py messages THREAD_ID")
                 return
-            thread = await db.get(ConversationThread, uuid.UUID(sys.argv[2]))
+            target = await resolve(db, sys.argv[2])
+            if not target:
+                return
+            thread = await db.get(ConversationThread, uuid.UUID(target))
             msgs = (await db.execute(
                 select(ConversationMessage)
                 .where(ConversationMessage.thread_id == thread.id)
@@ -210,14 +250,17 @@ async def local_main(cmd: str) -> None:
             res = await search_memories(db, query, state.embedding_service, state.recall_backend)
             rows = res.get("results") or []
             print(f"query {query!r}: {len(rows)} result(s), owner={get_owner_id()}")
-            for r in rows:
+            print("search has NO relevance cut-off: it returns the top matches by score,\n"
+                  "filtered to the current version of each memory (superseded ones never appear).")
+            for rank, r in enumerate(rows, 1):
                 node = await db.get(MemoryNode, uuid.UUID(r["id"])) if "id" in r else None
                 prov = (await db.execute(
                     select(ConversationExtraction).where(ConversationExtraction.memory_node_id == uuid.UUID(r["id"]))
                 )).scalars().first() if node else None
                 src = getattr(node, "source", None)
                 thread_ref = f"thread={prov.thread_id} msgs={prov.source_messages}" if prov else "no thread provenance"
-                print(f"- [{src}] {thread_ref}\n  {str(r.get('content'))[:160]}")
+                print(f"{rank}. score={r.get('relevance_score')}  [{src}]  {thread_ref}"
+                      f"\n   {str(r.get('content'))[:160]}")
         else:
             print(__doc__)
 

@@ -41,8 +41,23 @@ def _kwargs(history, reply, session="s1", call_type="acompletion"):
     }}
 
 
+def fire(lg, *kwargs_list):
+    """Deliver call(s) to the callback and wait for the detached extraction pass."""
+    async def run():
+        for kw in kwargs_list:
+            await lg.async_log_success_event(kw, None, 0, 0)
+        await lg.drain()
+    asyncio.run(run())
+
+
 @pytest.fixture
 def make_logger(tmp_path, monkeypatch):
+    # The operator's shell usually has the demo environment sourced
+    # (live/env.sh exports MEMORYHUB_CAPTURE_EXTRACT_EVERY and friends), which
+    # would leak into every logger these tests build. Start from a clean slate.
+    import os
+    for name in [k for k in os.environ if k.startswith("MEMORYHUB_CAPTURE_")]:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MEMORYHUB_CAPTURE_OBSERVATIONS", str(tmp_path / "obs.jsonl"))
     monkeypatch.setenv("MEMORYHUB_CAPTURE_THREADS_LOG", str(tmp_path / "threads.jsonl"))
     import memoryhub_capture
@@ -63,6 +78,7 @@ def test_two_turns_one_thread_and_extraction(make_logger):
     async def run():
         await lg.async_log_success_event(_kwargs(h1, "ok"), None, 0, 0)
         await lg.async_log_success_event(_kwargs(h2, "noted"), None, 0, 0)
+        await lg.drain()  # extraction runs detached from the proxy's callback
     asyncio.run(run())
 
     assert sink.threads == ["s1"]
@@ -120,28 +136,126 @@ def test_flags_are_re_read_from_the_environment(make_logger, monkeypatch):
     lg = make_logger(sink)                      # created with EXTRACT_EVERY unset
     assert lg.extract_every == 0
     monkeypatch.setenv("MEMORYHUB_CAPTURE_EXTRACT_EVERY", "1")
-    asyncio.run(lg.async_log_success_event(_kwargs([{"role": "user", "content": "x"}], "y"), None, 0, 0))
+    fire(lg, _kwargs([{"role": "user", "content": "x"}], "y"))
     assert sink.extracted, "extraction should trigger after the env var was set post-import"
 
 
-def test_module_level_instance_picks_up_extract_every(monkeypatch, tmp_path):
-    """The instance LiteLLM actually uses is created at import time."""
-    import memoryhub_capture
+AGENT_WRITE_TURN = [
+    {"role": "user", "content": "Remember that I prefer dark mode"},
+    {"role": "assistant", "content": None,
+     "tool_calls": [{"function": {"name": "write_memory", "arguments": '{"content":"prefers dark mode"}'}}]},
+    {"role": "tool", "content": '{"memory": {"id": "7d2f01c5-1ad1-5873-8fca-b4914152b302"}}'},
+]
 
-    lg = memoryhub_capture.proxy_handler_instance
+
+def test_agent_write_defers_extraction(make_logger):
+    """The agent saved this turn itself: keep the transcript, skip the extra
+    extraction pass, leave the messages for a later dreaming run."""
     sink = FakeSink()
-    previous_sink, previous_obs = lg.sink, lg.observations_path
-    lg.sink = sink
-    lg.observations_path = tmp_path / "obs.jsonl"
-    lg.sessions.clear()
-    monkeypatch.setenv("MEMORYHUB_CAPTURE_EXTRACT_EVERY", "1")
-    monkeypatch.setenv("MEMORYHUB_CAPTURE_ENABLED", "true")
-    try:
-        asyncio.run(lg.async_log_success_event(
-            _kwargs([{"role": "user", "content": "x"}], "y", session="mod-inst"), None, 0, 0))
-        assert sink.extracted, "module-level instance must honour EXTRACT_EVERY set after import"
-    finally:
-        lg.sink = previous_sink
-        lg.observations_path = previous_obs
-        lg.sessions.clear()
-        monkeypatch.delenv("MEMORYHUB_CAPTURE_EXTRACT_EVERY", raising=False)
+    lg = make_logger(sink, MEMORYHUB_CAPTURE_EXTRACT_EVERY="1",
+                     MEMORYHUB_CAPTURE_WHEN_AGENT_WRITES="defer",
+                     MEMORYHUB_CAPTURE_TOOLS="true")
+    fire(lg, _kwargs(AGENT_WRITE_TURN, "Saved."))
+    assert sink.appended, "the thread must still receive the turn"
+    assert sink.extracted == [], "extraction should be deferred"
+
+
+def test_agent_write_can_skip_the_thread_entirely(make_logger):
+    sink = FakeSink()
+    lg = make_logger(sink, MEMORYHUB_CAPTURE_EXTRACT_EVERY="1",
+                     MEMORYHUB_CAPTURE_WHEN_AGENT_WRITES="skip-thread")
+    fire(lg, _kwargs(AGENT_WRITE_TURN, "Saved."))
+    assert sink.appended == [] and sink.extracted == []
+
+
+def test_turn_without_agent_write_still_extracts(make_logger):
+    sink = FakeSink()
+    lg = make_logger(sink, MEMORYHUB_CAPTURE_EXTRACT_EVERY="1",
+                     MEMORYHUB_CAPTURE_WHEN_AGENT_WRITES="defer")
+    fire(lg, _kwargs([{"role": "user", "content": "I always use Python"}], "Noted."))
+    assert sink.extracted, "a turn the agent did not cover must still be extracted"
+
+
+def test_memory_search_is_not_a_write(make_logger):
+    """Reading memory does not mean the agent stored anything."""
+    sink = FakeSink()
+    lg = make_logger(sink, MEMORYHUB_CAPTURE_EXTRACT_EVERY="1",
+                     MEMORYHUB_CAPTURE_WHEN_AGENT_WRITES="defer",
+                     MEMORYHUB_CAPTURE_TOOLS="true")
+    turn = [
+        {"role": "user", "content": "What do you know about my setup?"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"function": {"name": "memory", "arguments": '{"action":"search","query":"setup"}'}}]},
+        {"role": "tool", "content": "[]"},
+    ]
+    fire(lg, _kwargs(turn, "Nothing yet."))
+    assert sink.extracted, "a search must not count as the agent saving something"
+
+
+def test_extraction_does_not_block_the_callback(make_logger):
+    """LiteLLM cancels any callback that runs longer than its logging-worker
+    timeout (20s by default). Extraction is a second LLM call, so it must not
+    happen inside the callback: MemoryHub commits each memory as it is created
+    but commits the extraction cursor only at the end, and a cancellation in
+    between leaves memories stored with the cursor unmoved -- the same messages
+    are extracted again on the next pass."""
+    class SlowSink(FakeSink):
+        async def extract(self, thread_id):
+            await asyncio.sleep(0.2)
+            return await super().extract(thread_id)
+
+    sink = SlowSink()
+    lg = make_logger(sink, MEMORYHUB_CAPTURE_EXTRACT_EVERY="1")
+
+    async def run():
+        import time as _t
+        t0 = _t.monotonic()
+        await lg.async_log_success_event(
+            _kwargs([{"role": "user", "content": "I use Python"}], "Noted."), None, 0, 0)
+        callback_ms = (_t.monotonic() - t0) * 1000
+        assert sink.extracted == [], "extraction must not be awaited inside the callback"
+        assert callback_ms < 150, f"callback waited for extraction ({callback_ms:.0f} ms)"
+        await lg.drain()
+        assert sink.extracted == ["t-1"], "the detached pass must still run"
+    asyncio.run(run())
+
+
+def test_a_running_extraction_does_not_block_the_next_call(make_logger):
+    """The bug that silently lost a turn in demo run 2.
+
+    An extraction pass takes tens of seconds. While it ran, the next call's
+    callback waited on the same per-session lock, and LiteLLM's logging worker
+    cancelled it at 20s -- so that turn was never stored, while the user got a
+    perfectly good answer and nothing in the terminal looked wrong. Capture and
+    extraction now take separate locks.
+    """
+    class SlowSink(FakeSink):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+
+        async def extract(self, thread_id):
+            self.started.set()
+            await asyncio.sleep(1.0)
+            return await super().extract(thread_id)
+
+    sink = SlowSink()
+    lg = make_logger(sink, MEMORYHUB_CAPTURE_EXTRACT_EVERY="1")
+
+    async def run():
+        import time as _t
+        await lg.async_log_success_event(
+            _kwargs([{"role": "user", "content": "first turn"}], "ok"), None, 0, 0)
+        await asyncio.wait_for(sink.started.wait(), timeout=2)   # extraction in flight
+
+        t0 = _t.monotonic()
+        await lg.async_log_success_event(
+            _kwargs([{"role": "user", "content": "first turn"},
+                     {"role": "assistant", "content": "ok"},
+                     {"role": "user", "content": "second turn"}], "ok too"), None, 0, 0)
+        waited_ms = (_t.monotonic() - t0) * 1000
+        assert waited_ms < 300, f"callback waited {waited_ms:.0f} ms on a running extraction"
+        assert any(role == "user" and text == "second turn"
+                   for _, role, text in sink.appended), "the second turn was dropped"
+        await lg.drain()
+    asyncio.run(run())
