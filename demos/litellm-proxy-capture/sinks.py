@@ -1,10 +1,10 @@
 """Where captured traffic goes.
 
-* ``JsonlSink``     -- Phase 1: no MemoryHub needed; writes a local thread log.
-* ``MemoryHubSink`` -- Phase 2/3: writes into MemoryHub conversation threads via
-  the Python SDK and (optionally) triggers the existing extraction pipeline.
+* **JsonlSink**     -- Phase 1: no MemoryHub needed; writes a local thread log.
+* **LocalSink**     -- personal edition: writes SQLite via memoryhub-local services.
+* **MemoryHubSink** -- cluster edition: SDK ``thread`` ops.
 
-Both sinks expose the same async interface so the callback does not care.
+All three sinks expose the same async interface so the callback does not care.
 """
 
 from __future__ import annotations
@@ -284,9 +284,15 @@ class LocalSink:
                 metadata={**metadata, "observed_actor_id": actor_id},
             )
 
+    def _refresh_extract_env(self) -> None:
+        self.extract_model = os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_MODEL") or self.extract_model
+        self.extract_model_url = os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL") or self.extract_model_url
+        self.extract_api_key = os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_API_KEY") or self.extract_api_key
+
     async def extract(self, thread_id: str) -> dict | None:
         from memoryhub_local.services.extraction import extract_from_thread, make_http_llm_fn
 
+        self._refresh_extract_env()
         if not self.extract_model_url:
             raise RuntimeError(
                 "Local extraction needs MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL "

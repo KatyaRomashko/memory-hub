@@ -122,3 +122,26 @@ def test_flags_are_re_read_from_the_environment(make_logger, monkeypatch):
     monkeypatch.setenv("MEMORYHUB_CAPTURE_EXTRACT_EVERY", "1")
     asyncio.run(lg.async_log_success_event(_kwargs([{"role": "user", "content": "x"}], "y"), None, 0, 0))
     assert sink.extracted, "extraction should trigger after the env var was set post-import"
+
+
+def test_module_level_instance_picks_up_extract_every(monkeypatch, tmp_path):
+    """The instance LiteLLM actually uses is created at import time."""
+    import memoryhub_capture
+
+    lg = memoryhub_capture.proxy_handler_instance
+    sink = FakeSink()
+    previous_sink, previous_obs = lg.sink, lg.observations_path
+    lg.sink = sink
+    lg.observations_path = tmp_path / "obs.jsonl"
+    lg.sessions.clear()
+    monkeypatch.setenv("MEMORYHUB_CAPTURE_EXTRACT_EVERY", "1")
+    monkeypatch.setenv("MEMORYHUB_CAPTURE_ENABLED", "true")
+    try:
+        asyncio.run(lg.async_log_success_event(
+            _kwargs([{"role": "user", "content": "x"}], "y", session="mod-inst"), None, 0, 0))
+        assert sink.extracted, "module-level instance must honour EXTRACT_EVERY set after import"
+    finally:
+        lg.sink = previous_sink
+        lg.observations_path = previous_obs
+        lg.sessions.clear()
+        monkeypatch.delenv("MEMORYHUB_CAPTURE_EXTRACT_EVERY", raising=False)

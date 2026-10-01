@@ -6,6 +6,7 @@ Used by both the MCP server (server.py) and the dream CLI command.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from memoryhub_local.database import auto_migrate, create_local_engine, make_session_factory
@@ -40,14 +41,18 @@ async def initialize_backend(*, quiet: bool = False) -> ServerState:
 
     model_dir = get_default_model_dir()
     if not is_model_downloaded(model_dir):
-        try:
-            download_model(model_dir)
-        except Exception:
-            logger.warning(
-                "Model download failed. Falling back to mock embeddings. "
-                "Run 'memoryhub doctor' for diagnostics.",
-                exc_info=True,
-            )
+        offline = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE")
+        if offline:
+            logger.info("Skipping embedding model download (offline). Using mock embeddings.")
+        else:
+            try:
+                download_model(model_dir)
+            except Exception:
+                logger.warning(
+                    "Model download failed. Falling back to mock embeddings. "
+                    "Run 'memoryhub doctor' for diagnostics.",
+                    exc_info=not quiet,
+                )
 
     if is_model_downloaded(model_dir):
         embedding_service = OnnxEmbeddingService(model_dir)

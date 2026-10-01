@@ -10,7 +10,6 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
-from transformers import AutoTokenizer
 
 from memoryhub_local.embeddings.base import EmbeddingService
 
@@ -103,6 +102,8 @@ class OnnxEmbeddingService(EmbeddingService):
             sess_options,
             providers=["CPUExecutionProvider"],
         )
+        from transformers import AutoTokenizer
+
         self._tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
         self._model_dir = model_dir
 

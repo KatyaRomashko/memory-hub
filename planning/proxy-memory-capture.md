@@ -1,6 +1,6 @@
 # Proxy-Based Implicit Memory Capture (WRIG-1482)
 
-Status: PoC in progress
+Status: PoC (personal edition; cluster path blocked)
 Date: 2026-09-16
 Branch: `feat/wrig-1482-litellm-proxy-capture`
 PoC: [`demos/litellm-proxy-capture/`](../demos/litellm-proxy-capture/)
@@ -99,17 +99,21 @@ architecture: hooks where available, proxy as fallback, dreaming as backfill).
 
 ## Personal-edition findings (2026-09-18)
 
-The cluster is unavailable, so the PoC now runs end to end on the personal
+The cluster is unavailable, so the PoC runs end to end on the personal
 edition: `demos/litellm-proxy-capture/run-poc-local.sh` (checklist),
-`run-poc-compare.sh` (modes A-E), `demo.sh` + `DEMO.md` (the 10-minute demo).
+`run-poc-compare.sh` (modes A–E), `demo.sh` + `DEMO.md` (the 10-minute demo).
 Results in `demos/litellm-proxy-capture/RESULTS-local.md`.
 
 * **Capture without harness integration works.** An agent with no MCP tool, no
   memory instruction and no hooks produces governed memories with thread-level
   provenance; the only client-side change is the model base URL.
+* **`EXTRACT_EVERY` must not freeze at import and must not inherit `0` from a
+  cluster `.env`.** The callback re-reads the flag per call; the local scripts
+  force `EXTRACT_EVERY=2` after sourcing `.env`. Without that, capture still
+  writes threads but memories never appear from traffic.
 * **The cost moves rather than disappearing.** The explicit path spends a second
-  model call per turn (14 vs 7 calls for three turns) plus the instruction in
-  every prompt; the proxy path spends a separate extraction call.
+  model call per turn plus the instruction in every prompt; the proxy path
+  spends a separate extraction call the agent never waits for.
 * **Config does not go to zero.** Session boundaries need `X-MemoryHub-Session`
   unless fingerprinting the first user message is acceptable, and identity needs
   a header, an end-user field or a per-user gateway key.
@@ -129,7 +133,11 @@ Results in `demos/litellm-proxy-capture/RESULTS-local.md`.
   observed user? Needs an authz decision (driver/actor model).
 * Where does the delta state live in a multi-replica gateway (Redis? the thread's
   own message digests?)
-* Does per-turn extraction duplicate cost already paid by dreaming? (Phase 4)
+* Does per-turn extraction duplicate cost already paid by dreaming?
+  **Measured (Phase 4, personal edition):** mode D (proxy extract + re-extract)
+  produced the same 4 memories as mode B. The cursor and skip rule absorb a
+  second pass. A later dreaming worker would still cost tokens; it would not
+  create extra memories on this path.
 * Do proxy-created memories actually improve retrieval, given facts currently
   rank below transcripts (see benchmarks/RESULTS.md, #447)?
 * Pre-call injection (`async_pre_call_hook`) could also make *reads* implicit —

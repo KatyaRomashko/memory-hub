@@ -67,10 +67,9 @@ class MemoryHubCaptureLogger(CustomLogger):
         self.sink = sink or sink_from_env()
         # Behaviour flags are re-read per call (see _refresh): LiteLLM imports
         # this module at proxy start, which may happen before the operator's
-        # environment is fully set.
+        # environment is fully set. extract_every is a property for the same reason.
         self.enabled = True
         self.capture_tools = False
-        self.extract_every = 0
         self.max_message_bytes = DEFAULT_MAX_MESSAGE_BYTES
         self.ignore_models: re.Pattern | None = None
         self._refresh()
@@ -87,11 +86,15 @@ class MemoryHubCaptureLogger(CustomLogger):
         self._locks: dict[str, asyncio.Lock] = {}
         self._obs_lock = asyncio.Lock()
 
+    @property
+    def extract_every(self) -> int:
+        """Never freeze this at import: .env / the shell may set it after LiteLLM loads us."""
+        return int(os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_EVERY", "0") or 0)
+
     def _refresh(self) -> None:
         """Re-read behaviour flags from the environment."""
         self.enabled = _env_bool("MEMORYHUB_CAPTURE_ENABLED", True)
         self.capture_tools = _env_bool("MEMORYHUB_CAPTURE_TOOLS", False)
-        self.extract_every = int(os.environ.get("MEMORYHUB_CAPTURE_EXTRACT_EVERY", "0") or 0)
         self.max_message_bytes = int(
             os.environ.get("MEMORYHUB_CAPTURE_MAX_MESSAGE_BYTES", str(DEFAULT_MAX_MESSAGE_BYTES)) or 0
         )

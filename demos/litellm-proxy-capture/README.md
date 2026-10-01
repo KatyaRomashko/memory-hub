@@ -31,7 +31,7 @@ and the research framing live in
 |---|---|
 | `memoryhub_capture.py` | LiteLLM `CustomLogger` callback (entry point) |
 | `capture_core.py` | Pure logic: message normalization, session key, delta, observations |
-| `sinks.py` | `JsonlSink` (offline) and `MemoryHubSink` (SDK `thread` ops) |
+| `sinks.py` | `JsonlSink`, `LocalSink` (personal edition), `MemoryHubSink` (cluster) |
 | `agent.py` | Memory-unaware agent with scripted scenarios |
 | `verify.py` | `report` observations, list/extract proxy threads, search memories |
 | `config.mock.yaml` | Offline proxy config (`mock_response`, no API keys) |
@@ -50,7 +50,7 @@ and the research framing live in
 ```bash
 cd demos/litellm-proxy-capture
 uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt -e ../../sdk
+uv pip install -r requirements.txt -e ../../sdk -e "../../memoryhub-local[dream]"
 cp .env.example .env    # fill in; never commit .env
 ```
 
@@ -73,9 +73,11 @@ extraction runs in the proxy process through the same pipeline as
 `memoryhub dream`, against any OpenAI-compatible endpoint.
 
 ```bash
-uv pip install -e ../../memoryhub-local     # once, plus httpx for the dream path
-./run-poc-local.sh                          # offline: mock agent model + rule-based extractor
-./run-poc-local.sh real                     # real models from .env
+uv pip install -e ../../memoryhub-local[dream]     # once, plus httpx for the dream path
+./demo.sh real                                  # the 10-minute demo (DEMO.md)
+./run-poc-local.sh                              # offline checklist (fake extractor)
+./run-poc-local.sh real                         # real models from .env
+./run-poc-compare.sh                            # Phase 4 modes A–E
 ```
 
 The run creates its own database under `out/local-data/`, so it never touches a
@@ -143,16 +145,16 @@ governed memory with thread provenance.
 
 ## Phase 4 — compare capture modes
 
-Run the same scenarios under each mode and compare with `verify.py report` plus
-MemoryHub search results:
+`./run-poc-compare.sh` (or `./run-poc-compare.sh real`) runs the same three
+scenarios under each mode on isolated databases and writes `out/compare.md`.
 
 | Mode | How |
 |---|---|
-| A. explicit MCP only | agent with MemoryHub MCP, `MEMORYHUB_CAPTURE_ENABLED=false` |
-| B. proxy only | this PoC, `EXTRACT_EVERY>0` |
-| C. dreaming only | proxy appends only (`EXTRACT_EVERY=0`), then `verify.py extract` later (`memoryhub dream` works only on the local SQLite edition) |
-| D. proxy + dreaming | B, then a later extraction pass over the same threads |
-| E. explicit + proxy + dreaming | A + D — checks cross-source dedup |
+| A. explicit | `agent_explicit.py` writes memories itself; capture off |
+| B. proxy only | this PoC, `EXTRACT_EVERY=2` |
+| C. dreaming only | proxy appends only (`EXTRACT_EVERY=0`), then `verify.py extract` |
+| D. proxy + dreaming | B, then `reextract` over the same threads |
+| E. explicit + proxy | A and B on one database — cross-source dedup |
 
 Measure: memory recall / false positives (`smalltalk` scenario should create
 nothing), duplicates and corrections (`correction` scenario: on the cluster

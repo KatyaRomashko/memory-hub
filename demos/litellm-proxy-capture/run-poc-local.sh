@@ -9,6 +9,8 @@
 # directory (POC_DATA_DIR) so a run never touches a working MemoryHub install.
 set -uo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tools/bins.sh
+. ./tools/bins.sh
 
 MODE="${1:-offline}"
 PORT="${PORT:-4010}"
@@ -17,19 +19,23 @@ export POC_DATA_DIR="${POC_DATA_DIR:-$PWD/out/local-data}"
 export XDG_DATA_HOME="$POC_DATA_DIR"
 export MEMORYHUB_CAPTURE_SINK=local
 export MEMORYHUB_CAPTURE_OBSERVATIONS="$PWD/out/observations.jsonl"
-export MEMORYHUB_CAPTURE_EXTRACT_EVERY="${MEMORYHUB_CAPTURE_EXTRACT_EVERY:-2}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-poc-local}"
 
 if [ "$MODE" = "real" ]; then
   [ -f .env ] && set -a && . ./.env && set +a
   CONFIG=config.yaml
   # .env is shared with the cluster demo; this script is the local one, so the
-  # sink and the database location are forced back after sourcing it.
+  # sink, database location and auto-extract cadence are forced back afterwards.
+  # (A leftover MEMORYHUB_CAPTURE_EXTRACT_EVERY=0 in .env would otherwise
+  # silently disable the "memories appear from traffic" demo.)
   export MEMORYHUB_CAPTURE_SINK=local
   export XDG_DATA_HOME="$POC_DATA_DIR"
   export MEMORYHUB_CAPTURE_OBSERVATIONS="$PWD/out/observations.jsonl"
   unset HF_HUB_OFFLINE
   : "${MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL:?set MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL in .env (e.g. http://localhost:11434/v1)}"
+  if [ -z "${MEMORYHUB_CAPTURE_EXTRACT_API_KEY:-}" ] && [ -n "${POC_MODEL_API_KEY:-}" ]; then
+    export MEMORYHUB_CAPTURE_EXTRACT_API_KEY="$POC_MODEL_API_KEY"
+  fi
   echo "extraction model: ${MEMORYHUB_CAPTURE_EXTRACT_MODEL:-unset} at $MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL"
 else
   CONFIG=config.mock.yaml
@@ -37,6 +43,7 @@ else
   export MEMORYHUB_CAPTURE_EXTRACT_MODEL=fake-extractor
   export MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL="http://localhost:$EXTRACTOR_PORT/v1"
 fi
+export MEMORYHUB_CAPTURE_EXTRACT_EVERY="${POC_EXTRACT_EVERY:-2}"
 
 rm -rf out/local-data out/observations.jsonl out/poc-report.txt
 mkdir -p out
@@ -52,11 +59,7 @@ run()  { printf '\n$ %s\n' "$*"; "$@"; }
 start_proxy() {
   litellm --config "$CONFIG" --port "$PORT" > "out/proxy-$1.log" 2>&1 &
   PROXY_PID=$!; PIDS+=("$PROXY_PID")
-  for _ in $(seq 1 60); do
-    curl -s "localhost:$PORT/health/liveliness" >/dev/null && return 0
-    sleep 1
-  done
-  echo "proxy failed to start; see out/proxy-$1.log"; exit 1
+  wait_for_proxy "$PROXY_PID" "$PORT" "out/proxy-$1.log" || exit 1
 }
 stop_proxy() { kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null; sleep 1; }
 

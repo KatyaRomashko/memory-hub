@@ -16,11 +16,14 @@ use separate databases, so the two approaches are never mixed.
 
 ## Before you start
 
-- `uv pip install -r requirements.txt -e ../../memoryhub-local`
+- `uv pip install -r requirements.txt -e ../../sdk -e "../../memoryhub-local[dream]"`
+  in **this** directory's `.venv` (the scripts prepend `./.venv/bin` even if
+  another project's venv is active)
 - `.env` with a model for the agent (`POC_MODEL`, `POC_MODEL_API_KEY`) and an
   extraction endpoint (`MEMORYHUB_CAPTURE_EXTRACT_MODEL`,
   `MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL` — Ollama at `http://localhost:11434/v1`
-  works). Keys live in `.env` only; nothing prints them.
+  works). If `MEMORYHUB_CAPTURE_EXTRACT_API_KEY` is empty, `demo.sh real` reuses
+  `POC_MODEL_API_KEY`. Keys live in `.env` only; nothing prints them.
 - `memoryhub doctor` must report the ONNX embedding model, not `mock`. With mock
   embeddings search ranking is meaningless and the demo falls apart.
 

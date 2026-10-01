@@ -15,7 +15,7 @@ async def main() -> None:
     from memoryhub_local.models.conversation import ConversationThread
 
     from _local import open_backend
-    state, _embed_kind = await open_backend()
+    state, _embed_kind = await open_backend(announce=False)
     async with state.session_factory() as db:
         rows = (await db.execute(select(ConversationThread).where(
             ConversationThread.tenant_id == TENANT_ID))).scalars().all()

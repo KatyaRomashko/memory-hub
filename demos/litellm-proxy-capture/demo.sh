@@ -7,6 +7,8 @@
 # Follow DEMO.md while this runs; it pauses between acts (PAUSE=0 to disable).
 set -uo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tools/bins.sh
+. ./tools/bins.sh
 
 MODE="${1:-offline}"
 PORT="${PORT:-4030}"
@@ -16,7 +18,6 @@ export POC_DATA_DIR="$PWD/out/demo-data"
 export XDG_DATA_HOME="$POC_DATA_DIR"
 export MEMORYHUB_CAPTURE_SINK=local
 export MEMORYHUB_CAPTURE_OBSERVATIONS="$PWD/out/demo-observations.jsonl"
-export MEMORYHUB_CAPTURE_EXTRACT_EVERY=2
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-poc-local}"
 
 if [ "$MODE" = "real" ]; then
@@ -26,6 +27,9 @@ if [ "$MODE" = "real" ]; then
   unset HF_HUB_OFFLINE
   CONFIG=config.yaml
   : "${MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL:?set MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL in .env}"
+  if [ -z "${MEMORYHUB_CAPTURE_EXTRACT_API_KEY:-}" ] && [ -n "${POC_MODEL_API_KEY:-}" ]; then
+    export MEMORYHUB_CAPTURE_EXTRACT_API_KEY="$POC_MODEL_API_KEY"
+  fi
 else
   CONFIG=config.mock.yaml
   export HF_HUB_OFFLINE=1
@@ -33,6 +37,8 @@ else
   export MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL="http://localhost:$EXTRACTOR_PORT/v1"
   echo "NOTE: offline mode -- mock embeddings and a rule-based extractor. Use 'real' to demo."
 fi
+# Do not inherit EXTRACT_EVERY=0 from a cluster .env.
+export MEMORYHUB_CAPTURE_EXTRACT_EVERY="${POC_EXTRACT_EVERY:-2}"
 
 rm -rf out/demo-data out/demo-observations.jsonl
 mkdir -p out
@@ -48,8 +54,7 @@ act()   { printf '\n\n=== %s ===\n\n' "$*"; }
 start_proxy() {  # $1 = capture on|off
   MEMORYHUB_CAPTURE_ENABLED="$1" litellm --config "$CONFIG" --port "$PORT" > "out/demo-proxy-$1.log" 2>&1 &
   PROXY_PID=$!; PIDS+=("$PROXY_PID")
-  for _ in $(seq 1 60); do curl -s "localhost:$PORT/health/liveliness" >/dev/null && return 0; sleep 1; done
-  echo "proxy failed to start"; exit 1
+  wait_for_proxy "$PROXY_PID" "$PORT" "out/demo-proxy-$1.log" || exit 1
 }
 stop_proxy() { kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null; sleep 1; }
 
@@ -99,4 +104,6 @@ cat <<'TXT'
   what the agent already wrote, but an agent write after extraction duplicates it.
 TXT
 echo
-echo "database: $POC_DATA_DIR/memoryhub/memoryhub.db   observations: out/demo-observations.jsonl"
+echo "act 1 db: $POC_DATA_DIR/act1-explicit/memoryhub/memoryhub.db"
+echo "act 2 db: $POC_DATA_DIR/act2-proxy/memoryhub/memoryhub.db"
+echo "observations: out/demo-observations.jsonl"

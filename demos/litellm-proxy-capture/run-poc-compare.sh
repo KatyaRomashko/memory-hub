@@ -14,6 +14,8 @@
 # Results: out/compare.jsonl (raw) and out/compare.md (table).
 set -uo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=tools/bins.sh
+. ./tools/bins.sh
 
 MODE="${1:-offline}"
 PORT="${PORT:-4020}"
@@ -27,12 +29,18 @@ if [ "$MODE" = "real" ]; then
   unset HF_HUB_OFFLINE
   CONFIG=config.yaml
   : "${MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL:?set MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL in .env}"
+  if [ -z "${MEMORYHUB_CAPTURE_EXTRACT_API_KEY:-}" ] && [ -n "${POC_MODEL_API_KEY:-}" ]; then
+    export MEMORYHUB_CAPTURE_EXTRACT_API_KEY="$POC_MODEL_API_KEY"
+  fi
 else
   CONFIG=config.mock.yaml
   export HF_HUB_OFFLINE=1
   export MEMORYHUB_CAPTURE_EXTRACT_MODEL=fake-extractor
   export MEMORYHUB_CAPTURE_EXTRACT_MODEL_URL="http://localhost:$EXTRACTOR_PORT/v1"
 fi
+# Force auto-extract for modes that want it; mode C sets this to 0 later.
+# Do not inherit EXTRACT_EVERY=0 from a cluster .env.
+export MEMORYHUB_CAPTURE_EXTRACT_EVERY="${POC_EXTRACT_EVERY:-2}"
 
 rm -rf out/compare out/compare.jsonl out/compare.md
 mkdir -p out/compare
@@ -50,8 +58,8 @@ fi
 start_proxy() {
   litellm --config "$CONFIG" --port "$PORT" > "out/compare/proxy-$1.log" 2>&1 &
   PROXY_PID=$!
-  for _ in $(seq 1 60); do curl -s "localhost:$PORT/health/liveliness" >/dev/null && return 0; sleep 1; done
-  echo "proxy failed to start"; exit 1
+  PIDS+=("$PROXY_PID")
+  wait_for_proxy "$PROXY_PID" "$PORT" "out/compare/proxy-$1.log" || exit 1
 }
 stop_proxy() { kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null; sleep 1; }
 
