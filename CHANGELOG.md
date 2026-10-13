@@ -116,7 +116,7 @@ memory-hub-mcp and memoryhub-auth; not published as a standalone package.
 
 ### [Unreleased]
 
-- **Procedural graph schema, Phase 1 (#552)**: Added `ContentType.PROCEDURAL` and `RelationshipType.precedes`/`.requires`/`.alternative_to`. `ck_memory_nodes_content_type` recreated via Alembic migration 028 and mirrored on the `MemoryNode` ORM model so SQLite test schemas enforce it too. See [planning/procedural-graphs.md](planning/procedural-graphs.md) for the design (adjacency-list membership + `memory_relationships` topology; no new tables).
+- **Procedural graph schema, Phase 1 (#552)**: Added `ContentType.PROCEDURAL` and `RelationshipType.precedes`/`.requires`/`.alternative_to`. `ck_memory_nodes_content_type` recreated via Alembic migration 030 and mirrored on the `MemoryNode` ORM model so SQLite test schemas enforce it too. See [planning/procedural-graphs.md](planning/procedural-graphs.md) for the design (adjacency-list membership + `memory_relationships` topology; no new tables).
 
 - Models, services, storage, and RBAC. See
   [planning/archive/package-layout.md](planning/archive/package-layout.md) for the split between
