@@ -95,7 +95,9 @@ async def collect_graph_neighbors(
             "tenant_id": tenant_id,
         }
     else:
-        temporal_clause = "mr.valid_from <= :as_of AND (mr.valid_until IS NULL OR mr.valid_until > :as_of)"
+        temporal_clause = (
+            "mr.valid_from <= :as_of AND (mr.valid_until IS NULL OR mr.valid_until > :as_of)"
+        )
         params = {
             "seed_ids": [str(sid) for sid in seed_ids],
             "max_depth": max_depth,
@@ -148,7 +150,11 @@ async def collect_graph_neighbors(
     rows = result.all()
 
     seed_set = set(seed_ids)
-    return {uuid.UUID(str(row.node_id)): row.min_depth for row in rows if uuid.UUID(str(row.node_id)) not in seed_set}
+    return {
+        uuid.UUID(str(row.node_id)): row.min_depth
+        for row in rows
+        if uuid.UUID(str(row.node_id)) not in seed_set
+    }
 
 
 async def invalidate_relationship(
@@ -226,7 +232,8 @@ async def create_relationship(
     except IntegrityError as exc:
         await session.rollback()
         raise ValueError(
-            f"Relationship ({data.source_id} --[{data.relationship_type}]--> {data.target_id}) already exists"
+            f"Relationship ({data.source_id} --[{data.relationship_type}]--> "
+            f"{data.target_id}) already exists"
         ) from exc
 
     await session.refresh(rel)
@@ -313,7 +320,8 @@ async def get_relationships(
     stubs = await _load_stubs(referenced_ids, session, tenant_id=tenant_id)
 
     return [
-        _relationship_to_read(r, source_stub=stubs.get(r.source_id), target_stub=stubs.get(r.target_id)) for r in rels
+        _relationship_to_read(r, source_stub=stubs.get(r.source_id), target_stub=stubs.get(r.target_id))
+        for r in rels
     ]
 
 
@@ -368,13 +376,17 @@ async def get_subtree(
     def _build_subtree(nid: uuid.UUID) -> dict:
         node = nodes_by_id[nid]
         child_ids = children_by_parent.get(nid, [])
-        has_rationale = any(nodes_by_id[c].branch_type == "rationale" for c in child_ids if c in nodes_by_id)
+        has_rationale = any(
+            nodes_by_id[c].branch_type == "rationale" for c in child_ids if c in nodes_by_id
+        )
         node_read = node_to_read(node, has_children=bool(child_ids), has_rationale=has_rationale)
         child_entries = [_build_subtree(c) for c in child_ids if c in nodes_by_id]
         return {"node": node_read, "children": child_entries, "depth": depth_by_id[nid]}
 
     root_children = children_by_parent.get(node_id, [])
-    has_rationale_root = any(nodes_by_id[c].branch_type == "rationale" for c in root_children if c in nodes_by_id)
+    has_rationale_root = any(
+        nodes_by_id[c].branch_type == "rationale" for c in root_children if c in nodes_by_id
+    )
     root_read = node_to_read(root, has_children=bool(root_children), has_rationale=has_rationale_root)
 
     return {

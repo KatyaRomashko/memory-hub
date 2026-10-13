@@ -4,7 +4,7 @@ Persistent, governed memory for AI agents. MemoryHub gives agents a shared memor
 
 **Try it now** -- `pip install "memoryhub[local]"` for a personal edition backed by SQLite (no infrastructure needed), or deploy the [cluster edition](docs/guides/cluster-install.md) on OpenShift AI for multi-agent governance, OAuth 2.1, and team-wide shared memory.
 
-Retrieval quality: 84.9% on [AMB PersonaMem](benchmarks/RESULTS.md) (2nd on the leaderboard), R@5=0.999 on LongMemEval. Requires Python 3.10+.
+Retrieval quality: 83.7% on [AMB PersonaMem 32k](benchmarks/RESULTS.md) (submitted to leaderboard, pending review), R@5=0.999 on LongMemEval oracle. Requires Python 3.10+.
 
 ## How to think about agent memory
 
@@ -40,6 +40,18 @@ oc login <cluster-api-url>      # cluster-admin required
 make install                    # full stack deploy (~10 min)
 ```
 
+To build application images without rolling out deployments, use:
+
+```bash
+make build                      # MCP, auth, and UI images
+make deploy                     # deploy existing ImageStream images
+make build-mcp                  # build one component
+make deploy-mcp                 # deploy one component without rebuilding
+```
+
+`make install` remains the combined build-and-deploy workflow. The equivalent
+deployment-only option is `scripts/deploy-full.sh --skip-builds`.
+
 The deploy script auto-creates a Python virtualenv, generates API keys, writes the first key to `~/.config/memoryhub/api-key`, and runs a smoke test. See the [cluster install guide](docs/guides/cluster-install.md) for prerequisites, deploy options, troubleshooting, and post-install setup.
 
 ## Why MemoryHub
@@ -70,6 +82,7 @@ Per-subsystem status and dependency graph: [`docs/SYSTEMS.md`](docs/SYSTEMS.md).
 | **Curation agents** | [`memoryhub-agents/`](memoryhub-agents/) | Background agents (Fact Checker, Trace Reviewer) running on Valkey job queues with leader election. |
 | **Dashboard UI** | [`memoryhub-ui/`](memoryhub-ui/) | React + PatternFly 6 frontend behind a FastAPI BFF, deployed as a single container. Six panels: Memory Graph, Status Overview, Users & Agents, Client Management, Curation Rules, Contradiction Log. OAuth-proxy sidecar in front of OpenShift login. |
 | **Auth service** | [`memoryhub-auth/`](memoryhub-auth/) | Standalone OAuth 2.1 authorization server. FastAPI with `client_credentials` and `refresh_token` grants, RSA-2048 JWT signing, JWKS endpoint, admin client management API. |
+| **Agent-host integrations** | [`integrations/`](integrations/) | Native plugins for agent hosts: [OpenClaw](integrations/openclaw/DEPLOY.md) and [opencode](integrations/opencode/README.md). Each wraps the MCP client with host-side auth, auto-recall injection, and the memory protocol. |
 | **Database migrations** | [`alembic/`](alembic/) | Schema migrations for the server-side library. PostgreSQL with the pgvector extension. |
 | **Design docs** | [`docs/`](docs/) | Subsystem designs, the agent-memory-ergonomics design cluster, package layout, auth and identity model. Start at [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). |
 | **Planning** | [`planning/`](planning/) | In-flight designs for unimplemented features (operator, observability, org-ingestion) and the LlamaStack integration plan. |
