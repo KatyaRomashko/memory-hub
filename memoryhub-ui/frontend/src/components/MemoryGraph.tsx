@@ -336,17 +336,36 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ initialOwnerFilter }) => {
       flexDirection: 'column',
       height: 'calc(100vh - 76px)',
     }}>
-      <Toolbar style={{ borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)', flexShrink: 0 }}>
-        <ToolbarContent>
-          <ToolbarItem>
-            <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
-              <FlexItem>
+      <Toolbar
+        style={{
+          borderBottom: '1px solid var(--pf-v6-global--BorderColor--100)',
+          flexShrink: 0,
+          overflow: 'visible',
+        }}
+      >
+        <ToolbarContent
+          style={{
+            alignItems: 'center',
+            columnGap: '1rem',
+            display: 'flex',
+            flexWrap: 'wrap',
+            paddingBlock: '0.75rem',
+            rowGap: '0.75rem',
+          }}
+        >
+          <ToolbarItem style={{ flex: '1 1 280px', minWidth: 'min(100%, 280px)' }}>
+            <Flex
+              alignItems={{ default: 'alignItemsCenter' }}
+              gap={{ default: 'gapSm' }}
+              style={{ flexWrap: 'wrap', width: '100%' }}
+            >
+              <FlexItem style={{ flex: '1 1 200px', minWidth: 0 }}>
                 <TextInput
                   value={searchQuery}
                   onChange={(_e, val) => setSearchQuery(val)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                   placeholder="Search memories…"
-                  style={{ width: '240px' }}
+                  style={{ width: '100%' }}
                   aria-label="Search memories"
                 />
               </FlexItem>
@@ -372,9 +391,18 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ initialOwnerFilter }) => {
             </Flex>
           </ToolbarItem>
 
-          <ToolbarGroup variant="filter-group">
+          <ToolbarGroup
+            variant="filter-group"
+            style={{
+              display: 'flex',
+              flex: '1 1 320px',
+              flexWrap: 'wrap',
+              gap: '0.5rem 0.75rem',
+              minWidth: 0,
+            }}
+          >
             {SCOPE_OPTIONS.map((scope) => (
-              <ToolbarItem key={scope}>
+              <ToolbarItem key={scope} style={{ flex: '0 1 auto' }}>
                 <Checkbox
                   id={`scope-${scope}`}
                   label={scope}
@@ -385,17 +413,17 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ initialOwnerFilter }) => {
             ))}
           </ToolbarGroup>
 
-          <ToolbarItem>
+          <ToolbarItem style={{ flex: '1 1 180px', minWidth: 'min(100%, 180px)' }}>
             <TextInput
               value={ownerFilter}
               onChange={(_e, val) => setOwnerFilter(val)}
               placeholder="Filter by owner…"
-              style={{ width: '180px' }}
+              style={{ width: '100%' }}
               aria-label="Filter by owner"
             />
           </ToolbarItem>
 
-          <ToolbarItem>
+          <ToolbarItem style={{ flex: '0 0 auto' }}>
             <Button variant="secondary" onClick={loadGraph} isDisabled={loading}>
               Refresh
             </Button>

@@ -14,7 +14,7 @@ import {
   PageSidebarBody,
   Title,
 } from '@patternfly/react-core';
-import { BarsIcon } from '@patternfly/react-icons';
+import { BarsIcon, TimesIcon } from '@patternfly/react-icons';
 
 import ClientManagement from './components/ClientManagement';
 import ContradictionLog from './components/ContradictionLog';
@@ -61,7 +61,12 @@ const App: React.FC = () => {
   const masthead = (
     <Masthead style={{ backgroundColor: '#1b1d21' }}>
       <MastheadToggle>
-        <Button variant="plain" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Toggle sidebar">
+        <Button
+          variant="plain"
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          aria-label={sidebarOpen ? 'Hide navigation panel' : 'Show navigation panel'}
+          aria-expanded={sidebarOpen}
+        >
           <BarsIcon />
         </Button>
       </MastheadToggle>
@@ -94,6 +99,22 @@ const App: React.FC = () => {
   const sidebar = (
     <PageSidebar isSidebarOpen={sidebarOpen}>
       <PageSidebarBody>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            padding: '0.5rem 0.75rem 0.25rem',
+          }}
+        >
+          <Button
+            variant="plain"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Hide navigation panel"
+            title="Hide navigation panel"
+          >
+            <TimesIcon />
+          </Button>
+        </div>
         <Nav aria-label="Primary navigation">
           <NavList>
             {NAV_ITEMS.map((item) => (
