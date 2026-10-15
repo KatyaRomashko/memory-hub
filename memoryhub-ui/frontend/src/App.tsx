@@ -65,7 +65,9 @@ const App: React.FC = () => {
           variant="plain"
           onClick={() => setSidebarOpen(!sidebarOpen)}
           aria-label={sidebarOpen ? 'Hide navigation panel' : 'Show navigation panel'}
+          title={sidebarOpen ? 'Hide navigation panel' : 'Show navigation panel'}
           aria-expanded={sidebarOpen}
+          style={{ color: 'white' }}
         >
           <BarsIcon />
         </Button>
