@@ -4,7 +4,7 @@ FROM registry.access.redhat.com/ubi9/nodejs-20:latest AS frontend-build
 WORKDIR /opt/app-root/src
 
 COPY frontend/package.json ./
-COPY frontend/package-lock.json* ./
+COPY frontend/package-lock.json ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY frontend/src ./src
