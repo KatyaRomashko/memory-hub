@@ -5,7 +5,7 @@ WORKDIR /opt/app-root/src
 
 COPY frontend/package.json ./
 COPY frontend/package-lock.json ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+RUN npm install --no-audit --no-fund
 
 COPY frontend/src ./src
 COPY frontend/index.html ./index.html
