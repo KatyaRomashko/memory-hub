@@ -5,7 +5,7 @@ WORKDIR /opt/app-root/src
 
 COPY frontend/package.json ./
 COPY frontend/package-lock.json ./
-RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund --package-lock=false
 
 COPY frontend/src ./src
 COPY frontend/index.html ./index.html
