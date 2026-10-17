@@ -45,6 +45,26 @@ class Settings(BaseSettings):
     # server_default on memory_nodes.tenant_id.
     ui_tenant_id: str = "default"
 
+    # --- Dashboard redesign (component health, search playground, login) ---
+    # Optional cross-encoder reranker (TEI-compatible POST {"query","texts"}).
+    # Empty disables the rerank stage in the search playground and marks the
+    # component as "Not configured" on the overview.
+    reranker_url: str = ""
+    # Same variables the MCP server reads; used only for health probes and the
+    # session-focus histogram. Empty = component not deployed.
+    valkey_url: str = ""
+    s3_endpoint: str = ""
+    # Extra trusted token issuers shown on the Clients screen, as a JSON list
+    # of {"name", "kind", "description", "status"} objects. The local cluster
+    # issuer is derived from the auth service metadata automatically.
+    trusted_issuers: str = ""
+    # Development-only API-key login (screen 13). When set, every /api route
+    # except auth, health and public config requires a session cookie created
+    # by POST /api/auth/login. Leave empty behind the OpenShift OAuth proxy.
+    ui_dev_api_key: str = ""
+    # Label shown in the masthead, e.g. "for OpenShift AI" cluster suffix.
+    cluster_domain: str = ""
+
     @property
     def database_url(self) -> str:
         return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"

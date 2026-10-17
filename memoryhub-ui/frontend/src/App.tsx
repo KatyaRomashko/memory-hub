@@ -1,156 +1,106 @@
-import React, { useState } from 'react';
-import {
-  Button,
-  Masthead,
-  MastheadMain,
-  MastheadBrand,
-  MastheadContent,
-  MastheadToggle,
-  Nav,
-  NavItem,
-  NavList,
-  Page,
-  PageSidebar,
-  PageSidebarBody,
-  Title,
-} from '@patternfly/react-core';
-import { BarsIcon, TimesIcon } from '@patternfly/react-icons';
+import React, { useEffect, useState } from 'react';
+import { api, AUTH_REQUIRED_EVENT } from '@/api/client';
+import { AppProvider, NAV, Shell } from '@/components/Shell';
+import { ToastProvider } from '@/components/ui';
+import { navigate, useHashRoute, type HashRoute } from '@/hooks/useHashRoute';
+import Audit from '@/pages/Audit';
+import Clients from '@/pages/Clients';
+import Curation from '@/pages/Curation';
+import Graph from '@/pages/Graph';
+import Identities from '@/pages/Identities';
+import Login from '@/pages/Login';
+import Memories from '@/pages/Memories';
+import MemoryDetail from '@/pages/MemoryDetail';
+import Overview from '@/pages/Overview';
+import Projects from '@/pages/Projects';
+import Review from '@/pages/Review';
+import Search from '@/pages/Search';
+import Settings from '@/pages/Settings';
 
-import ClientManagement from './components/ClientManagement';
-import ContradictionLog from './components/ContradictionLog';
-import CurationRules from './components/CurationRules';
-import MemoryGraph from './components/MemoryGraph';
-import StatusOverview from './components/StatusOverview';
-import UsersAgents from './components/UsersAgents';
-
-type ActivePanel = 'graph' | 'status' | 'users' | 'rules' | 'contradictions' | 'clients';
-
-interface NavEntry {
-  id: string;
-  label: string;
-  panel?: ActivePanel;
-  disabled?: boolean;
+interface Screen {
+  nav: string;
+  title: string;
+  render: (route: HashRoute) => React.ReactNode;
 }
 
-const NAV_ITEMS: NavEntry[] = [
-  { id: 'graph', label: 'Memory Graph', panel: 'graph' },
-  { id: 'status', label: 'Status Overview', panel: 'status' },
-  { id: 'users', label: 'Users & Agents', panel: 'users' },
-  { id: 'curation', label: 'Curation Rules', panel: 'rules' },
-  { id: 'contradictions', label: 'Contradictions', panel: 'contradictions' },
-  { id: 'observability', label: 'Observability', disabled: true },
-  { id: 'clients', label: 'Client Management', panel: 'clients' },
-];
+const SCREENS: Record<string, Screen> = {
+  '/overview': { nav: '/overview', title: 'Overview', render: () => <Overview /> },
+  '/memories': { nav: '/memories', title: 'Memory browser', render: (r) => <Memories route={r} /> },
+  '/memory': { nav: '/memories', title: 'Memory detail', render: (r) => <MemoryDetail route={r} /> },
+  '/graph': { nav: '/graph', title: 'Memory graph', render: (r) => <Graph route={r} /> },
+  '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
+  '/projects': { nav: '/projects', title: 'Projects & campaigns', render: (r) => <Projects route={r} /> },
+  '/review': { nav: '/review', title: 'Review queue', render: (r) => <Review route={r} /> },
+  '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },
+  '/audit': { nav: '/audit', title: 'Audit & forensics', render: (r) => <Audit route={r} /> },
+  '/identities': { nav: '/identities', title: 'Users & agents', render: (r) => <Identities route={r} /> },
+  '/clients': { nav: '/clients', title: 'OAuth clients & keys', render: (r) => <Clients route={r} /> },
+  '/settings': { nav: '/settings', title: 'Settings', render: () => <Settings /> },
+};
 
-const App: React.FC = () => {
-  const [activePanel, setActivePanel] = useState<ActivePanel>('graph');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [graphOwnerFilter, setGraphOwnerFilter] = useState<string | undefined>();
+// Old bookmarks from the previous dashboard keep working.
+const LEGACY: Record<string, { path: string; params?: Record<string, string> }> = {
+  '/status': { path: '/overview' },
+  '/contradictions': { path: '/review', params: { tab: 'contradictions' } },
+  '/curation-rules': { path: '/curation' },
+  '/rules': { path: '/curation' },
+  '/users': { path: '/identities' },
+};
 
-  const handleNavigateToGraph = (ownerId: string) => {
-    setGraphOwnerFilter(ownerId);
-    setActivePanel('graph');
-  };
+const screenKey = (path: string) => {
+  if (path.startsWith('/memory/')) return '/memory';
+  return path;
+};
 
-  const handleNavigateToMemory = (_memoryId: string) => {
-    // Navigate to graph panel — future: highlight the specific node
-    setGraphOwnerFilter(undefined);
-    setActivePanel('graph');
-  };
+const Routed: React.FC = () => {
+  const route = useHashRoute();
+  const [authRequired, setAuthRequired] = useState(false);
 
-  const masthead = (
-    <Masthead style={{ backgroundColor: '#1b1d21' }}>
-      <MastheadToggle>
-        <Button
-          variant="plain"
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          aria-label={sidebarOpen ? 'Hide navigation panel' : 'Show navigation panel'}
-          title={sidebarOpen ? 'Hide navigation panel' : 'Show navigation panel'}
-          aria-expanded={sidebarOpen}
-          style={{ color: 'white' }}
-        >
-          <BarsIcon />
-        </Button>
-      </MastheadToggle>
-      <MastheadMain>
-        <MastheadBrand style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <svg
-            width="28"
-            height="28"
-            viewBox="0 0 28 28"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-            aria-hidden="true"
-          >
-            <circle cx="14" cy="14" r="13" stroke="white" strokeWidth="2" />
-            <circle cx="14" cy="14" r="5" fill="white" />
-            <line x1="14" y1="1" x2="14" y2="7" stroke="white" strokeWidth="2" />
-            <line x1="14" y1="21" x2="14" y2="27" stroke="white" strokeWidth="2" />
-            <line x1="1" y1="14" x2="7" y2="14" stroke="white" strokeWidth="2" />
-            <line x1="21" y1="14" x2="27" y2="14" stroke="white" strokeWidth="2" />
-          </svg>
-          <Title headingLevel="h1" size="lg" style={{ color: 'white', margin: 0 }}>
-            MemoryHub
-          </Title>
-        </MastheadBrand>
-      </MastheadMain>
-      <MastheadContent />
-    </Masthead>
-  );
+  useEffect(() => {
+    api
+      .authStatus()
+      .then((s) => setAuthRequired(!s.authenticated))
+      .catch(() => undefined);
+    const onAuth = () => setAuthRequired(true);
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuth);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuth);
+  }, []);
 
-  const sidebar = (
-    <PageSidebar isSidebarOpen={sidebarOpen}>
-      <PageSidebarBody>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            padding: '0.5rem 0.75rem 0.25rem',
-          }}
-        >
-          <Button
-            variant="plain"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Hide navigation panel"
-            title="Hide navigation panel"
-          >
-            <TimesIcon />
-          </Button>
-        </div>
-        <Nav aria-label="Primary navigation">
-          <NavList>
-            {NAV_ITEMS.map((item) => (
-              <NavItem
-                key={item.id}
-                itemId={item.id}
-                isActive={!item.disabled && item.panel === activePanel}
-                onClick={() => {
-                  if (!item.disabled && item.panel) {
-                    setActivePanel(item.panel);
-                  }
-                }}
-                style={item.disabled ? { opacity: 0.45, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                aria-disabled={item.disabled}
-              >
-                {item.label}
-              </NavItem>
-            ))}
-          </NavList>
-        </Nav>
-      </PageSidebarBody>
-    </PageSidebar>
-  );
+  useEffect(() => {
+    const legacy = LEGACY[route.path];
+    if (legacy) navigate(legacy.path, legacy.params, { replace: true });
+    else if (route.path === '/' || (!SCREENS[screenKey(route.path)] && route.path !== '/login')) {
+      navigate('/overview', undefined, { replace: true });
+    }
+  }, [route.path]);
 
+  const key = screenKey(route.path);
+  const screen = SCREENS[key];
+
+  useEffect(() => {
+    const title = route.path === '/login' ? 'Log in' : screen?.title;
+    document.title = title ? `MemoryHub · ${title}` : 'MemoryHub';
+  }, [screen, route.path]);
+
+  if (route.path === '/login' || authRequired) {
+    return <Login onLoggedIn={() => setAuthRequired(false)} />;
+  }
+  if (!screen) return null;
+  const known = NAV.some((s) => s.items.some((i) => i.path === screen.nav));
   return (
-    <Page masthead={masthead} sidebar={sidebar} style={{ height: '100vh' }}>
-      {activePanel === 'graph' && <MemoryGraph initialOwnerFilter={graphOwnerFilter} />}
-      {activePanel === 'status' && <StatusOverview />}
-      {activePanel === 'users' && <UsersAgents onNavigateToGraph={handleNavigateToGraph} />}
-      {activePanel === 'rules' && <CurationRules />}
-      {activePanel === 'contradictions' && <ContradictionLog onNavigateToMemory={handleNavigateToMemory} />}
-      {activePanel === 'clients' && <ClientManagement />}
-    </Page>
+    <AppProvider>
+      <Shell activePath={known ? screen.nav : ''}>
+        {/* key resets page state when moving between screens */}
+        <React.Fragment key={key}>{screen.render(route)}</React.Fragment>
+      </Shell>
+    </AppProvider>
   );
 };
+
+const App: React.FC = () => (
+  <ToastProvider>
+    <Routed />
+  </ToastProvider>
+);
 
 export default App;

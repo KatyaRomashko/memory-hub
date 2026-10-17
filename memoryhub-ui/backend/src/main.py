@@ -4,13 +4,19 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import get_settings
 from src.routes import router
+from src.routes_admin import router as admin_router
+from src.routes_dashboard import router as dashboard_router
+from src.ui_common import read_session_cookie
+
+# Reachable without a session when development API-key login is enabled.
+_PUBLIC_API = ("/api/auth/", "/api/public-config")
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +45,33 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def require_dev_session(request: Request, call_next):
+        """Gate /api behind the dev API-key session when it is enabled.
+
+        Behind the OpenShift OAuth proxy (X-Forwarded-User present) or with
+        MEMORYHUB_UI_DEV_API_KEY unset, this is a no-op.
+        """
+        current = get_settings()
+        path = request.url.path
+        if (
+            current.ui_dev_api_key
+            and path.startswith("/api/")
+            and not path.startswith(_PUBLIC_API)
+            and not request.headers.get("x-forwarded-user")
+            and not read_session_cookie(request, current)
+        ):
+            return JSONResponse({"detail": "Log in to the dashboard first"}, status_code=401)
+        return await call_next(request)
+
+    # Dashboard routers first so their static paths (e.g. /api/memories/browse)
+    # win over the parameterised routes in the original router.
+    app.include_router(dashboard_router)
+    app.include_router(admin_router)
     app.include_router(router)
 
     # Serve the compiled frontend if dist/ exists (single-container deployment)

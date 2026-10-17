@@ -32,6 +32,8 @@ from src.schemas import (
     GraphNode,
     GraphResponse,
     MemoryDetail,
+    MemoryListItem,
+    MemoryListResponse,
     PublicConfigResponse,
     RecentActivity,
     RuleVersionEntry,
@@ -67,6 +69,11 @@ def _node_to_graph_node(node: MemoryNode) -> GraphNode:
         weight=node.weight,
         branch_type=node.branch_type,
         owner_id=node.owner_id,
+        actor_id=node.actor_id,
+        driver_id=node.driver_id,
+        content_type=node.content_type,
+        status=node.status,
+        source=node.source,
         version=node.version,
         created_at=node.created_at,
         updated_at=node.updated_at,
@@ -291,6 +298,141 @@ async def search_graph(
     result = await db.execute(stmt)
     nodes = result.scalars().all()
     return [SearchMatch(id=str(n.id), score=1.0) for n in nodes]
+
+
+# ---------------------------------------------------------------------------
+# Memory Explorer list
+# ---------------------------------------------------------------------------
+
+_LIST_SORT_COLUMNS = {
+    "updated_at": MemoryNode.updated_at,
+    "created_at": MemoryNode.created_at,
+    "weight": MemoryNode.weight,
+    "version": MemoryNode.version,
+}
+_PREVIEW_CHARS = 280
+# Semantic search ranks a bounded candidate set; the table pages through it.
+_SEMANTIC_CANDIDATES = 200
+
+
+def _node_to_list_item(node: MemoryNode, score: float | None = None) -> MemoryListItem:
+    content = node.content or ""
+    preview = content if len(content) <= _PREVIEW_CHARS else content[: _PREVIEW_CHARS - 1].rstrip() + "\u2026"
+    return MemoryListItem(
+        id=str(node.id),
+        stub=node.stub,
+        content_preview=preview,
+        scope=node.scope,
+        owner_id=node.owner_id,
+        actor_id=getattr(node, "actor_id", None),
+        driver_id=getattr(node, "driver_id", None),
+        branch_type=node.branch_type,
+        content_type=getattr(node, "content_type", None),
+        status=getattr(node, "status", None),
+        source=getattr(node, "source", None),
+        weight=node.weight,
+        version=node.version,
+        parent_id=str(node.parent_id) if node.parent_id else None,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+        score=score,
+    )
+
+
+@router.get("/api/memories", response_model=MemoryListResponse)
+async def list_memories(
+    db: DbDep,
+    settings: SettingsDep,
+    q: str | None = Query(default=None, max_length=1000),
+    scope: list[str] | None = Query(default=None),
+    owner_id: str | None = Query(default=None, max_length=255),
+    actor_id: str | None = Query(default=None, max_length=255),
+    content_type: list[str] | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    source: list[str] | None = Query(default=None),
+    sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|weight|version|score)$"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
+):
+    """Paginated, filterable list of current memories for the Memory Explorer.
+
+    Filters strictly by ``settings.ui_tenant_id`` like every other read in
+    the BFF. With ``q`` the list becomes a search: semantic (cosine
+    similarity, top ``_SEMANTIC_CANDIDATES``) when the embedding service is
+    reachable, otherwise a case-insensitive substring match. Semantic
+    results carry a ``score`` and default to score ordering.
+    """
+    tenant_id = settings.ui_tenant_id
+    filters = [
+        MemoryNode.tenant_id == tenant_id,
+        MemoryNode.is_current.is_(True),
+        MemoryNode.deleted_at.is_(None),
+    ]
+    if scope:
+        filters.append(MemoryNode.scope.in_(scope))
+    if owner_id:
+        filters.append(MemoryNode.owner_id == owner_id)
+    if actor_id:
+        filters.append(MemoryNode.actor_id == actor_id)
+    if content_type:
+        filters.append(MemoryNode.content_type.in_(content_type))
+    if status:
+        filters.append(MemoryNode.status.in_(status))
+    if source:
+        filters.append(MemoryNode.source.in_(source))
+
+    query = (q or "").strip()
+    descending = order == "desc"
+
+    if query:
+        embedding = await _get_embedding(query, settings.embedding_url)
+        if embedding is not None:
+            distance = MemoryNode.embedding.cosine_distance(embedding)
+            stmt = (
+                select(MemoryNode, (1 - distance).label("score"))
+                .where(*filters, MemoryNode.embedding.is_not(None))
+                .order_by(distance)
+                .limit(_SEMANTIC_CANDIDATES)
+            )
+            rows = (await db.execute(stmt)).all()
+            ranked = [_node_to_list_item(row[0], float(row[1])) for row in rows]
+            if sort != "score":
+                ranked.sort(key=lambda item: getattr(item, sort), reverse=descending)
+            elif not descending:
+                ranked.reverse()
+            start = (page - 1) * per_page
+            return MemoryListResponse(
+                items=ranked[start : start + per_page],
+                total=len(ranked),
+                page=page,
+                per_page=per_page,
+                search_mode="semantic",
+            )
+        pattern = f"%{query}%"
+        filters.append(MemoryNode.content.ilike(pattern) | MemoryNode.stub.ilike(pattern))
+        search_mode = "text"
+    else:
+        search_mode = "none"
+
+    total = (await db.execute(select(func.count()).select_from(MemoryNode).where(*filters))).scalar_one()
+
+    column = _LIST_SORT_COLUMNS.get(sort, MemoryNode.updated_at)
+    stmt = (
+        select(MemoryNode)
+        .where(*filters)
+        .order_by(column.desc() if descending else column.asc(), MemoryNode.id)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    nodes = (await db.execute(stmt)).scalars().all()
+    return MemoryListResponse(
+        items=[_node_to_list_item(n) for n in nodes],
+        total=total,
+        page=page,
+        per_page=per_page,
+        search_mode=search_mode,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +1138,10 @@ async def delete_rule(rule_id: str, db: DbDep, settings: SettingsDep):
     if rule is None:
         raise HTTPException(status_code=404, detail=f"Rule {rule_id!r} not found")
     if not rule.is_current:
-        raise HTTPException(status_code=409, detail=f"Rule {rule_id!r} is not the current version; only current rules can be deleted")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Rule {rule_id!r} is not the current version; only current rules can be deleted",
+        )
     await db.delete(rule)
     await db.commit()
 

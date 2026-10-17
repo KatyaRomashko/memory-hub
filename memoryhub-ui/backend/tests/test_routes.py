@@ -41,6 +41,11 @@ def _make_node(**kwargs) -> MagicMock:
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
         "updated_at": datetime(2026, 1, 2, tzinfo=UTC),
         "expires_at": None,
+        "actor_id": None,
+        "driver_id": None,
+        "content_type": "experiential",
+        "status": "active",
+        "source": "agent",
     }
     defaults.update(kwargs)
     m = MagicMock()
@@ -2158,3 +2163,135 @@ class TestTenantFiltering:
                 )
             finally:
                 app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memories (Memory Explorer)
+# ---------------------------------------------------------------------------
+
+
+def _rows_result(rows):
+    """Mock for a select() of (entity, label) tuples read via .all()."""
+    r = MagicMock()
+    r.all.return_value = rows
+    return r
+
+
+@pytest.mark.asyncio
+class TestMemoryListEndpoint:
+    async def _get(self, settings, db_session, params=None):
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_settings] = lambda: settings
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                return await ac.get("/api/memories", params=params or {})
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_plain_listing_returns_page_and_total(self, test_settings):
+        nodes = [_make_node(stub="first"), _make_node(stub="second")]
+        db_session = _make_db_session([_scalar_result(42), _scalars_result(nodes)])
+
+        response = await self._get(test_settings, db_session, {"page": 2, "per_page": 2})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 42
+        assert body["page"] == 2
+        assert body["per_page"] == 2
+        assert body["search_mode"] == "none"
+        assert [item["stub"] for item in body["items"]] == ["first", "second"]
+        assert body["items"][0]["score"] is None
+        list_sql = str(db_session.executed_statements[1].compile(compile_kwargs={"literal_binds": True}))
+        assert "OFFSET 2" in list_sql and "LIMIT 2" in list_sql
+
+    async def test_every_query_is_tenant_filtered(self):
+        settings = _make_settings(tenant_id="tenant-a")
+        db_session = _make_db_session([_scalar_result(0), _scalars_result([])])
+
+        response = await self._get(settings, db_session)
+
+        assert response.status_code == 200
+        assert len(db_session.executed_statements) == 2
+        for stmt in db_session.executed_statements:
+            assert _statement_mentions_tenant_filter(stmt, "tenant-a")
+
+    async def test_filters_are_applied(self, test_settings):
+        db_session = _make_db_session([_scalar_result(0), _scalars_result([])])
+
+        response = await self._get(
+            test_settings,
+            db_session,
+            [
+                ("scope", "project"),
+                ("scope", "user"),
+                ("owner_id", "alice"),
+                ("content_type", "knowledge"),
+                ("status", "quarantined"),
+                ("source", "dreaming"),
+            ],
+        )
+
+        assert response.status_code == 200
+        sql = str(db_session.executed_statements[1].compile(compile_kwargs={"literal_binds": True}))
+        assert "'project'" in sql and "'user'" in sql
+        assert "'alice'" in sql
+        assert "'knowledge'" in sql
+        assert "'quarantined'" in sql
+        assert "'dreaming'" in sql
+
+    async def test_long_content_is_truncated_to_preview(self, test_settings):
+        node = _make_node(content="x" * 1000)
+        db_session = _make_db_session([_scalar_result(1), _scalars_result([node])])
+
+        response = await self._get(test_settings, db_session)
+
+        preview = response.json()["items"][0]["content_preview"]
+        assert len(preview) <= 280
+        assert preview.endswith("…")
+
+    async def test_text_fallback_without_embedding(self, test_settings):
+        node = _make_node()
+        db_session = _make_db_session([_scalar_result(1), _scalars_result([node])])
+
+        response = await self._get(test_settings, db_session, {"q": "postgres"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["search_mode"] == "text"
+        assert body["items"][0]["score"] is None
+        sql = str(db_session.executed_statements[1].compile(compile_kwargs={"literal_binds": True})).lower()
+        assert "like" in sql and "postgres" in sql
+
+    async def test_semantic_search_returns_scores_and_pages(self, test_settings):
+        best, middle, worst = _make_node(stub="best"), _make_node(stub="middle"), _make_node(stub="worst")
+        db_session = _make_db_session([_rows_result([(best, 0.91), (middle, 0.6), (worst, 0.2)])])
+
+        with patch("src.routes._get_embedding", new=AsyncMock(return_value=[0.1] * 384)):
+            response = await self._get(test_settings, db_session, {"q": "hello", "sort": "score", "per_page": 2})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["search_mode"] == "semantic"
+        assert body["total"] == 3
+        assert [item["stub"] for item in body["items"]] == ["best", "middle"]
+        assert body["items"][0]["score"] == pytest.approx(0.91)
+
+    async def test_semantic_search_can_sort_by_other_column(self, test_settings):
+        old = _make_node(stub="old", updated_at=datetime(2026, 1, 1, tzinfo=UTC))
+        new = _make_node(stub="new", updated_at=datetime(2026, 3, 1, tzinfo=UTC))
+        db_session = _make_db_session([_rows_result([(old, 0.9), (new, 0.4)])])
+
+        with patch("src.routes._get_embedding", new=AsyncMock(return_value=[0.1] * 384)):
+            response = await self._get(test_settings, db_session, {"q": "hello", "sort": "updated_at"})
+
+        assert [item["stub"] for item in response.json()["items"]] == ["new", "old"]
+
+    @pytest.mark.parametrize(
+        "params",
+        [{"sort": "content; drop table"}, {"order": "sideways"}, {"per_page": 500}, {"page": 0}],
+    )
+    async def test_invalid_parameters_return_422(self, test_settings, params):
+        db_session = _make_db_session([])
+        response = await self._get(test_settings, db_session, params)
+        assert response.status_code == 422

@@ -1,91 +1,332 @@
-export interface GraphNode {
-  id: string;
-  content: string;
-  stub: string;
-  scope: 'user' | 'project' | 'organizational' | 'enterprise';
-  weight: number;
-  branch_type: string | null;
+// API types for the MemoryHub dashboard BFF. Every figure on screen comes
+// from these responses; nothing is hard-coded in the UI.
+
+export type Scope = 'user' | 'project' | 'campaign' | 'role' | 'organizational' | 'enterprise' | string;
+
+export interface Me {
+  username: string;
+  name: string;
+  email: string | null;
+  initials: string;
+  source: 'oauth-proxy' | 'api-key' | 'anonymous';
+  tenant_id: string;
+}
+
+export interface AuthStatus {
+  mode: 'oauth-proxy' | 'api-key' | 'open';
+  authenticated: boolean;
+  api_key_login: boolean;
+  user: string | null;
+  cluster_domain: string | null;
+}
+
+export interface NavCounts {
+  review_queue: number;
+  memories: number;
+}
+
+export interface HealthItem {
+  key: string;
+  name: string;
+  status: 'healthy' | 'degraded' | 'down' | 'not_configured' | 'idle';
+  detail: string | null;
+  latency_ms: number | null;
+}
+
+export interface AuditEvent {
+  id: number | string;
+  timestamp: string;
+  event_type: string;
+  operation: string;
+  actor_id: string;
+  driver_id: string | null;
+  actor_type: string | null;
+  scope: string;
   owner_id: string;
+  memory_id: string | null;
+  memory_stub: string | null;
+  memory_version: number | null;
+  decision: 'allowed' | 'denied';
+  metadata: Record<string, unknown>;
+  change?: {
+    before: { version: number; content: string; weight: number };
+    after: { version: number; content: string; weight: number };
+  };
+}
+
+export interface Overview {
+  tenant_id: string;
+  generated_at: string;
+  memories: { current: number; new_7d: number; growth_pct: number | null };
+  agents: { total: number; active_now: number; source: 'auth' | 'memory' };
+  searches: { last_24h: number; p95_latency_ms: number | null };
+  contradictions: { open: number; over_threshold: number; threshold: number };
+  approvals: { enterprise_pending: number; pending_total: number };
+  scopes: { scope: Scope; count: number; pending: number }[];
+  activity: { date: string; searches: number; writes: number }[];
+  activity_source: 'audit' | 'memory';
+  recent: AuditEvent[];
+  recent_source: 'audit' | 'memory';
+  health: HealthItem[];
+  context_assembly: { avg_tokens: number | null; prefix_hit_rate: number | null };
+}
+
+export interface MemoryRow {
+  id: string;
+  stub: string;
+  content_preview: string;
+  scope: Scope;
+  scope_id: string | null;
+  owner_id: string;
+  actor_id: string | null;
+  driver_id: string | null;
+  domains: string[];
+  weight: number;
   version: number;
+  is_current: boolean;
+  status: string;
+  content_type: string;
+  branch_count: number;
+  branch_summary: { type: string; count: number }[];
+  open_contradictions: number;
+  near_duplicate: number | null;
   created_at: string;
   updated_at: string;
-  metadata: Record<string, unknown> | null;
-  parent_id: string | null;
+  deleted_at: string | null;
+  score: number | null;
 }
 
-export interface GraphEdge {
-  id: string;
-  source: string;
-  target: string;
-  type: string; // "parent_child" | "derived_from" | "supersedes" | "conflicts_with" | "related_to"
-}
-
-export interface GraphResponse {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-export interface ScopeCount {
-  scope: string;
+export interface Facet {
+  value: string;
   count: number;
 }
 
-export interface RecentActivity {
+export interface BrowseResponse {
+  items: MemoryRow[];
+  total: number;
+  page: number;
+  per_page: number;
+  search_mode: 'none' | 'semantic' | 'text';
+  tab_counts: { current: number; all: number; quarantined: number; deleted: number };
+  facets: {
+    scopes: Facet[];
+    writers: Facet[];
+    projects: Facet[];
+    domains: Facet[];
+    flags: { contradicted: number; has_branches: number; near_duplicate: number | null };
+  };
+}
+
+export interface BrowseParams {
+  tab?: string;
+  q?: string;
+  mode?: string;
+  scope?: string[];
+  actor?: string[];
+  project?: string;
+  domain?: string[];
+  min_weight?: number;
+  flag?: string[];
+  sort?: string;
+  order?: string;
+  page?: number;
+  per_page?: number;
+}
+
+export interface NodeBrief {
   id: string;
   stub: string;
-  scope: string;
+  scope: Scope;
+  scope_id: string | null;
   owner_id: string;
-  updated_at: string;
-  action: string;
-}
-
-export interface StatsResponse {
-  total_memories: number;
-  scope_counts: ScopeCount[];
-  recent_activity: RecentActivity[];
-  mcp_health: boolean;
-}
-
-export interface MemoryDetail {
-  id: string;
-  content: string;
-  stub: string;
-  scope: string;
   weight: number;
-  branch_type: string | null;
-  owner_id: string;
   version: number;
   is_current: boolean;
-  parent_id: string | null;
-  metadata: Record<string, unknown> | null;
+  status: string;
   created_at: string;
   updated_at: string;
-  expires_at: string | null;
-  children_count: number;
-  relationships: GraphEdge[];
 }
 
-export interface VersionEntry {
+export interface MemoryContext {
+  memory: NodeBrief & {
+    content: string;
+    logical_id: string | null;
+    parent_id: string | null;
+    branch_type: string | null;
+    actor_id: string | null;
+    driver_id: string | null;
+    tenant_id: string;
+    domains: string[];
+    content_type: string;
+    source: string | null;
+    metadata: Record<string, unknown> | null;
+    created_at: string;
+    updated_at: string;
+    deleted_at: string | null;
+    expires_at: string | null;
+    embedding_dims: number | null;
+    injection: 'full' | 'stub';
+    full_content_threshold: number;
+  };
+  versions: {
+    id: string;
+    version: number;
+    is_current: boolean;
+    content: string;
+    weight: number;
+    actor_id: string | null;
+    driver_id: string | null;
+    owner_id: string;
+    created_at: string;
+    deleted_at: string | null;
+  }[];
+  branches: { id: string; branch_type: string | null; content: string; actor_id: string; created_at: string }[];
+  relationships: {
+    id: string;
+    type: string;
+    direction: 'in' | 'out';
+    created_by: string;
+    created_at: string;
+    other: NodeBrief;
+  }[];
+  relationships_omitted: number;
+  contradictions: {
+    id: string;
+    observed_behavior: string;
+    confidence: number;
+    reporter: string;
+    created_at: string;
+    resolved: boolean;
+  }[];
+  contradiction_threshold: number;
+  similar: (NodeBrief & { score: number })[];
+  access_count: number;
+}
+
+export interface GraphNeighbourhood {
+  focus: (NodeBrief & { content: string; degree: number; hidden_degree: number }) | null;
+  nodes: (NodeBrief & { depth: number })[];
+  edges: { id: string; source: string; target: string; type: string }[];
+  hidden_count: number;
+  provenance: NodeBrief[];
+  conflicts: NodeBrief[];
+}
+
+export interface SearchRequest {
+  query: string;
+  focus?: string;
+  identity?: string;
+  project?: string;
+  mode: 'full' | 'index' | 'full_only';
+  max_results: number;
+  session_focus_weight: number;
+  weight_threshold: number;
+  max_response_tokens: number;
+  current_only: boolean;
+  include_branches: boolean;
+  rerank: boolean;
+}
+
+export interface SearchResult {
+  rank: number;
   id: string;
-  version: number;
-  is_current: boolean;
+  scope: Scope;
+  scope_id: string | null;
+  owner_id: string;
   stub: string;
-  content: string;
-  created_at: string;
-}
-
-export interface RuleVersionEntry {
-  id: string;
+  content: string | null;
+  delivery: 'full' | 'stub';
+  weight: number;
   version: number;
-  is_current: boolean;
-  name: string;
-  edited_by: string | null;
-  created_at: string;
+  scores: {
+    vector: number | null;
+    text: number | null;
+    focus: number | null;
+    rrf: number;
+    rerank: number | null;
+    weight: number;
+  };
+  tokens: number;
 }
 
-export interface SearchMatch {
+export interface SearchResponse {
+  run_as: string;
+  retrieval: 'vector' | 'text';
+  rerank: 'on' | 'off' | 'unavailable' | 'not_configured';
+  stages: { name: string; ms: number; detail?: string }[];
+  total_ms: number;
+  candidates: number;
+  omitted_count: number;
+  weight_filtered: number;
+  returned: number;
+  full_count: number;
+  stub_count: number;
+  tokens: number;
+  results: SearchResult[];
+  assembled_context: string;
+}
+
+export interface ProjectRow {
+  name: string;
+  description: string | null;
+  invite_only: boolean;
+  created_at: string;
+  created_by: string;
+  memories: number;
+  last_write: string | null;
+  members: number;
+  campaigns: { id: string; name: string; status: string }[];
+}
+
+export interface ProjectDetail extends ProjectRow {
+  agents_today: number;
+  members_list: { user_id: string; role: string; joined_at: string; joined_by: string }[];
+  focus_history: { focus: string; count: number }[] | null;
+  focus_available: boolean;
+  loading_policy: string;
+}
+
+export interface CampaignRow {
   id: string;
-  score: number;
+  name: string;
+  description: string | null;
+  status: string;
+  default_ttl_days: number | null;
+  projects: string[];
+  memories: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IdentityRow {
+  id: string;
+  name: string;
+  type: 'user' | 'user agent' | 'service';
+  scopes: string[];
+  client: boolean;
+  active: boolean;
+  public: boolean;
+  created_at: string | null;
+  bound_to: string | null;
+  roles: string[];
+  memory_count: number;
+  last_active: string | null;
+  active_now: boolean;
+}
+
+export interface IdentitiesResponse {
+  items: IdentityRow[];
+  auth_available: boolean;
+  roles: { name: string; members: number }[];
+  counts: { all: number; users: number; user_agents: number; service_agents: number; roles: number };
+}
+
+export interface IdentityDetail extends IdentityRow {
+  grant: string | null;
+  scope_matrix: { tier: string; read: boolean; write: string }[] | null;
+  activity_24h: { searches: number; writes: number; denied: number; total: number };
+  hourly: { hour: string; count: number }[];
+  agents: { id: string; name: string }[];
 }
 
 export interface ClientResponse {
@@ -95,19 +336,34 @@ export interface ClientResponse {
   tenant_id: string;
   default_scopes: string[];
   active: boolean;
+  public?: boolean;
   created_at: string;
   updated_at: string;
 }
 
+export interface CredentialRow extends ClientResponse {
+  grant: string;
+  last_used: string | null;
+  status: 'new' | 'active' | 'stale' | 'revoked';
+}
+
+export interface CredentialsResponse {
+  auth_available: boolean;
+  issuer: string | null;
+  clients: CredentialRow[];
+  api_keys: CredentialRow[];
+  issuers: { name: string; kind?: string; description?: string; status?: string }[];
+}
+
 export interface ClientCreatedResponse extends ClientResponse {
   client_secret: string;
-  api_key: string;
+  api_key: string | null;
 }
 
 export interface SecretRotatedResponse {
   client_id: string;
   client_secret: string;
-  api_key: string;
+  api_key: string | null;
 }
 
 export interface ApiKeyRotatedResponse {
@@ -115,9 +371,6 @@ export interface ApiKeyRotatedResponse {
   api_key: string;
 }
 
-/** Public-facing URLs used to compose contributor welcome emails.
- *  Returned by GET /api/public-config. Populated at deploy time from
- *  the cluster's Route addresses. */
 export interface PublicConfig {
   mcp_url: string;
   auth_url: string;
@@ -137,26 +390,16 @@ export interface UpdateClientPayload {
   default_scopes?: string[];
 }
 
-export interface UserEntry {
-  name: string;
-  owner_id: string;
-  identity_type: string;
-  memory_count: number;
-  last_active: string | null;
-}
-
-// --- Curation Rules ---
-
 export interface CurationRule {
   id: string;
   name: string;
   description: string | null;
-  trigger: string; // "on_write" | "on_read" | "periodic" | "on_contradiction_count"
-  tier: 'regex' | 'embedding';
+  trigger: string;
+  tier: 'regex' | 'embedding' | string;
   config: Record<string, unknown>;
-  action: string; // "block" | "quarantine" | "flag" | "reject_with_pointer" | "merge" | "decay_weight"
+  action: string;
   scope_filter: string | null;
-  layer: 'system' | 'organizational' | 'user';
+  layer: 'system' | 'organizational' | 'user' | string;
   owner_id: string | null;
   override: boolean;
   enabled: boolean;
@@ -169,22 +412,7 @@ export interface CurationRule {
   updated_at: string;
 }
 
-export interface CreateRulePayload {
-  name: string;
-  description?: string;
-  trigger?: string;
-  tier: 'regex' | 'embedding';
-  config?: Record<string, unknown>;
-  action: string;
-  scope_filter?: string;
-  layer?: string;
-  owner_id?: string;
-  override?: boolean;
-  enabled?: boolean;
-  priority?: number;
-}
-
-export interface UpdateRulePayload {
+export interface RulePayload {
   name?: string;
   description?: string | null;
   trigger?: string;
@@ -193,30 +421,143 @@ export interface UpdateRulePayload {
   action?: string;
   scope_filter?: string | null;
   layer?: string;
-  owner_id?: string;
+  owner_id?: string | null;
   override?: boolean;
   enabled?: boolean;
   priority?: number;
   edited_by?: string;
 }
 
-// --- Contradiction Reports ---
-
-export interface ContradictionReport {
-  id: string;
-  memory_id: string;
-  observed_behavior: string;
-  confidence: number;
-  reporter: string;
-  created_at: string;
-  resolved: boolean;
-  resolved_at: string | null;
+export interface RuleTestResult {
+  matched: boolean;
+  action: string;
+  matches?: { text?: string; col?: number; line?: number; name?: string; detail?: string }[];
+  score?: number;
+  threshold?: number;
 }
 
-export interface ContradictionStats {
+export interface ReviewSummary {
+  kind: 'approval' | 'promotion' | 'contradiction' | 'quarantine' | 'history';
+  id: string;
+  stub: string;
+  content: string;
+  scope: Scope;
+  owner_id: string;
+  actor_id: string | null;
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+  sources?: number;
+  reports?: number;
+}
+
+export interface ReviewQueue {
+  tab: string;
+  counts: { approvals: number; promotions: number; contradictions: number; quarantine: number };
+  items: (ReviewSummary | (AuditEvent & { kind: 'history' }))[];
+  also_waiting: ReviewSummary[];
+  approvers_required: number;
+  viewer: string;
+}
+
+export interface ReviewItem {
+  kind: string;
+  id: string;
+  content: string;
+  stub: string;
+  scope: Scope;
+  scope_id: string | null;
+  owner_id: string;
+  status: string;
+  weight: number;
+  version: number;
+  requested_by: string;
+  requested_at: string;
+  reason: string | null;
+  injection: 'full' | 'stub';
+  branches: { id: string; branch_type: string | null; content: string }[];
+  sources: { id: string; stub: string; scope: Scope; owner_id: string }[];
+  checks: {
+    scan_clean: boolean;
+    scan_findings: string[];
+    similar: { id: string; stub: string; score: number } | null;
+    enterprise_this_month: number;
+    has_provenance: boolean;
+  };
+  contradictions: { id: string; observed_behavior: string; confidence: number; reporter: string; created_at: string }[];
+  contradiction_threshold: number;
+  history: { event_type: string; actor_id: string; timestamp: string; comment: string | null }[];
+  reach_agents: number;
+  approvers_required: number;
+}
+
+export interface AuditResponse {
+  items: AuditEvent[];
   total: number;
-  unresolved: number;
-  high_confidence: number;
-  medium_confidence: number;
-  low_confidence: number;
+  page: number;
+  per_page: number;
+  event_types: string[];
+  operations: Record<string, string>;
+  denied_total: number;
+  retention_days: number;
+}
+
+export interface ForensicsResponse {
+  actor: string;
+  at: string;
+  window_minutes: number;
+  events: number;
+  last_search_at: string | null;
+  context: {
+    id: string;
+    current_id: string;
+    stub: string;
+    content: string;
+    scope: Scope;
+    version_then: number;
+    version_now: number;
+    changed_after: boolean;
+    changed_at: string | null;
+    changed_by: string | null;
+    deleted: boolean;
+    served_at: string;
+    delivery: 'full' | 'stub';
+    tokens: number;
+  }[];
+  tokens: number;
+  findings: (ForensicsResponse['context'][number] & { other_actors_exposed: number })[];
+}
+
+export interface TenantSettingsValues {
+  retrieval: {
+    max_results: number;
+    max_response_tokens: number;
+    session_focus_weight: number;
+    full_content_threshold: number;
+    rerank: boolean;
+    cache_optimized_ordering: boolean;
+    realtime_push: boolean;
+  };
+  governance: {
+    project_isolation: boolean;
+    role_isolation: boolean;
+    contradiction_threshold: number;
+    enterprise_approvers: number;
+  };
+  audit: {
+    read_detail: 'full' | 'summary' | 'sample';
+    full_retention_days: number;
+    mcp_profile: 'compact' | 'full';
+  };
+}
+
+export interface SettingsResponse {
+  values: TenantSettingsValues;
+  meta: { updated_at: string | null; updated_by: string | null; persisted: boolean };
+  models: {
+    embedding: Partial<HealthItem> & { url: string | null };
+    reranker: Partial<HealthItem> & { url: string | null };
+  };
+  mcp: Partial<HealthItem> & { public_url: string; internal_url: string };
+  tenant: { tenant_id: string; auth_url: string; cluster_domain: string | null };
 }
