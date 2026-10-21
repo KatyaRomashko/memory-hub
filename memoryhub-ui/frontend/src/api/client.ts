@@ -1,4 +1,5 @@
 import type {
+  SwitchTargets,
   AccountRow,
   AccountsResponse,
   GraphAll,
@@ -116,7 +117,10 @@ export const api = {
   setup: (body: SetupPayload) => post<{ ok: boolean; role: string }>('/auth/setup', body),
   register: (body: RegisterPayload) =>
     post<{ ok: boolean; role: string; status: 'active' | 'pending' }>('/auth/register', body),
-  logout: () => post<{ ok: boolean; redirect?: string }>('/auth/logout'),
+  logout: () => post<{ ok: boolean; redirect?: string; method?: 'GET' | 'POST'; fields?: Record<string, string> }>('/auth/logout'),
+  switchTargets: () => get<SwitchTargets>('/auth/switch'),
+  switchAccount: (username: string | null, role: string | null) =>
+    post<{ ok: boolean; username: string; role: string }>('/auth/switch', { username, role }),
   accounts: () => get<AccountsResponse>('/accounts'),
   updateAccount: (id: string, body: { status?: 'active' | 'disabled'; role?: 'admin' | 'user' }) =>
     patch<AccountRow>(`/accounts/${enc(id)}`, body),

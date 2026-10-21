@@ -59,6 +59,11 @@ spec:
         # memories RBAC lets them read.
         - name: MEMORYHUB_UI_ADMIN_USERS
           value: ""
+        # TEST DEPLOYMENTS ONLY: account switcher in the user menu (view the
+        # dashboard as another identity / role without logging out).
+        # Set to "false" or remove before production.
+        - name: MEMORYHUB_UI_TEST_MODE
+          value: "true"
         - name: MEMORYHUB_ADMIN_KEY
           valueFrom:
             secretKeyRef:

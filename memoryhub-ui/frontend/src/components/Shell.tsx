@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import type { Me, Role } from '@/types';
+import type { Me, Role, SwitchTargets } from '@/types';
 import { buildHash } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
@@ -186,10 +186,9 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
 
   /** Ends the session completely, then lands on the sign-in page (or the OpenShift logout). */
   const onLogout = async () => {
-    let target = '/#/login?signed_out=1';
+    let res: Awaited<ReturnType<typeof api.logout>> | null = null;
     try {
-      const res = await api.logout();
-      if (res?.redirect) target = res.redirect;
+      res = await api.logout();
     } catch {
       /* still leave the app */
     }
@@ -198,7 +197,37 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
     } catch {
       /* storage unavailable */
     }
+    const target = res?.redirect || '/#/login?signed_out=1';
+    if (res?.method === 'POST') {
+      // The OpenShift OAuth server's /logout only accepts a form POST.
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = target;
+      Object.entries(res.fields ?? {}).forEach(([name, value]) => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
+      return;
+    }
     window.location.replace(target);
+  };
+
+  const [switchable, setSwitchable] = useState<SwitchTargets | null>(null);
+  const loadTargets = () => {
+    if (me?.test_mode && !switchable) api.switchTargets().then(setSwitchable).catch(() => undefined);
+  };
+  const switchTo = async (username: string | null, toRole: string | null) => {
+    try {
+      await api.switchAccount(username, toRole);
+    } finally {
+      window.location.hash = '#/overview';
+      window.location.reload();
+    }
   };
 
   return (
@@ -257,19 +286,75 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
           <Dropdown
             align="right"
             toggle={(p) => (
-              <button type="button" className="who" aria-label="Account" {...p}>
+              <button
+                type="button"
+                className="who"
+                aria-label={me?.test_mode ? 'Account and test-mode account switcher' : 'Account'}
+                {...p}
+                onClick={() => {
+                  loadTargets();
+                  p.onClick();
+                }}
+              >
                 <span className="av">{me?.initials ?? '··'}</span>
                 {me?.name ?? ''}
+                {me?.test_mode && <Icon.Chevron />}
               </button>
             )}
           >
             {() => (
               <>
                 <div className="mh">
-                  {me ? `Signed in as ${me.username}` : 'Not signed in'}
+                  {me ? `${me.real_username ? 'Viewing as' : 'Signed in as'} ${me.username}` : 'Not signed in'}
                   <br />
                   <span className="muted sm">{ROLE_LABEL[role]}</span>
+                  {me?.real_username && (
+                    <>
+                      <br />
+                      <span className="muted sm">Signed in as {me.real_username}</span>
+                    </>
+                  )}
                 </div>
+                {me?.test_mode && (
+                  <>
+                    <hr />
+                    <div className="mh">Switch account · test mode</div>
+                    {!switchable ? (
+                      <div className="mh muted">Loading…</div>
+                    ) : (
+                      switchable.targets.map((t) => {
+                        const on = t.username === me.username && t.role === role;
+                        return (
+                          <button
+                            key={`${t.username}-${t.role}`}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={on}
+                            className={on ? 'on' : ''}
+                            onClick={() => !on && switchTo(t.username, t.role)}
+                          >
+                            <span className="sw-row">
+                              <span className={`sw-dot ${t.role}`} aria-hidden="true" />
+                              <span>
+                                <span style={{ display: 'block', fontWeight: on ? 600 : 400 }}>
+                                  {t.label}
+                                  {on ? ' ✓' : ''}
+                                </span>
+                                {t.note && <span className="hint">{t.note}</span>}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                    {me.real_username && (
+                      <button type="button" onClick={() => switchTo(null, null)}>
+                        Back to {me.real_username}
+                      </button>
+                    )}
+                    <hr />
+                  </>
+                )}
                 {me && me.source !== 'anonymous' && (
                   <button type="button" onClick={onLogout}>
                     Log out
@@ -280,6 +365,14 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
           </Dropdown>
         </div>
       </header>
+      {me?.real_username && (
+        <div className="viewing-as" role="status">
+          <b>Test mode:</b> viewing as {me.username} · {ROLE_LABEL[role]} (signed in as {me.real_username}).
+          <button type="button" onClick={() => switchTo(null, null)}>
+            Back to my account
+          </button>
+        </div>
+      )}
       <div className={`shell ${open ? 'nav-open' : 'nav-closed'}`}>
         <nav className="nav" aria-label="Primary">
           {navFor(role).map((section, i) => (

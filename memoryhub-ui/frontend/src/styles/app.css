@@ -396,6 +396,12 @@ pre.small { font-size: 12px; padding: 10px 12px; }
 .ops-none { fill: var(--mh-muted); font-size: 14px; font-family: var(--mh-font-text); }
 
 /* ---------- Roles ---------- */
+.sw-row { display: flex; gap: 10px; align-items: flex-start; white-space: normal; min-width: 240px; }
+.sw-dot { width: 10px; height: 10px; border-radius: 99px; margin-top: 5px; flex: none; background: #8a8d90; }
+.sw-dot.admin { background: #3a3f45; box-shadow: 0 0 0 2px #c7c7c7; }
+.sw-dot.user { background: var(--mh-primary); }
+.viewing-as { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: #fff7d6; border-bottom: 1px solid #f3d36b; color: #6b4d00; padding: 8px 24px; font-size: 13px; }
+.viewing-as button { font: inherit; background: none; border: 0; color: var(--mh-primary); text-decoration: underline; cursor: pointer; padding: 0; }
 .role-pill { margin-left: 6px; border-radius: 999px; padding: 3px 12px; font-size: 12px; font-weight: 600; letter-spacing: .02em; }
 .role-pill.admin { background: #3a3f45; color: #fff; border: 1px solid #8a8d90; }
 .role-pill.user { background: transparent; color: #e0e0e0; border: 1px solid #4d4d4d; }

@@ -121,6 +121,9 @@ async def me(request: Request, settings: SettingsDep):
         "initials": viewer.initials,
         "source": viewer.source,
         "role": viewer.role,
+        "real_username": viewer.real_username,
+        "real_role": viewer.real_role,
+        "test_mode": settings.ui_test_mode,
         "tenant_id": settings.ui_tenant_id,
     }
 

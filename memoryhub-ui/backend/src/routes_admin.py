@@ -12,7 +12,6 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from memoryhub_core.models.audit import AuditLog
@@ -23,7 +22,7 @@ from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
 from memoryhub_core.models.project import Project, ProjectMembership
 from memoryhub_core.models.role import RoleAssignment
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, literal_column, or_, select
+from sqlalchemy import and_, func, literal_column, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,15 +34,19 @@ from src.ui_common import (
     DEFAULT_TENANT_SETTINGS,
     SCOPES,
     SESSION_COOKIE,
+    VIEW_AS_COOKIE,
     audit,
+    auth_enabled,
     clean_stub,
     cosine,
     embed,
     live_filters,
     load_tenant_settings,
     make_session_cookie,
+    make_view_as_cookie,
     now_utc,
     parse_uuid,
+    real_viewer,
     save_tenant_settings,
     viewer_from_request,
 )
@@ -90,6 +93,7 @@ async def auth_status(request: Request, db: DbDep, settings: SettingsDep):
         "role": viewer.role,
         "cluster_domain": settings.cluster_domain or None,
         "setup_required": False,
+        "test_mode": settings.ui_test_mode,
     }
     if settings.ui_local_accounts and viewer.source != "oauth-proxy":
         from src.accounts import accounts_status
@@ -145,17 +149,120 @@ async def logout(request: Request, response: Response, settings: SettingsDep):
     OpenShift OAuth proxy the browser is then sent to the OpenShift OAuth
     server's logout, otherwise to the dashboard's sign-in page.
     """
-    viewer = viewer_from_request(request, settings)
+    viewer = real_viewer(request, settings)
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.delete_cookie(OAUTH_PROXY_COOKIE, path="/")
-    login_page = "/#/login?signed_out=1"
-    redirect = login_page
+    response.delete_cookie(VIEW_AS_COOKIE, path="/")
+    body: dict = {"ok": True, "redirect": "/#/login?signed_out=1", "method": "GET", "fields": {}}
     if viewer.source == "oauth-proxy":
-        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
-        back = f"https://{host.split(',')[0].strip()}/" if host else "/"
+        host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+        back = f"https://{host}/" if host else "/"
         logout_url = _openshift_logout_url(request, settings)
-        redirect = f"{logout_url}?then={quote(back, safe='')}" if logout_url else "/oauth/sign_in"
-    return {"ok": True, "redirect": redirect}
+        if logout_url:
+            # The OpenShift OAuth server only accepts POST on /logout (a GET
+            # answers "Method Not Allowed"); the browser submits a form.
+            body.update(redirect=logout_url, method="POST", fields={"then": back})
+        else:
+            body.update(redirect="/oauth/sign_in")
+    return body
+
+
+# ---------------------------------------------------------------------------
+# Test-mode account switcher
+# ---------------------------------------------------------------------------
+
+
+class SwitchRequest(BaseModel):
+    username: str | None = Field(default=None, max_length=255)
+    role: str | None = Field(default=None, pattern="^(admin|user|operator)$")
+
+
+def _switch_allowed(request: Request, settings: Settings):
+    if not settings.ui_test_mode:
+        raise HTTPException(status_code=404, detail="The account switcher is only available in test mode")
+    real = real_viewer(request, settings)
+    if real.source == "anonymous" and auth_enabled(settings):
+        raise HTTPException(status_code=401, detail="Log in to the dashboard first")
+    return real
+
+
+@router.get("/api/auth/switch")
+async def switch_targets(request: Request, db: DbDep, settings: SettingsDep):
+    """Identities the signed-in tester can view the dashboard as."""
+    if not settings.ui_test_mode:
+        return {"enabled": False, "targets": []}
+    real = _switch_allowed(request, settings)
+    current = viewer_from_request(request, settings)
+    targets: list[dict] = []
+
+    def add(username: str, role: str, label: str, note: str | None = None) -> None:
+        if any(t["username"] == username and t["role"] == role for t in targets):
+            return
+        targets.append({"username": username, "role": role, "label": label, "note": note})
+
+    add(real.username, "user", f"{real.username} · user", "your own identity")
+    add(real.username, "admin", f"{real.username} · platform admin", "your own identity")
+    if real.source == "anonymous":
+        add(real.username, "operator", "Open mode operator", "sees everything (development)")
+    try:
+        owners = (
+            await db.execute(
+                select(MemoryNode.owner_id, func.count())
+                .where(*live_filters(settings.ui_tenant_id), MemoryNode.scope == "user", MemoryNode.parent_id.is_(None))
+                .group_by(MemoryNode.owner_id)
+                .order_by(func.count().desc())
+                .limit(8)
+            )
+        ).all()
+        for owner, count in owners:
+            add(owner, "user", f"{owner} · user", f"{count} user memories")
+        if settings.ui_local_accounts:
+            from src.accounts import ACCOUNTS, ensure_tables
+
+            await ensure_tables(db)
+            rows = (
+                await db.execute(
+                    text(
+                        f"SELECT username, role FROM {ACCOUNTS} WHERE tenant_id = :t AND status = 'active' "
+                        "ORDER BY role, username LIMIT 20"
+                    ),
+                    {"t": settings.ui_tenant_id},
+                )
+            ).all()
+            for username, role in rows:
+                add(
+                    username,
+                    role,
+                    f"{username} · {'platform admin' if role == 'admin' else 'user'}",
+                    "dashboard account",
+                )
+    except Exception as exc:  # pragma: no cover - needs a database
+        logger.warning("Switch targets unavailable: %s", exc)
+        await db.rollback()
+    return {
+        "enabled": True,
+        "real": {"username": real.username, "role": real.role},
+        "current": {"username": current.username, "role": current.role},
+        "targets": targets,
+    }
+
+
+@router.post("/api/auth/switch")
+async def switch_account(body: SwitchRequest, request: Request, response: Response, settings: SettingsDep):
+    real = _switch_allowed(request, settings)
+    if not body.username or not body.role:
+        response.delete_cookie(VIEW_AS_COOKIE, path="/")
+        return {"ok": True, "username": real.username, "role": real.role}
+    response.set_cookie(
+        VIEW_AS_COOKIE,
+        make_view_as_cookie(body.username.strip(), body.role, settings),
+        httponly=True,
+        samesite="lax",
+        max_age=12 * 3600,
+        path="/",
+    )
+    logger.info("Test mode: %s now views the dashboard as %s (%s)", real.username, body.username, body.role)
+    return {"ok": True, "username": body.username.strip(), "role": body.role}
 
 
 # ---------------------------------------------------------------------------

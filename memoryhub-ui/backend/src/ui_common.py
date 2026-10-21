@@ -77,6 +77,9 @@ class Viewer:
     email: str | None
     source: str  # "oauth-proxy" | "account" | "api-key" | "anonymous"
     role: str = "operator"  # "admin" | "user" | "operator" (open development mode)
+    # Test mode account switcher: who is really signed in when viewing as someone else.
+    real_username: str | None = None
+    real_role: str | None = None
 
     @property
     def initials(self) -> str:
@@ -115,7 +118,50 @@ def _groups(header_value: str | None) -> list[str]:
     return [g for g in re.split(r"[,\s]+", header_value or "") if g]
 
 
+VIEW_AS_COOKIE = "memoryhub_ui_view_as"
+VIEW_AS_ROLES = ("admin", "user", "operator")
+
+
+def make_view_as_cookie(username: str, role: str, settings: Settings) -> str:
+    payload = f"{_clean(username)}|{role}"
+    return f"{payload}|{_sign('view-as|' + payload, session_secret(settings))}"
+
+
+def read_view_as(request: Request, settings: Settings) -> tuple[str, str] | None:
+    """The test-mode account switcher's choice, when test mode is on."""
+    if not settings.ui_test_mode:
+        return None
+    raw = request.cookies.get(VIEW_AS_COOKIE)
+    if not raw or raw.count("|") != 2:
+        return None
+    username, role, signature = raw.split("|")
+    if role not in VIEW_AS_ROLES or not username:
+        return None
+    if not hmac.compare_digest(signature, _sign(f"view-as|{username}|{role}", session_secret(settings))):
+        return None
+    return username, role
+
+
 def viewer_from_request(request: Request, settings: Settings) -> Viewer:
+    """The effective viewer: the signed-in person, or whoever they switched to
+    with the test-mode account switcher (MEMORYHUB_UI_TEST_MODE=true)."""
+    real = real_viewer(request, settings)
+    view_as = read_view_as(request, settings)
+    if not view_as or (view_as[0] == real.username and view_as[1] == real.role):
+        return real
+    username, role = view_as
+    return Viewer(
+        username=username,
+        name=username,
+        email=real.email if username == real.username else None,
+        source=real.source,
+        role=role,
+        real_username=real.username,
+        real_role=real.role,
+    )
+
+
+def real_viewer(request: Request, settings: Settings) -> Viewer:
     """Identify the human behind the request.
 
     The OpenShift OAuth proxy in front of the UI forwards the authenticated

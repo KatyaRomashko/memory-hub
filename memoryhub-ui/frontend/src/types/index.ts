@@ -15,7 +15,25 @@ export interface Me {
   initials: string;
   source: 'oauth-proxy' | 'api-key' | 'account' | 'anonymous';
   role: Role;
+  /** Test mode: who is really signed in while viewing as someone else. */
+  real_username?: string | null;
+  real_role?: Role | null;
+  test_mode?: boolean;
   tenant_id: string;
+}
+
+export interface SwitchTarget {
+  username: string;
+  role: Role;
+  label: string;
+  note: string | null;
+}
+
+export interface SwitchTargets {
+  enabled: boolean;
+  real?: { username: string; role: Role };
+  current?: { username: string; role: Role };
+  targets: SwitchTarget[];
 }
 
 export type SignupMode = 'open' | 'domain' | 'invite' | 'closed';

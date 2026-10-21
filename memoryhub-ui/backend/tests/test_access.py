@@ -165,11 +165,33 @@ async def test_logout_clears_cookies_and_returns_login_page():
 
 
 @pytest.mark.asyncio
-async def test_oauth_proxy_logout_goes_to_openshift_logout():
+async def test_oauth_proxy_logout_is_a_post_form():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/auth/logout",
-            headers={"x-forwarded-user": "kromashk", "host": "ui.apps.cluster-x.example.io"},
-        )
-    redirect = resp.json()["redirect"]
-    assert redirect.startswith("https://oauth-openshift.apps.cluster-x.example.io/logout?then=")
+        body = (
+            await client.post("/api/auth/logout", headers={"x-forwarded-user": "kr", "host": "ui.apps.c.example.io"})
+        ).json()
+    assert body["method"] == "POST"
+    assert body["redirect"] == "https://oauth-openshift.apps.c.example.io/logout"
+    assert body["fields"] == {"then": "https://ui.apps.c.example.io/"}
+
+
+def test_test_mode_switcher_overrides_viewer_only_in_test_mode():
+    from src.ui_common import VIEW_AS_COOKIE, make_view_as_cookie, viewer_from_request
+
+    on = Settings(ui_test_mode=True, ui_session_secret="k")
+    cookie = make_view_as_cookie("alice", "admin", on)
+    req = _request(headers={"x-forwarded-user": "kr"})
+    req.cookies = {VIEW_AS_COOKIE: cookie}
+    v = viewer_from_request(req, on)
+    assert v.username == "alice" and v.role == "admin" and v.real_username == "kr"
+    off = Settings(ui_test_mode=False, ui_session_secret="k")
+    assert viewer_from_request(req, off).username == "kr"
+    req.cookies = {VIEW_AS_COOKIE: cookie.replace("|admin|", "|user|")}
+    assert viewer_from_request(req, on).username == "kr"
+
+
+@pytest.mark.asyncio
+async def test_switch_endpoint_is_hidden_outside_test_mode():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get("/api/auth/switch")).json() == {"enabled": False, "targets": []}
+        assert (await client.post("/api/auth/switch", json={"username": "a", "role": "user"})).status_code == 404
