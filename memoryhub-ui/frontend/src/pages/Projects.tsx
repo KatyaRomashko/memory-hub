@@ -7,18 +7,23 @@ import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { CampaignRow, ProjectDetail, ProjectRow } from '@/types';
 import { avatarColor, errorMessage, fmtInt, fmtRelative, initials } from '@/utils/format';
 import { ConfirmModal } from './common';
+import { ProjectTeams, TeamForm, TeamPanel, TeamsTable } from './Teams';
 
 const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
-  const kind = route.params.get('kind') === 'campaigns' ? 'campaigns' : 'projects';
+  const kindParam = route.params.get('kind');
+  const kind = kindParam === 'campaigns' ? 'campaigns' : kindParam === 'teams' ? 'teams' : 'projects';
+  const selectedTeam = route.params.get('team');
   const selectedName = route.params.get('project');
   const selectedCampaign = route.params.get('campaign');
   const [mine, setMine] = useState(false);
   const [filter, setFilter] = useState('');
-  const [modal, setModal] = useState<null | 'project' | 'campaign' | 'edit' | 'member' | 'enroll'>(null);
+  const [modal, setModal] = useState<null | 'project' | 'campaign' | 'team' | 'edit' | 'member' | 'enroll'>(null);
 
   const projects = useApi(() => api.projects(mine), [mine]);
   const campaigns = useApi(() => api.campaigns(), []);
+  const teams = useApi(() => api.teams(), []);
+  const activeTeam = (teams.data?.items ?? []).find((t) => t.id === selectedTeam) ?? teams.data?.items?.[0] ?? null;
   const rows = (projects.data?.items ?? []).filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()) || (p.description ?? '').toLowerCase().includes(filter.toLowerCase()));
   const camps = (campaigns.data?.items ?? []).filter((c) => c.name.toLowerCase().includes(filter.toLowerCase()));
   const activeProject = selectedName ?? rows[0]?.name ?? null;
@@ -33,18 +38,25 @@ const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
   const reloadAll = () => {
     projects.reload();
     campaigns.reload();
+    teams.reload();
   };
 
   return (
     <>
       <PageHeader
-        title="Projects & campaigns"
-        description="Projects share memory between every agent working in that context. Campaigns span several projects for a bounded initiative."
+        title="Projects & teams"
+        description="Projects share memory between every agent working in that context. Teams are groups of people: a project has members from several teams, and one team works on several projects. Campaigns span projects for a bounded initiative."
         actions={
           <>
-            <button type="button" className="btn bs" onClick={() => setModal('campaign')}>
-              Create campaign
-            </button>
+            {kind === 'campaigns' ? (
+              <button type="button" className="btn bs" onClick={() => setModal('campaign')}>
+                Create campaign
+              </button>
+            ) : (
+              <button type="button" className="btn bs" onClick={() => setModal('team')}>
+                Create team
+              </button>
+            )}
             <button type="button" className="btn bp" onClick={() => setModal('project')}>
               Create project
             </button>
@@ -54,10 +66,11 @@ const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
           <Tabs
             label="Kind"
             value={kind}
-            onChange={(k) => setParam({ kind: k === 'projects' ? undefined : k, project: undefined, campaign: undefined })}
+            onChange={(k) => setParam({ kind: k === 'projects' ? undefined : k, project: undefined, campaign: undefined, team: undefined })}
             tabs={[
               { value: 'projects', label: 'Projects', count: projects.data?.total ?? null },
-              { value: 'campaigns', label: 'Campaigns', count: campaigns.data ? campaigns.data.items.length : null },
+              { value: 'teams', label: 'Teams', count: teams.data?.counts?.teams ?? null },
+              { value: 'campaigns', label: 'Campaigns', count: campaigns.data?.items?.length ?? null },
             ]}
           />
         }
@@ -81,7 +94,16 @@ const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
                 </div>
               )}
             </div>
-            {kind === 'projects' ? (
+            {kind === 'teams' ? (
+              <TeamsTable
+                teams={teams.data?.items ?? []}
+                loading={teams.loading && !teams.data}
+                active={activeTeam?.id ?? null}
+                onSelect={(id) => setParam({ team: id })}
+                onCreate={() => setModal('team')}
+                filter={filter}
+              />
+            ) : kind === 'projects' ? (
               projects.error && !projects.data ? (
                 <ErrorState error={projects.error} onRetry={projects.reload} />
               ) : projects.loading && !projects.data ? (
@@ -223,7 +245,26 @@ const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
           </section>
 
           <aside className="col-side" style={{ flex: '1 1 380px' }}>
-            {kind === 'projects' ? (
+            {kind === 'teams' ? (
+              activeTeam ? (
+                <TeamPanel
+                  key={activeTeam.id}
+                  team={activeTeam}
+                  projects={projects.data?.items ?? []}
+                  onChanged={reloadAll}
+                  onDeleted={() => {
+                    setParam({ team: undefined });
+                    reloadAll();
+                  }}
+                />
+              ) : (
+                <div className="card">
+                  <Empty compact title="No team selected">
+                    Select a team to see its people and the projects it works on.
+                  </Empty>
+                </div>
+              )
+            ) : kind === 'projects' ? (
               activeProject ? (
                 <ProjectPanel name={activeProject} onEdit={() => setModal('edit')} onAddMember={() => setModal('member')} key={activeProject} />
               ) : (
@@ -275,6 +316,17 @@ const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
             toast('Member added.');
             reloadAll();
             setParam({ project: activeProject, _r: String(Date.now()) });
+          }}
+        />
+      )}
+      {modal === 'team' && (
+        <TeamForm
+          projects={projects.data?.items ?? []}
+          onClose={() => setModal(null)}
+          onSaved={(id) => {
+            setModal(null);
+            reloadAll();
+            setParam({ kind: 'teams', team: id });
           }}
         />
       )}
@@ -361,6 +413,7 @@ const ProjectPanel: React.FC<{ name: string; onEdit: () => void; onAddMember: ()
               <span style={{ flex: 1 }}>
                 {m.user_id}
                 {m.joined_by === m.user_id && <span className="sm muted"> · auto-enrolled</span>}
+                {m.via_team && <span className="sm muted"> · via team {m.via_team}</span>}
               </span>
               <span className={`lbl ${m.role === 'admin' ? 'blue' : 'g'}`}>{m.role}</span>
               <button type="button" className="btn bl sm" aria-label={`Remove ${m.user_id}`} style={{ padding: '2px 6px' }} onClick={() => setRemoving(m.user_id)}>
@@ -374,6 +427,7 @@ const ProjectPanel: React.FC<{ name: string; onEdit: () => void; onAddMember: ()
             </button>
           )}
         </div>
+        <ProjectTeams project={data.name} teams={data.teams ?? []} onChanged={reload} />
       </div>
 
       <div className="card">

@@ -366,6 +366,17 @@ async def list_projects(request: Request, db: DbDep, settings: SettingsDep, mine
     return {"items": rows, "total": total, "campaign_total": campaigns, "viewer": viewer.username}
 
 
+async def _project_teams(db: AsyncSession, tenant_id: str, name: str) -> list[dict]:
+    from src.teams import teams_for_project
+
+    try:
+        return await teams_for_project(db, tenant_id, name)
+    except Exception as exc:  # pragma: no cover - needs a database
+        logger.info("Teams unavailable: %s", exc)
+        await db.rollback()
+        return []
+
+
 @router.get("/api/projects/{name}")
 async def project_detail(name: str, db: DbDep, settings: SettingsDep):
     tenant_id = settings.ui_tenant_id
@@ -432,8 +443,16 @@ async def project_detail(name: str, db: DbDep, settings: SettingsDep):
         **stats,
         "agents_today": agents_today,
         "members_list": [
-            {"user_id": m.user_id, "role": m.role, "joined_at": m.joined_at, "joined_by": m.joined_by} for m in members
+            {
+                "user_id": m.user_id,
+                "role": m.role,
+                "joined_at": m.joined_at,
+                "joined_by": m.joined_by,
+                "via_team": (m.joined_by or "")[5:] if (m.joined_by or "").startswith("team:") else None,
+            }
+            for m in members
         ],
+        "teams": await _project_teams(db, tenant_id, name),
         "focus_history": focus,
         "focus_available": focus is not None,
         "loading_policy": policy,

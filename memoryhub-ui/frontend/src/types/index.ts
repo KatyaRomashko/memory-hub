@@ -433,10 +433,74 @@ export interface ProjectRow {
 
 export interface ProjectDetail extends ProjectRow {
   agents_today: number;
-  members_list: { user_id: string; role: string; joined_at: string; joined_by: string }[];
+  members_list: { user_id: string; role: string; joined_at: string; joined_by: string; via_team?: string | null }[];
+  teams?: { id: string; name: string; members: number }[];
   focus_history: { focus: string; count: number }[] | null;
   focus_available: boolean;
   loading_policy: string;
+}
+
+export interface TeamRow {
+  id: string;
+  name: string;
+  description: string | null;
+  created_by: string;
+  created_at: string;
+  members: { user_id: string; role: 'lead' | 'member'; added_at: string }[];
+  projects: string[];
+}
+
+export interface TeamsResponse {
+  items: TeamRow[];
+  counts: { teams: number; people: number };
+}
+
+export type DreamKind = 'duplicates' | 'connections' | 'fading' | 'contradictions' | 'themes';
+
+export interface DreamInsight {
+  id: string;
+  kind: DreamKind;
+  title: string;
+  detail: string;
+  memories: { id: string; stub: string; scope: string; owner_id: string; weight: number; version: number; updated_at: string | null }[];
+  action: { type: 'merge' | 'link' | 'fade' | 'review' | 'consolidate'; [k: string]: unknown };
+  confidence: number | null;
+  status: 'proposed' | 'accepted' | 'dismissed';
+  result?: string;
+  auto?: boolean;
+}
+
+export interface DreamSettings {
+  schedule: 'nightly' | 'weekly' | 'off';
+  window: string;
+  auto: { connections: boolean; fading: boolean };
+  kinds: Record<DreamKind, boolean>;
+}
+
+export interface DreamReport {
+  id: string;
+  started_at: string;
+  duration_ms: number;
+  trigger: string;
+  reviewed: number;
+  insights: DreamInsight[];
+  counts: Partial<Record<DreamKind, number>>;
+}
+
+export interface DreamsResponse {
+  settings: DreamSettings;
+  last: DreamReport | null;
+  history: {
+    id: string;
+    started_at: string;
+    duration_ms: number;
+    trigger: string;
+    reviewed: number;
+    counts: Partial<Record<DreamKind, number>>;
+    accepted: number;
+    dismissed: number;
+    total: number;
+  }[];
 }
 
 export interface CampaignRow {

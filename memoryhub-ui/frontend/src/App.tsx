@@ -6,6 +6,7 @@ import { ToastProvider } from '@/components/ui';
 import { navigate, useHashRoute, type HashRoute } from '@/hooks/useHashRoute';
 import Accounts from '@/pages/Accounts';
 import Audit from '@/pages/Audit';
+import Dreaming from '@/pages/Dreaming';
 import Clients from '@/pages/Clients';
 import Curation from '@/pages/Curation';
 import Entities from '@/pages/Entities';
@@ -34,7 +35,8 @@ const SCREENS: Record<string, Screen> = {
   '/accounts': { nav: '/accounts', title: 'Accounts & sign-up', render: () => <Accounts /> },
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
-  '/projects': { nav: '/projects', title: 'Projects & campaigns', render: (r) => <Projects route={r} /> },
+  '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <Projects route={r} /> },
+  '/dreaming': { nav: '/dreaming', title: 'Dreaming', render: () => <Dreaming /> },
   '/review': { nav: '/review', title: 'Review queue', render: (r) => <Review route={r} /> },
   '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },
   '/audit': { nav: '/audit', title: 'Audit & forensics', render: (r) => <Audit route={r} /> },

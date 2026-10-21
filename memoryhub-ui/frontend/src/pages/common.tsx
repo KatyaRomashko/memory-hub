@@ -68,10 +68,15 @@ export const EventTarget: React.FC<{ e: AuditEvent; max?: number }> = ({ e, max 
 /* Write memory dialog (Overview, Memory browser)                      */
 /* ------------------------------------------------------------------ */
 
-export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: string) => void }> = ({ onClose, onSaved }) => {
+export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: string) => void; initialContent?: string; title?: string }> = ({
+  onClose,
+  onSaved,
+  initialContent,
+  title,
+}) => {
   const toast = useToast();
   const { me, refreshCounts } = useApp();
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState(initialContent ?? '');
   const [scope, setScope] = useState('user');
   const [owner, setOwner] = useState('');
   const [scopeId, setScopeId] = useState('');
@@ -106,7 +111,7 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
   };
 
   return (
-    <Modal title="Write memory" onClose={onClose}>
+    <Modal title={title ?? 'Write memory'} onClose={onClose}>
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className="f">
           <label htmlFor="wm-content">Content</label>

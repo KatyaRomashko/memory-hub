@@ -17,7 +17,7 @@ test.describe('primary navigation', () => {
       ['Memory browser', 'memories', 'Memory browser'],
       ['Entities', 'entities', 'Entities'],
       ['Search playground', 'search', 'Search playground'],
-      ['Projects & campaigns', 'projects', 'Projects & campaigns'],
+      ['Projects & teams', 'projects', 'Projects & teams'],
       ['Review queue', 'review', 'Review queue'],
       ['Curation rules', 'curation', 'Curation rules'],
       ['Audit & forensics', 'audit', 'Audit & forensics'],

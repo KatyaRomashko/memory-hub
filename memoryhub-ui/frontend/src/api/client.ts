@@ -1,4 +1,9 @@
 import type {
+  DreamInsight,
+  DreamReport,
+  DreamSettings,
+  DreamsResponse,
+  TeamsResponse,
   SwitchTargets,
   AccountRow,
   AccountsResponse,
@@ -170,6 +175,21 @@ export const api = {
   // Graph & search
   neighbourhood: (params: { focus?: string; depth?: number; types?: string[] }) =>
     get<GraphNeighbourhood>(`/graph/neighbourhood${qs(params)}`),
+  teams: () => get<TeamsResponse>('/teams'),
+  createTeam: (body: { name: string; description?: string; members: string[]; projects: string[] }) =>
+    post<{ id: string; name: string; added: number; removed: number }>('/teams', body),
+  updateTeam: (id: string, body: { name?: string; description?: string }) => patch<{ ok: boolean }>(`/teams/${enc(id)}`, body),
+  deleteTeam: (id: string) => del<void>(`/teams/${enc(id)}`),
+  addTeamMember: (id: string, user_id: string, role: 'member' | 'lead' = 'member') =>
+    post<{ ok: boolean; added: number }>(`/teams/${enc(id)}/members`, { user_id, role }),
+  removeTeamMember: (id: string, userId: string) => del<void>(`/teams/${enc(id)}/members/${enc(userId)}`),
+  linkTeamProject: (id: string, project: string) => post<{ ok: boolean; added: number }>(`/teams/${enc(id)}/projects`, { project }),
+  unlinkTeamProject: (id: string, project: string) => del<void>(`/teams/${enc(id)}/projects/${enc(project)}`),
+  dreams: () => get<DreamsResponse>('/dreams'),
+  dreamNow: (trigger: 'manual' | 'scheduled' = 'manual') => post<DreamReport>(`/dreams/run${qs({ trigger })}`),
+  saveDreamSettings: (body: Partial<DreamSettings>) => put<DreamSettings>('/dreams/settings', body),
+  decideInsight: (dreamId: string, insightId: string, decision: 'accept' | 'dismiss') =>
+    post<DreamInsight>(`/dreams/${enc(dreamId)}/insights/${enc(insightId)}`, { decision }),
   graphAll: (params: { types?: string[]; include_superseded?: boolean; max_nodes?: number } = {}) =>
     get<GraphAll>(`/graph/all${qs(params)}`),
   search: (body: SearchRequest) => post<SearchResponse>('/search', body),

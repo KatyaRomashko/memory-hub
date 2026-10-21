@@ -11,9 +11,11 @@ from fastapi.staticfiles import StaticFiles
 
 from src.accounts import router as accounts_router
 from src.config import get_settings
+from src.dreaming import router as dreams_router
 from src.routes import router
 from src.routes_admin import router as admin_router
 from src.routes_dashboard import router as dashboard_router
+from src.teams import router as teams_router
 from src.ui_common import auth_enabled, read_session_cookie
 
 # Reachable without a session when development API-key login is enabled.
@@ -73,6 +75,8 @@ def create_app() -> FastAPI:
     # Dashboard routers first so their static paths (e.g. /api/memories/browse)
     # win over the parameterised routes in the original router.
     app.include_router(accounts_router)
+    app.include_router(teams_router)
+    app.include_router(dreams_router)
     app.include_router(dashboard_router)
     app.include_router(admin_router)
     app.include_router(router)

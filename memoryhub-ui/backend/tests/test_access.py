@@ -195,3 +195,12 @@ async def test_switch_endpoint_is_hidden_outside_test_mode():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         assert (await client.get("/api/auth/switch")).json() == {"enabled": False, "targets": []}
         assert (await client.post("/api/auth/switch", json={"username": "a", "role": "user"})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admins_cannot_dream_over_content(monkeypatch):
+    admin = Viewer(username="dk", name="dk", email=None, source="account", role="admin")
+    monkeypatch.setattr("src.access.viewer_from_request", lambda request, settings: admin)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.post("/api/dreams/run")).status_code == 403
+        assert (await client.get("/api/dreams")).status_code == 403

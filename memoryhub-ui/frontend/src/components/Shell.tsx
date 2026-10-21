@@ -116,7 +116,8 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
       { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Memory analytics' } },
       { path: '/entities', label: 'Entities', roles: USER },
       { path: '/search', label: 'Search playground', roles: USER },
-      { path: '/projects', label: 'Projects & campaigns' },
+      { path: '/dreaming', label: 'Dreaming', roles: USER },
+      { path: '/projects', label: 'Projects & teams' },
     ],
   },
   {

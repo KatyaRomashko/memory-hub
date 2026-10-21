@@ -1,11 +1,119 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, Tabs, useApp } from '@/components/Shell';
-import { copyText, Dropdown, Empty, ErrorState, ScopeLabel, Seg, SkLines, Standby, useToast } from '@/components/ui';
+import { copyText, Dropdown, Empty, ErrorState, Icon, ScopeLabel, Seg, SkLines, Standby, useToast } from '@/components/ui';
 import type { HashRoute } from '@/hooks/useHashRoute';
 import type { SearchRequest, SearchResponse } from '@/types';
 import { fmtInt, truncate } from '@/utils/format';
 import { memoryHref } from './common';
+
+const ENTITY_ICON: Record<string, { color: string; d: string; label: string }> = {
+  person: { label: 'Person', color: '#0066cc', d: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21c1.5-4 4.5-6 8-6s6.5 2 8 6' },
+  organization: { label: 'Organization', color: '#3d7317', d: 'M4 21V5l8-3v19M12 9h8v12M3 21h18' },
+  location: { label: 'Location', color: '#009596', d: 'M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z' },
+  object: { label: 'Object', color: '#ca6c0f', d: 'M12 2l9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10' },
+  event: { label: 'Event', color: '#5e40be', d: 'M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zM3 10h18' },
+};
+
+const EntityGlyph: React.FC<{ type: string }> = ({ type }) => {
+  const t = ENTITY_ICON[type] ?? ENTITY_ICON.object;
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.color} strokeWidth="2.2" aria-hidden="true" style={{ flex: 'none' }}>
+      <path d={t.d} />
+    </svg>
+  );
+};
+
+/** Session focus picked from extracted entities instead of free text. */
+const EntityFocusSelect: React.FC<{ value: string; onChange: (v: string) => void }> = ({ value, onChange }) => {
+  const [q, setQ] = useState('');
+  const [items, setItems] = useState<{ id: string; name: string; entity_type: string; memory_count: number }[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      api
+        .entities({ q: q.trim() || undefined, per_page: 30 })
+        .then((r) => {
+          setItems(r.items);
+          setFailed(false);
+        })
+        .catch(() => setFailed(true));
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [q]);
+  const current = items?.find((i) => i.name === value);
+  return (
+    <Dropdown
+      style={{ width: '100%' }}
+      toggle={(p) => (
+        <button type="button" className="sel" aria-labelledby="fo-l" aria-haspopup="listbox" style={{ width: '100%', justifyContent: 'space-between' }} {...p}>
+          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+            {value ? (
+              <>
+                <EntityGlyph type={current?.entity_type ?? 'object'} />
+                <span className="ellipsis">{value}</span>
+              </>
+            ) : (
+              <span className="muted">No session focus</span>
+            )}
+          </span>
+          <Icon.Chevron />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div style={{ width: 340, maxWidth: '80vw' }} role="listbox" aria-label="Entities">
+          <div style={{ padding: '6px 12px 8px' }}>
+            <label className="vh" htmlFor="fo-q">
+              Search entities
+            </label>
+            <input id="fo-q" className="in" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search entities" />
+          </div>
+          <button
+            type="button"
+            role="option"
+            aria-selected={!value}
+            onClick={() => {
+              onChange('');
+              close();
+            }}
+          >
+            <span className="muted">No session focus</span>
+          </button>
+          <hr />
+          <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+            {failed && <div className="mh">Entities are not available.</div>}
+            {!failed && items === null && <div className="mh">Loading…</div>}
+            {items?.length === 0 && <div className="mh">No entities match.</div>}
+            {items?.map((e) => (
+              <button
+                key={e.id}
+                type="button"
+                role="option"
+                aria-selected={e.name === value}
+                style={e.name === value ? { fontWeight: 600, background: '#f5f9fc' } : undefined}
+                onClick={() => {
+                  onChange(e.name);
+                  close();
+                }}
+              >
+                <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <EntityGlyph type={e.entity_type} />
+                  <span className="ellipsis" style={{ flex: 1 }}>
+                    {e.name}
+                  </span>
+                  <span className="hint">
+                    {ENTITY_ICON[e.entity_type]?.label ?? e.entity_type} · {e.memory_count}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Dropdown>
+  );
+};
 
 const STAGE_COLORS: Record<string, string> = {
   embed: '#004d99',
@@ -211,9 +319,11 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
               <textarea id="q" className="in" required value={form.query} onChange={(e) => set('query', e.target.value)} placeholder="how should I run containers locally for this repo?" />
             </div>
             <div className="f">
-              <label htmlFor="fo">Session focus</label>
-              <input id="fo" className="in" value={form.focus} onChange={(e) => set('focus', e.target.value)} placeholder="e.g. memoryhub-ui local dev setup" />
-              <span className="hint">Blended with the query via reciprocal-rank fusion.</span>
+              <span className="lbl-t" id="fo-l">
+                Session focus
+              </span>
+              <EntityFocusSelect value={form.focus ?? ''} onChange={(v) => set('focus', v)} />
+              <span className="hint">Pick an entity the session is about. Blended with the query via reciprocal-rank fusion.</span>
             </div>
             <div className="f">
               <label htmlFor="as">Run as identity</label>
