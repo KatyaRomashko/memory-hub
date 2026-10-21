@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '@/api/client';
-import { PageHeader, Tabs } from '@/components/Shell';
+import { PageHeader, Tabs, useApp } from '@/components/Shell';
 import { Empty, ErrorState, Modal, SelectMenu, SkLines, SkTable, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
@@ -16,12 +16,14 @@ const TYPE_LABEL: Record<string, { cls: string; label: string }> = {
 
 const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
+  const { role: viewerRole, me } = useApp();
+  const isUser = viewerRole === 'user';
   const tab = route.params.get('type') || 'all';
   const selectedId = route.params.get('id');
   const [filter, setFilter] = useState('');
   const [role, setRole] = useState('');
   const [status, setStatus] = useState('');
-  const [modal, setModal] = useState<null | 'service' | 'role'>(null);
+  const [modal, setModal] = useState<null | 'service' | 'agent' | 'link' | 'role'>(null);
   const { data, error, loading, reload } = useApi(() => api.identities(), []);
 
   const setParam = (changes: Record<string, string | undefined>) => {
@@ -46,9 +48,24 @@ const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
   return (
     <>
       <PageHeader
-        title="Users & agents"
-        description="Every identity that can touch memory. User-bound agents act for a person; service agents such as the curator have their own, narrowly scoped identity."
+        title={isUser ? 'My agents' : 'Users & agents'}
+        crumbs={[{ label: isUser ? 'My agents' : 'Users & agents' }]}
+        description={
+          isUser
+            ? 'You and the agents that act for you. Register a new agent, link one you already run, rotate its credentials or revoke it. Their memories are yours.'
+            : 'Every identity that can touch memory. User-bound agents act for a person; service agents such as the curator have their own, narrowly scoped identity.'
+        }
         actions={
+          isUser ? (
+            <>
+              <button type="button" className="btn bs" onClick={() => setModal('link')}>
+                Link an existing agent
+              </button>
+              <button type="button" className="btn bp" onClick={() => setModal('agent')}>
+                Register an agent
+              </button>
+            </>
+          ) : (
           <>
             <button
               type="button"
@@ -62,19 +79,27 @@ const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
               Add service agent
             </button>
           </>
+          )
         }
         tabs={
           <Tabs
             label="Identity type"
             value={tab}
             onChange={(t) => setParam({ type: t === 'all' ? undefined : t, id: undefined })}
-            tabs={[
-              { value: 'all', label: 'All', count: data?.counts.all ?? null },
-              { value: 'users', label: 'Users', count: data?.counts.users ?? null },
-              { value: 'agents', label: 'User agents', count: data?.counts.user_agents ?? null },
-              { value: 'services', label: 'Service agents', count: data?.counts.service_agents ?? null },
-              { value: 'roles', label: 'Roles', count: data?.counts.roles ?? null },
-            ]}
+            tabs={
+              isUser
+                ? [
+                    { value: 'all', label: 'All', count: data?.counts.all ?? null },
+                    { value: 'agents', label: 'My agents', count: data?.counts.user_agents ?? null },
+                  ]
+                : [
+                    { value: 'all', label: 'All', count: data?.counts.all ?? null },
+                    { value: 'users', label: 'Users', count: data?.counts.users ?? null },
+                    { value: 'agents', label: 'User agents', count: data?.counts.user_agents ?? null },
+                    { value: 'services', label: 'Service agents', count: data?.counts.service_agents ?? null },
+                    { value: 'roles', label: 'Roles', count: data?.counts.roles ?? null },
+                  ]
+            }
           />
         }
       />
@@ -95,12 +120,12 @@ const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
                     Filter identities
                   </label>
                   <input id="f" className="in" placeholder="Filter by name or ID" style={{ flex: '1 1 260px' }} value={filter} onChange={(e) => setFilter(e.target.value)} />
-                  <SelectMenu
+                  {!isUser && <SelectMenu
                     label="Role"
                     value={role}
                     onChange={setRole}
                     options={[{ value: '', label: 'Role: any' }, ...(data?.roles ?? []).map((r) => ({ value: r.name, label: `Role: ${r.name}` }))]}
-                  />
+                  />}
                   <SelectMenu
                     label="Status"
                     value={status}
@@ -184,7 +209,7 @@ const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
             {loading && !data ? (
               <SkLines lines={10} />
             ) : active && tab !== 'roles' ? (
-              <IdentityPanel row={active} key={active.id} onClose={() => setParam({ id: undefined })} />
+              <IdentityPanel row={active} key={active.id} canAssignOwner={!isUser} self={me?.username} onClose={() => setParam({ id: undefined })} onChanged={reload} />
             ) : (
               <Empty compact title="Select an identity">
                 See its scope permissions and the last 24 hours of activity.
@@ -193,6 +218,25 @@ const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
           </aside>
         </div>
       </div>
+      {modal === 'agent' && (
+        <CreateClientModal
+          defaultType="user"
+          onClose={() => setModal(null)}
+          onCreated={() => {
+            reload();
+          }}
+        />
+      )}
+      {modal === 'link' && (
+        <LinkAgentModal
+          onClose={() => setModal(null)}
+          onLinked={(id) => {
+            setModal(null);
+            toast(`${id} is now linked to you.`);
+            reload();
+          }}
+        />
+      )}
       {modal === 'service' && (
         <CreateClientModal
           defaultType="service"
@@ -252,8 +296,27 @@ const RolesTable: React.FC<{ roles: { name: string; members: number }[]; loading
   </>
 );
 
-const IdentityPanel: React.FC<{ row: IdentityRow; onClose: () => void }> = ({ row, onClose }) => {
+const IdentityPanel: React.FC<{ row: IdentityRow; canAssignOwner: boolean; self?: string; onClose: () => void; onChanged: () => void }> = ({
+  row,
+  canAssignOwner,
+  self,
+  onClose,
+  onChanged,
+}) => {
+  const toast = useToast();
   const { data, error, loading, reload } = useApi<IdentityDetail>(() => api.identity(row.id), [row.id]);
+  const [owner, setOwner] = useState<string | null>(null);
+  const saveOwner = async () => {
+    try {
+      const res = await api.assignOwner(row.id, owner?.trim() || null);
+      toast(res.owner ? `${row.id} now belongs to ${res.owner}.` : `Owner cleared for ${row.id}.`);
+      setOwner(null);
+      reload();
+      onChanged();
+    } catch (e) {
+      toast(errorMessage(e), 'err');
+    }
+  };
   const typeLabel = row.type === 'service' ? 'Service agent' : row.type === 'user agent' ? `User agent · acts for ${row.bound_to}` : 'User';
   return (
     <>
@@ -340,6 +403,37 @@ const IdentityPanel: React.FC<{ row: IdentityRow; onClose: () => void }> = ({ ro
               </div>
               <Spark hourly={data.hourly} />
             </div>
+            {row.type !== 'user' && (
+              <div>
+                <b className="sm">Belongs to</b>
+                {owner === null ? (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                    <span className="sm">{row.owner ? (row.owner === self ? `${row.owner} (you)` : row.owner) : <span className="muted">No owner yet</span>}</span>
+                    {canAssignOwner && (
+                      <button type="button" className="btn bl sm" onClick={() => setOwner(row.owner ?? '')}>
+                        {row.owner ? 'Change' : 'Assign owner'}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                    <label className="vh" htmlFor="owner">
+                      Owner username
+                    </label>
+                    <input id="owner" className="in" style={{ flex: '1 1 160px' }} value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="OpenShift username" />
+                    <button type="button" className="btn bp sm" onClick={saveOwner}>
+                      Save
+                    </button>
+                    <button type="button" className="btn bl sm" onClick={() => setOwner(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                <p className="hint" style={{ margin: '6px 0 0' }}>
+                  The owner sees this agent&apos;s memories as their own and manages its credentials.
+                </p>
+              </div>
+            )}
             {data.agents.length > 0 && (
               <div>
                 <b className="sm">Agents acting for {data.name}</b>
@@ -385,6 +479,59 @@ const Spark: React.FC<{ hourly: { hour: string; count: number }[] }> = ({ hourly
         <rect key={i} x={i * 10} y={36 - (c / max) * 34} width="7" height={(c / max) * 34 || 1} rx="1.5" fill={c ? '#0066cc' : '#e6e6e6'} />
       ))}
     </svg>
+  );
+};
+
+const LinkAgentModal: React.FC<{ onClose: () => void; onLinked: (id: string) => void }> = ({ onClose, onLinked }) => {
+  const [clientId, setClientId] = useState('');
+  const [secret, setSecret] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal
+      title="Link an existing agent"
+      onClose={onClose}
+      actions={
+        <>
+          <button
+            type="button"
+            className="btn bp"
+            disabled={busy || !clientId.trim() || !secret}
+            onClick={async () => {
+              setBusy(true);
+              setErr(null);
+              try {
+                await api.linkAgent(clientId.trim(), secret);
+                onLinked(clientId.trim());
+              } catch (e) {
+                setErr(errorMessage(e));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? 'Checking…' : 'Link agent'}
+          </button>
+          <button type="button" className="btn bg" onClick={onClose}>
+            Cancel
+          </button>
+        </>
+      }
+    >
+      <p className="sm muted" style={{ margin: 0 }}>
+        Prove the agent is yours with its OAuth client ID and secret. The secret is checked with the auth service and never stored. If you lost it, ask a platform admin to
+        assign the agent to you.
+      </p>
+      <div className="f">
+        <label htmlFor="lcid">client_id</label>
+        <input id="lcid" className="in mono" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+      </div>
+      <div className="f">
+        <label htmlFor="lsec">Client secret</label>
+        <input id="lsec" className="in mono" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
+      </div>
+      {err && <div className="alert err-a">{err}</div>}
+    </Modal>
   );
 };
 

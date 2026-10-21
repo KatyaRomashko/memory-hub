@@ -19,7 +19,7 @@ type AuthView = 'login' | 'register' | 'setup';
 
 const DOCS = 'https://github.com/redhat-ai-americas/memory-hub#readme';
 
-const Login: React.FC<{ onLoggedIn: () => void; view?: AuthView; invite?: string }> = ({ onLoggedIn, view = 'login', invite }) => {
+const Login: React.FC<{ onLoggedIn: () => void; view?: AuthView; invite?: string; signedOut?: boolean }> = ({ onLoggedIn, view = 'login', invite, signedOut }) => {
   const [status, setStatus] = useState<AuthStatus | null>(null);
 
   useEffect(() => {
@@ -39,7 +39,7 @@ const Login: React.FC<{ onLoggedIn: () => void; view?: AuthView; invite?: string
       ) : current === 'register' ? (
         <RegisterForm status={status} invite={invite} onDone={proceed} />
       ) : (
-        <LoginForm status={status} onDone={proceed} />
+        <LoginForm status={status} onDone={proceed} signedOut={signedOut} />
       )}
     </AuthLayout>
   );
@@ -107,7 +107,7 @@ const AuthLayout: React.FC<{ status: AuthStatus | null; wide?: boolean; children
 /* Sign in                                                             */
 /* ------------------------------------------------------------------ */
 
-const LoginForm: React.FC<{ status: AuthStatus | null; onDone: () => void }> = ({ status, onDone }) => {
+const LoginForm: React.FC<{ status: AuthStatus | null; onDone: () => void; signedOut?: boolean }> = ({ status, onDone, signedOut }) => {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [key, setKey] = useState('');
@@ -132,12 +132,17 @@ const LoginForm: React.FC<{ status: AuthStatus | null; onDone: () => void }> = (
   };
 
   const openshift = () => {
-    if (status?.mode === 'oauth-proxy' || status?.mode === 'open') onDone();
+    if (status?.mode === 'open' || (!signedOut && status?.mode === 'oauth-proxy')) onDone();
     else window.location.href = '/oauth/start?rd=/';
   };
 
   return (
     <div className="auth-form">
+      {signedOut && (
+        <div className="alert ok-a" role="status">
+          You are signed out. Sign in again or create an account.
+        </div>
+      )}
       <div>
         <h1>Log in to your account</h1>
         <p className="muted">

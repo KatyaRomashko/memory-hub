@@ -116,7 +116,7 @@ export const api = {
   setup: (body: SetupPayload) => post<{ ok: boolean; role: string }>('/auth/setup', body),
   register: (body: RegisterPayload) =>
     post<{ ok: boolean; role: string; status: 'active' | 'pending' }>('/auth/register', body),
-  logout: () => post<{ ok: boolean }>('/auth/logout'),
+  logout: () => post<{ ok: boolean; redirect?: string }>('/auth/logout'),
   accounts: () => get<AccountsResponse>('/accounts'),
   updateAccount: (id: string, body: { status?: 'active' | 'disabled'; role?: 'admin' | 'user' }) =>
     patch<AccountRow>(`/accounts/${enc(id)}`, body),
@@ -192,6 +192,9 @@ export const api = {
   identities: () => get<IdentitiesResponse>('/identities'),
   identity: (id: string) => get<IdentityDetail>(`/identities/${enc(id)}`),
   assignRole: (user_id: string, role_name: string) => post<{ ok: boolean }>('/roles', { user_id, role_name }),
+  linkAgent: (client_id: string, client_secret: string) =>
+    post<{ ok: boolean; client_id: string; owner: string }>('/identities/link', { client_id, client_secret }),
+  assignOwner: (id: string, owner: string | null) => put<{ ok: boolean; owner: string | null }>(`/identities/${enc(id)}/owner`, { owner }),
   credentials: () => get<CredentialsResponse>('/credentials'),
   createClient: (payload: CreateClientPayload) => post<ClientCreatedResponse>('/clients', payload),
   updateClient: (clientId: string, payload: UpdateClientPayload) =>

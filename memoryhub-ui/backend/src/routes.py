@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from memoryhub_core.models.contradiction import ContradictionReport
 from memoryhub_core.models.curation import CuratorRule
 from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
@@ -47,7 +47,7 @@ from src.schemas import (
     UpdateRuleRequest,
     VersionEntry,
 )
-from src.ui_common import Viewer
+from src.ui_common import Viewer, audit, viewer_from_request
 
 logger = logging.getLogger(__name__)
 
@@ -738,16 +738,37 @@ async def delete_memory(memory_id: str, db: DbDep, settings: SettingsDep, viewer
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/clients", response_model=list[ClientResponse], dependencies=[Depends(admin_viewer)])
-async def list_clients(settings: SettingsDep):
+async def _client_viewer(
+    request: Request, db: AsyncSession, settings: Settings, client_id: str | None = None
+) -> Viewer:
+    """Admins manage every client; users only the agents that belong to them."""
+    viewer = viewer_from_request(request, settings)
+    if viewer.restricted and client_id is not None:
+        acc = await access_for(db, settings, viewer)
+        if client_id not in (acc.grants.identities if acc.grants else set()):
+            raise HTTPException(status_code=404, detail=f"Client {client_id!r} not found")
+    return viewer
+
+
+@router.get("/api/clients", response_model=list[ClientResponse])
+async def list_clients(request: Request, db: DbDep, settings: SettingsDep):
     resp = await _admin_request(settings, "GET", "/admin/clients", tenant_id=settings.ui_tenant_id)
-    return resp.json()
+    clients = resp.json()
+    viewer = viewer_from_request(request, settings)
+    if viewer.restricted and isinstance(clients, list):
+        acc = await access_for(db, settings, viewer)
+        mine = acc.grants.identities if acc.grants else set()
+        clients = [c for c in clients if c.get("client_id") in mine]
+    return clients
 
 
-@router.post(
-    "/api/clients", response_model=ClientCreatedResponse, status_code=201, dependencies=[Depends(admin_viewer)]
-)
-async def create_client(body: CreateClientRequest, settings: SettingsDep):
+@router.post("/api/clients", response_model=ClientCreatedResponse, status_code=201)
+async def create_client(body: CreateClientRequest, request: Request, db: DbDep, settings: SettingsDep):
+    viewer = await _client_viewer(request, db, settings)
+    if viewer.restricted and body.identity_type != "user":
+        raise HTTPException(status_code=403, detail="Users can register their own agents; admins create service agents")
+    if viewer.restricted:
+        body.tenant_id = settings.ui_tenant_id
     resp = await _admin_request(
         settings,
         "POST",
@@ -755,11 +776,28 @@ async def create_client(body: CreateClientRequest, settings: SettingsDep):
         json_body=body.model_dump(),
         tenant_id=settings.ui_tenant_id,
     )
-    return resp.json()
+    created = resp.json()
+    if viewer.restricted:
+        from src.ownership import set_owner
+
+        await set_owner(db, settings.ui_tenant_id, body.client_id, viewer.username, viewer.username, "created")
+        await audit(
+            db,
+            tenant_id=settings.ui_tenant_id,
+            viewer=viewer,
+            event_type="agent.create",
+            scope="session",
+            owner_id=viewer.username,
+            memory_id=None,
+            metadata={"client_id": body.client_id},
+        )
+        await db.commit()
+    return created
 
 
-@router.patch("/api/clients/{client_id}", response_model=ClientResponse, dependencies=[Depends(admin_viewer)])
-async def update_client(client_id: str, body: UpdateClientRequest, settings: SettingsDep):
+@router.patch("/api/clients/{client_id}", response_model=ClientResponse)
+async def update_client(client_id: str, body: UpdateClientRequest, request: Request, db: DbDep, settings: SettingsDep):
+    await _client_viewer(request, db, settings, client_id)
     payload = body.model_dump(exclude_none=True)
     resp = await _admin_request(
         settings,
@@ -771,10 +809,9 @@ async def update_client(client_id: str, body: UpdateClientRequest, settings: Set
     return resp.json()
 
 
-@router.post(
-    "/api/clients/{client_id}/rotate-secret", response_model=SecretRotatedResponse, dependencies=[Depends(admin_viewer)]
-)
-async def rotate_client_secret(client_id: str, settings: SettingsDep):
+@router.post("/api/clients/{client_id}/rotate-secret", response_model=SecretRotatedResponse)
+async def rotate_client_secret(client_id: str, request: Request, db: DbDep, settings: SettingsDep):
+    await _client_viewer(request, db, settings, client_id)
     resp = await _admin_request(
         settings,
         "POST",
@@ -784,12 +821,9 @@ async def rotate_client_secret(client_id: str, settings: SettingsDep):
     return resp.json()
 
 
-@router.post(
-    "/api/clients/{client_id}/rotate-api-key",
-    response_model=ApiKeyRotatedResponse,
-    dependencies=[Depends(admin_viewer)],
-)
-async def rotate_api_key(client_id: str, settings: SettingsDep):
+@router.post("/api/clients/{client_id}/rotate-api-key", response_model=ApiKeyRotatedResponse)
+async def rotate_api_key(client_id: str, request: Request, db: DbDep, settings: SettingsDep):
+    await _client_viewer(request, db, settings, client_id)
     resp = await _admin_request(
         settings,
         "POST",

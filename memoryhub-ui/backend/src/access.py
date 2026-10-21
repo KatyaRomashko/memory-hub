@@ -92,11 +92,21 @@ class Grants:
     projects: set[str] = field(default_factory=set)
     roles: set[str] = field(default_factory=set)
     campaigns: set[str] = field(default_factory=set)
+    # The person's own agents (see ownership.py): their memories are the person's too.
+    agents: set[str] = field(default_factory=set)
+
+    @property
+    def identities(self) -> set[str]:
+        return {self.identity} | self.agents
 
 
 async def load_grants(db: AsyncSession, tenant_id: str, identity: str) -> Grants:
+    from src.ownership import owned_agents
+
+    agents = await owned_agents(db, tenant_id, identity)
+    who = list({identity} | agents)
     projects = set(
-        (await db.execute(select(ProjectMembership.project_id).where(ProjectMembership.user_id == identity)))
+        (await db.execute(select(ProjectMembership.project_id).where(ProjectMembership.user_id.in_(who))))
         .scalars()
         .all()
     )
@@ -104,7 +114,7 @@ async def load_grants(db: AsyncSession, tenant_id: str, identity: str) -> Grants
         (
             await db.execute(
                 select(RoleAssignment.role_name).where(
-                    RoleAssignment.user_id == identity, RoleAssignment.tenant_id == tenant_id
+                    RoleAssignment.user_id.in_(who), RoleAssignment.tenant_id == tenant_id
                 )
             )
         )
@@ -123,7 +133,7 @@ async def load_grants(db: AsyncSession, tenant_id: str, identity: str) -> Grants
             .scalars()
             .all()
         }
-    return Grants(identity=identity, projects=projects, roles=roles, campaigns=campaigns)
+    return Grants(identity=identity, projects=projects, roles=roles, campaigns=campaigns, agents=agents)
 
 
 def readable_clause(grants: Grants, node=MemoryNode):
@@ -131,7 +141,7 @@ def readable_clause(grants: Grants, node=MemoryNode):
     sid = node.scope_id
     clauses = [
         node.scope.in_(("organizational", "enterprise")),
-        and_(node.scope == "user", node.owner_id == grants.identity),
+        and_(node.scope == "user", node.owner_id.in_(grants.identities)),
     ]
     if grants.projects:
         clauses.append(and_(node.scope == "project", or_(sid.in_(grants.projects), node.owner_id.in_(grants.projects))))
@@ -150,7 +160,7 @@ def readable_python(grants: Grants):
             return True
         key = n.scope_id or n.owner_id
         if n.scope == "user":
-            return n.owner_id == grants.identity
+            return n.owner_id in grants.identities
         if n.scope == "project":
             return key in grants.projects
         if n.scope == "role":

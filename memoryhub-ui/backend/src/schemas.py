@@ -157,6 +157,7 @@ class PublicConfigResponse(BaseModel):
 
 # --- Curation Rules ---
 
+
 class CurationRuleResponse(BaseModel):
     id: str
     name: str
@@ -211,6 +212,7 @@ class UpdateRuleRequest(BaseModel):
 
 
 # --- Contradiction Reports ---
+
 
 class ContradictionResponse(BaseModel):
     id: str

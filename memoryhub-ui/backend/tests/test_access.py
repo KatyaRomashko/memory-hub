@@ -131,3 +131,45 @@ async def test_signed_in_user_is_forbidden_from_admin_endpoints(monkeypatch):
         )
     assert resp.status_code == 403
     assert ui_common.SESSION_COOKIE
+
+
+def test_user_sees_memories_owned_by_their_agents():
+    grants = Grants(identity="kromashk", agents={"claude-code-kr"})
+    visible = readable_python(grants)
+    node = lambda **k: SimpleNamespace(**{"scope_id": None, **k})  # noqa: E731
+    assert visible(node(scope="user", owner_id="claude-code-kr"))
+    assert visible(node(scope="user", owner_id="kromashk"))
+    assert not visible(node(scope="user", owner_id="someone-elses-agent"))
+
+
+def test_openshift_logout_url_is_derived_from_route_host():
+    from src.routes_admin import _openshift_logout_url
+
+    req = MagicMock()
+    req.headers = {"host": "memoryhub-ui-memoryhub-ui.apps.cluster-kdtc8.dyn.example.io"}
+    assert _openshift_logout_url(req, Settings()) == "https://oauth-openshift.apps.cluster-kdtc8.dyn.example.io/logout"
+    assert _openshift_logout_url(req, Settings(ui_oauth_logout_url="https://idp/logout")) == "https://idp/logout"
+    req.headers = {"host": "localhost:5173"}
+    assert _openshift_logout_url(req, Settings()) is None
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_cookies_and_returns_login_page():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/auth/logout")
+    assert resp.status_code == 200
+    assert resp.json()["redirect"] == "/#/login?signed_out=1"
+    cookies = resp.headers.get_list("set-cookie")
+    assert any(c.startswith("_oauth_proxy=") for c in cookies)
+    assert any(c.startswith(f"{SESSION_COOKIE}=") for c in cookies)
+
+
+@pytest.mark.asyncio
+async def test_oauth_proxy_logout_goes_to_openshift_logout():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/auth/logout",
+            headers={"x-forwarded-user": "kromashk", "host": "ui.apps.cluster-x.example.io"},
+        )
+    redirect = resp.json()["redirect"]
+    assert redirect.startswith("https://oauth-openshift.apps.cluster-x.example.io/logout?then=")

@@ -12,6 +12,7 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from memoryhub_core.models.audit import AuditLog
@@ -122,10 +123,39 @@ async def login(body: LoginRequest, response: Response, db: DbDep, settings: Set
     return {"ok": True, "user": username, "role": body.role}
 
 
+OAUTH_PROXY_COOKIE = "_oauth_proxy"
+
+
+def _openshift_logout_url(request: Request, settings: Settings) -> str | None:
+    """OpenShift OAuth server logout, so the next visit asks for credentials again."""
+    if settings.ui_oauth_logout_url:
+        return settings.ui_oauth_logout_url
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    marker = host.find(".apps.")
+    if marker < 0:
+        return None
+    return f"https://oauth-openshift{host[marker:]}/logout"
+
+
 @router.post("/api/auth/logout")
-async def logout(response: Response):
-    response.delete_cookie(SESSION_COOKIE)
-    return {"ok": True}
+async def logout(request: Request, response: Response, settings: SettingsDep):
+    """End the dashboard session completely and say where the browser goes next.
+
+    Clears the dashboard session cookie and the OAuth proxy cookie. Behind the
+    OpenShift OAuth proxy the browser is then sent to the OpenShift OAuth
+    server's logout, otherwise to the dashboard's sign-in page.
+    """
+    viewer = viewer_from_request(request, settings)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(OAUTH_PROXY_COOKIE, path="/")
+    login_page = "/#/login?signed_out=1"
+    redirect = login_page
+    if viewer.source == "oauth-proxy":
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        back = f"https://{host.split(',')[0].strip()}/" if host else "/"
+        logout_url = _openshift_logout_url(request, settings)
+        redirect = f"{logout_url}?then={quote(back, safe='')}" if logout_url else "/oauth/sign_in"
+    return {"ok": True, "redirect": redirect}
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +731,9 @@ async def _identity_rows(db: AsyncSession, settings: Settings) -> tuple[list[dic
             continue
         bound = bindings.get(identity_id)
         add(identity_id, type="user agent" if bound and bound != identity_id else "user")
+    from src.ownership import explicit_owners
+
+    owners_by_client = await explicit_owners(db, tenant_id)
     rows = []
     for row in ids.values():
         identity_id = row["id"]
@@ -711,6 +744,8 @@ async def _identity_rows(db: AsyncSession, settings: Settings) -> tuple[list[dic
             {
                 **row,
                 "bound_to": bindings.get(identity_id) if row["type"] == "user agent" else None,
+                "owner": owners_by_client.get(identity_id)
+                or (bindings.get(identity_id) if row["type"] == "user agent" else None),
                 "roles": sorted(roles.get(identity_id, [])),
                 "memory_count": max(owners.get(identity_id, 0), writers.get(identity_id, 0)),
                 "last_active": seen,
@@ -723,13 +758,51 @@ async def _identity_rows(db: AsyncSession, settings: Settings) -> tuple[list[dic
     return rows, clients is not None
 
 
-@router.get("/api/identities", dependencies=[Depends(admin_viewer)])
-async def list_identities(db: DbDep, settings: SettingsDep):
+async def _my_identities(db: AsyncSession, settings: Settings, request: Request) -> set[str] | None:
+    """None for admins (everything); otherwise the viewer and their agents."""
+    viewer = viewer_from_request(request, settings)
+    if not viewer.restricted:
+        return None
+    acc = await access_for(db, settings, viewer)
+    return acc.grants.identities if acc.grants else {viewer.username}
+
+
+@router.get("/api/identities")
+async def list_identities(request: Request, db: DbDep, settings: SettingsDep):
     rows, auth_ok = await _identity_rows(db, settings)
+    mine = await _my_identities(db, settings, request)
+    if mine is not None:
+        viewer = viewer_from_request(request, settings)
+        rows = [r for r in rows if r["id"] in mine]
+        if not any(r["id"] == viewer.username for r in rows):
+            rows.insert(
+                0,
+                {
+                    "id": viewer.username,
+                    "name": viewer.name,
+                    "type": "user",
+                    "scopes": [],
+                    "client": False,
+                    "active": True,
+                    "public": False,
+                    "created_at": None,
+                    "bound_to": None,
+                    "owner": None,
+                    "roles": [],
+                    "memory_count": 0,
+                    "last_active": None,
+                    "active_now": True,
+                },
+            )
+        for r in rows:
+            if r["id"] != viewer.username and r["type"] == "user":
+                r["type"] = "user agent"
+                r["bound_to"] = r.get("bound_to") or viewer.username
+    role_filter = [RoleAssignment.user_id.in_(list(mine))] if mine is not None else []
     role_rows = (
         await db.execute(
             select(RoleAssignment.role_name, func.count())
-            .where(RoleAssignment.tenant_id == settings.ui_tenant_id)
+            .where(RoleAssignment.tenant_id == settings.ui_tenant_id, *role_filter)
             .group_by(RoleAssignment.role_name)
             .order_by(RoleAssignment.role_name)
         )
@@ -749,8 +822,11 @@ async def list_identities(db: DbDep, settings: SettingsDep):
     }
 
 
-@router.get("/api/identities/{identity_id}", dependencies=[Depends(admin_viewer)])
-async def identity_detail(identity_id: str, db: DbDep, settings: SettingsDep):
+@router.get("/api/identities/{identity_id}")
+async def identity_detail(identity_id: str, request: Request, db: DbDep, settings: SettingsDep):
+    mine = await _my_identities(db, settings, request)
+    if mine is not None and identity_id not in mine:
+        raise HTTPException(status_code=404, detail=f"Identity {identity_id!r} not found")
     rows, _ = await _identity_rows(db, settings)
     row = next((r for r in rows if r["id"] == identity_id), None)
     if row is None:
@@ -794,6 +870,65 @@ async def identity_detail(identity_id: str, db: DbDep, settings: SettingsDep):
     }
 
 
+class LinkAgentRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=255)
+    client_secret: str = Field(min_length=1, max_length=1024)
+
+
+@router.post("/api/identities/link", status_code=201)
+async def link_agent(body: LinkAgentRequest, request: Request, db: DbDep, settings: SettingsDep):
+    """A user links an existing agent by proving they hold its client secret."""
+    from src.ownership import explicit_owners, set_owner, verify_client_secret
+
+    viewer = viewer_from_request(request, settings)
+    if viewer.source == "anonymous":
+        raise HTTPException(status_code=403, detail="Sign in to link an agent")
+    current = (await explicit_owners(db, settings.ui_tenant_id)).get(body.client_id)
+    if current and current != viewer.username:
+        raise HTTPException(status_code=409, detail="That agent already belongs to someone else. Ask a platform admin.")
+    if not await verify_client_secret(settings, body.client_id, body.client_secret):
+        raise HTTPException(status_code=403, detail="The auth service did not accept that client ID and secret")
+    await set_owner(db, settings.ui_tenant_id, body.client_id, viewer.username, viewer.username, "secret")
+    await audit(
+        db,
+        tenant_id=settings.ui_tenant_id,
+        viewer=viewer,
+        event_type="agent.link",
+        scope="session",
+        owner_id=viewer.username,
+        memory_id=None,
+        metadata={"client_id": body.client_id},
+    )
+    await db.commit()
+    return {"ok": True, "client_id": body.client_id, "owner": viewer.username}
+
+
+class OwnerRequest(BaseModel):
+    owner: str | None = Field(default=None, max_length=255)
+
+
+@router.put("/api/identities/{identity_id}/owner", dependencies=[Depends(admin_viewer)])
+async def assign_owner(identity_id: str, body: OwnerRequest, request: Request, db: DbDep, settings: SettingsDep):
+    """Admin assigns (or clears) the person an agent belongs to."""
+    from src.ownership import set_owner
+
+    viewer = viewer_from_request(request, settings)
+    owner = (body.owner or "").strip() or None
+    await set_owner(db, settings.ui_tenant_id, identity_id, owner, viewer.username, "admin")
+    await audit(
+        db,
+        tenant_id=settings.ui_tenant_id,
+        viewer=viewer,
+        event_type="agent.owner",
+        scope="session",
+        owner_id=owner or identity_id,
+        memory_id=None,
+        metadata={"client_id": identity_id, "owner": owner},
+    )
+    await db.commit()
+    return {"ok": True, "client_id": identity_id, "owner": owner}
+
+
 class RoleRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=255)
     role_name: str = Field(min_length=1, max_length=100)
@@ -831,8 +966,8 @@ async def assign_role(body: RoleRequest, request: Request, db: DbDep, settings: 
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/credentials", dependencies=[Depends(admin_viewer)])
-async def credentials(db: DbDep, settings: SettingsDep):
+@router.get("/api/credentials")
+async def credentials(request: Request, db: DbDep, settings: SettingsDep):
     from src.routes import _admin_request
 
     tenant_id = settings.ui_tenant_id
@@ -848,6 +983,9 @@ async def credentials(db: DbDep, settings: SettingsDep):
             )
         ).all()
     }
+    mine = await _my_identities(db, settings, request)
+    if mine is not None and clients is not None:
+        clients = [c for c in clients if c["client_id"] in mine]
     items = []
     for c in clients or []:
         used = last_used.get(c["client_id"])

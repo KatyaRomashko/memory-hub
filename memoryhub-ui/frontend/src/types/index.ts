@@ -443,6 +443,8 @@ export interface IdentityRow {
   public: boolean;
   created_at: string | null;
   bound_to: string | null;
+  /** The person this agent belongs to (explicit owner or driver binding). */
+  owner?: string | null;
   roles: string[];
   memory_count: number;
   last_active: string | null;

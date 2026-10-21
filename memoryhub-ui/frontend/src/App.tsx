@@ -110,7 +110,14 @@ const Routed: React.FC = () => {
 
   if (AUTH_PATHS.includes(route.path) || authRequired) {
     const view = route.path === '/register' ? 'register' : route.path === '/setup' ? 'setup' : 'login';
-    return <Login view={view} invite={route.params.get('invite') ?? undefined} onLoggedIn={() => setAuthRequired(false)} />;
+    return (
+      <Login
+        view={view}
+        invite={route.params.get('invite') ?? undefined}
+        signedOut={route.params.get('signed_out') === '1'}
+        onLoggedIn={() => setAuthRequired(false)}
+      />
+    );
   }
   if (!screen) return null;
   const known = NAV.some((s) => s.items.some((i) => i.path === screen.nav));

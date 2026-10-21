@@ -185,7 +185,11 @@ async def overview(
     now = now_utc()
     tenant_settings = await load_tenant_settings(db, tenant_id)
     threshold = int(tenant_settings["governance"]["contradiction_threshold"])
-    base = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity"]
+    # Users get "my overview": only memories and activity they may see.
+    acc = await access_for(db, settings, viewer)
+    mine = list(acc.grants.identities) if acc.grants is not None else None
+    audit_scope = [AuditLog.actor_id.in_(mine)] if mine is not None else []
+    base = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity"] + acc.filters()
 
     total = (await db.execute(select(func.count()).select_from(MemoryNode).where(*base))).scalar_one()
     new_7d = (
@@ -340,7 +344,7 @@ async def overview(
                 func.count().filter(AuditLog.event_type.in_(SEARCH_EVENTS)),
                 func.count().filter(AuditLog.event_type.in_(WRITE_EVENTS)),
             )
-            .where(AuditLog.tenant_id == tenant_id, AuditLog.timestamp >= activity_start)
+            .where(AuditLog.tenant_id == tenant_id, AuditLog.timestamp >= activity_start, *audit_scope)
             .group_by(audit_bucket)
         )
     ).all()
@@ -351,7 +355,7 @@ async def overview(
         mem_rows = (
             await db.execute(
                 select(mem_bucket, func.count())
-                .where(MemoryNode.tenant_id == tenant_id, MemoryNode.created_at >= activity_start)
+                .where(MemoryNode.tenant_id == tenant_id, MemoryNode.created_at >= activity_start, *acc.filters())
                 .group_by(mem_bucket)
             )
         ).all()
@@ -369,7 +373,6 @@ async def overview(
         )
 
     identity_types = {c["client_id"]: c.get("identity_type", "user") for c in (clients or [])}
-    acc = await access_for(db, settings, viewer)
     recent_rows = await _recent_events(db, tenant_id, 6 if acc.grants is None else 40)
     if acc.grants is not None:
         recent_rows = [

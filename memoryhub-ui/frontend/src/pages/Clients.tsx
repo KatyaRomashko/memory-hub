@@ -425,7 +425,8 @@ export const CreateClientModal: React.FC<{
   onCreated: (r: Revealed) => void;
 }> = ({ defaultType = 'user', apiKeyFirst, onClose, onCreated }) => {
   const toast = useToast();
-  const { tenant } = useApp();
+  const { tenant, role } = useApp();
+  const userOnly = role === 'user';
   const [clientId, setClientId] = useState('');
   const [name, setName] = useState('');
   const [type, setType] = useState<'user' | 'service'>(defaultType);
@@ -485,7 +486,7 @@ export const CreateClientModal: React.FC<{
           <label htmlFor="ctype">Identity type</label>
           <select id="ctype" className="in" value={type} onChange={(e) => setType(e.target.value as 'user' | 'service')}>
             <option value="user">user — acts for a person</option>
-            <option value="service">service — its own narrowly scoped identity</option>
+            {!userOnly && <option value="service">service — its own narrowly scoped identity</option>}
           </select>
         </div>
         <div className="f">

@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     # Comma-separated OpenShift usernames that are platform admins. Use this
     # when the OAuth proxy does not forward X-Forwarded-Groups.
     ui_admin_users: str = ""
+    # Where "Log out" sends the browser behind the OAuth proxy. Empty = derive
+    # https://oauth-openshift.apps.<cluster>/logout from the route host.
+    ui_oauth_logout_url: str = ""
 
     @property
     def database_url(self) -> str:

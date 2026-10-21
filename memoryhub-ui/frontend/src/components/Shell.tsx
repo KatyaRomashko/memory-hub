@@ -129,10 +129,11 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
   },
   {
     group: 'Access',
+    groupFor: { user: 'Agents' },
     items: [
       { path: '/accounts', label: 'Accounts & sign-up', roles: ADMIN },
-      { path: '/identities', label: 'Users & agents', roles: ADMIN },
-      { path: '/clients', label: 'OAuth clients & keys', roles: ADMIN },
+      { path: '/identities', label: 'Users & agents', labelFor: { user: 'My agents' } },
+      { path: '/clients', label: 'OAuth clients & keys', labelFor: { user: 'Agent credentials' } },
     ],
   },
   { group: 'Platform', items: [{ path: '/settings', label: 'Settings', roles: ADMIN }] },
@@ -183,12 +184,21 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
     });
   };
 
+  /** Ends the session completely, then lands on the sign-in page (or the OpenShift logout). */
   const onLogout = async () => {
+    let target = '/#/login?signed_out=1';
     try {
-      await api.logout();
-    } finally {
-      window.location.hash = '#/login';
+      const res = await api.logout();
+      if (res?.redirect) target = res.redirect;
+    } catch {
+      /* still leave the app */
     }
+    try {
+      window.sessionStorage.clear();
+    } catch {
+      /* storage unavailable */
+    }
+    window.location.replace(target);
   };
 
   return (
@@ -260,12 +270,11 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
                   <br />
                   <span className="muted sm">{ROLE_LABEL[role]}</span>
                 </div>
-                {(me?.source === 'api-key' || me?.source === 'account') && (
+                {me && me.source !== 'anonymous' && (
                   <button type="button" onClick={onLogout}>
                     Log out
                   </button>
                 )}
-                {me?.source === 'oauth-proxy' && <a href="/oauth/sign_out">Log out</a>}
               </>
             )}
           </Dropdown>
