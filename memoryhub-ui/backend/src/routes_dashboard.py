@@ -25,7 +25,7 @@ from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
 from memoryhub_core.models.project import ProjectMembership
 from memoryhub_core.models.role import RoleAssignment
 from pydantic import BaseModel, Field
-from sqlalchemy import String, and_, case, cast, exists, func, literal_column, or_, select, text, update
+from sqlalchemy import Boolean, Float, String, and_, case, cast, exists, func, literal_column, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -153,15 +153,68 @@ def _event_row(event: AuditLog, memory: MemoryNode | None, identity_types: dict[
     }
 
 
-async def _recent_events(db: AsyncSession, tenant_id: str, limit: int) -> list[tuple[AuditLog, MemoryNode | None]]:
+async def _recent_events(
+    db: AsyncSession, tenant_id: str, limit: int, identities: set[str] | None = None
+) -> list[tuple[AuditLog, MemoryNode | None]]:
+    where = [AuditLog.tenant_id == tenant_id]
+    if identities is not None:
+        where.append(or_(AuditLog.actor_id.in_(identities), AuditLog.driver_id.in_(identities)))
     stmt = (
         select(AuditLog, MemoryNode)
         .outerjoin(MemoryNode, and_(MemoryNode.id == AuditLog.memory_id, MemoryNode.tenant_id == tenant_id))
-        .where(AuditLog.tenant_id == tenant_id)
+        .where(*where)
         .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
         .limit(limit)
     )
     return [(row[0], row[1]) for row in (await db.execute(stmt)).all()]
+
+
+async def _account_start(
+    db: AsyncSession,
+    tenant_id: str,
+    viewer,
+    visible_memory_filters: list,
+    activity_scope: list,
+) -> datetime:
+    """Find the start of the viewer's history without crossing account boundaries.
+
+    Local accounts have an explicit creation timestamp. OpenShift identities do
+    not, so the first event or visible memory for that identity is the safe
+    fallback. Platform admins and the open operator retain the tenant-wide
+    history because they are not row-restricted.
+    """
+    candidates: list[datetime] = []
+    if viewer.restricted:
+        if viewer.source == "account":
+            try:
+                row = (
+                    await db.execute(
+                        text(
+                            "SELECT created_at FROM memoryhub_ui_accounts "
+                            "WHERE tenant_id = :tenant_id AND username = :username"
+                        ),
+                        {"tenant_id": tenant_id, "username": viewer.username},
+                    )
+                ).first()
+                if row and row[0] is not None:
+                    candidates.append(row[0])
+            except Exception:
+                # The local-account table is optional on OpenShift deployments.
+                await db.rollback()
+        first_event = (await db.execute(select(func.min(AuditLog.timestamp)).where(*activity_scope))).scalar_one()
+        first_memory = (
+            await db.execute(select(func.min(MemoryNode.created_at)).where(*visible_memory_filters))
+        ).scalar_one()
+        candidates.extend(value for value in (first_event, first_memory) if value is not None)
+    else:
+        first_event = (
+            await db.execute(select(func.min(AuditLog.timestamp)).where(AuditLog.tenant_id == tenant_id))
+        ).scalar_one()
+        first_memory = (
+            await db.execute(select(func.min(MemoryNode.created_at)).where(MemoryNode.tenant_id == tenant_id))
+        ).scalar_one()
+        candidates.extend(value for value in (first_event, first_memory) if value is not None)
+    return min(candidates, default=now_utc())
 
 
 # Overview activity windows: range -> (window seconds, bucket seconds).
@@ -170,7 +223,10 @@ ACTIVITY_RANGES: dict[str, tuple[int, int]] = {
     "1h": (3600, 300),
     "12h": (12 * 3600, 1800),
     "1d": (86400, 3600),
-    "7d": (7 * 86400, 6 * 3600),
+    # Seven days is intentionally daily: the overview's x-axis is a date
+    # series for this range, while the tooltip can still show finer-grained
+    # timestamps when the backend has them.
+    "7d": (7 * 86400, 86400),
     "30d": (30 * 86400, 86400),
 }
 # Candidate bucket sizes for "all time", smallest first; the first one that
@@ -191,7 +247,7 @@ async def overview(
     # Users get "my overview": only memories and activity they may see.
     acc = await access_for(db, settings, viewer)
     mine = list(acc.grants.identities) if acc.grants is not None else None
-    audit_scope = [AuditLog.actor_id.in_(mine)] if mine is not None else []
+    audit_scope = [or_(AuditLog.actor_id.in_(mine), AuditLog.driver_id.in_(mine))] if mine is not None else []
     base = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity"] + acc.filters()
 
     total = (await db.execute(select(func.count()).select_from(MemoryNode).where(*base))).scalar_one()
@@ -237,52 +293,40 @@ async def overview(
     # Identities: OAuth clients when the auth service answers, otherwise the
     # distinct writers seen in memory.
     clients = await _auth_clients(settings)
+    if clients is not None and mine is not None:
+        clients = [client for client in clients if client.get("client_id") in acc.grants.identities]
     active_since = now - timedelta(minutes=15)
+    active_where = [AuditLog.tenant_id == tenant_id, AuditLog.timestamp >= active_since, *audit_scope]
     active_now = (
-        await db.execute(
-            select(func.count(func.distinct(AuditLog.actor_id))).where(
-                AuditLog.tenant_id == tenant_id, AuditLog.timestamp >= active_since
-            )
-        )
+        await db.execute(select(func.count(func.distinct(AuditLog.actor_id))).where(*active_where))
     ).scalar_one()
     if clients is not None:
         agents_total = sum(1 for c in clients if c.get("active", True))
         agents_source = "auth"
     else:
-        agents_total = (
-            await db.execute(
-                select(func.count(func.distinct(func.coalesce(MemoryNode.actor_id, MemoryNode.owner_id)))).where(
-                    *live_filters(tenant_id)
-                )
-            )
-        ).scalar_one()
+        writer = func.coalesce(MemoryNode.actor_id, MemoryNode.owner_id)
+        writer_filters = list(live_filters(tenant_id))
+        if mine is not None:
+            writer_filters.append(writer.in_(acc.grants.identities))
+        agents_total = (await db.execute(select(func.count(func.distinct(writer))).where(*writer_filters))).scalar_one()
         agents_source = "memory"
 
     day_ago = now - timedelta(hours=24)
-    searches_24h = (
-        await db.execute(
-            select(func.count())
-            .select_from(AuditLog)
-            .where(
-                AuditLog.tenant_id == tenant_id,
-                AuditLog.event_type.in_(SEARCH_EVENTS),
-                AuditLog.timestamp >= day_ago,
-            )
-        )
-    ).scalar_one()
+    search_scope = [
+        AuditLog.tenant_id == tenant_id,
+        AuditLog.event_type.in_(SEARCH_EVENTS),
+        AuditLog.timestamp >= day_ago,
+        *audit_scope,
+    ]
+    searches_24h = (await db.execute(select(func.count()).select_from(AuditLog).where(*search_scope))).scalar_one()
     p95 = None
     try:
+        latency = cast(AuditLog.event_metadata["latency_ms"].astext, Float)
         p95 = (
             await db.execute(
-                text(
-                    """
-                    SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY (metadata->>'latency_ms')::float)
-                    FROM audit_log
-                    WHERE tenant_id = :t AND event_type = 'memory.search' AND timestamp >= :since
-                      AND metadata ? 'latency_ms'
-                    """
-                ),
-                {"t": tenant_id, "since": day_ago},
+                select(func.percentile_cont(0.95).within_group(latency))
+                .select_from(AuditLog)
+                .where(*search_scope, AuditLog.event_metadata.has_key("latency_ms"))  # type: ignore[attr-defined]
             )
         ).scalar_one()
     except Exception:
@@ -320,13 +364,8 @@ async def overview(
     # events yet. Every bucket in the window is emitted, including empty ones,
     # so the chart never hides gaps in the timeline.
     if activity_range == "all":
-        earliest_audit = (
-            await db.execute(select(func.min(AuditLog.timestamp)).where(AuditLog.tenant_id == tenant_id))
-        ).scalar_one()
-        earliest_memory = (
-            await db.execute(select(func.min(MemoryNode.created_at)).where(MemoryNode.tenant_id == tenant_id))
-        ).scalar_one()
-        earliest = min((v for v in (earliest_audit, earliest_memory) if v is not None), default=now)
+        activity_scope = [AuditLog.tenant_id == tenant_id, *audit_scope]
+        earliest = await _account_start(db, tenant_id, viewer, base, activity_scope)
         span = max(1.0, (now - earliest).total_seconds())
         bucket = next((b for b in ALL_TIME_BUCKETS if span / b <= 90), ALL_TIME_BUCKETS[-1])
         first_bucket = int(earliest.timestamp()) // bucket * bucket
@@ -358,7 +397,7 @@ async def overview(
         mem_rows = (
             await db.execute(
                 select(mem_bucket, func.count())
-                .where(MemoryNode.tenant_id == tenant_id, MemoryNode.created_at >= activity_start, *acc.filters())
+                .where(*base, MemoryNode.created_at >= activity_start)
                 .group_by(mem_bucket)
             )
         ).all()
@@ -376,10 +415,14 @@ async def overview(
         )
 
     identity_types = {c["client_id"]: c.get("identity_type", "user") for c in (clients or [])}
-    recent_rows = await _recent_events(db, tenant_id, 6 if acc.grants is None else 40)
+    recent_rows = await _recent_events(db, tenant_id, 6 if acc.grants is None else 40, mine)
     if acc.grants is not None:
         recent_rows = [
-            (e, m) for e, m in recent_rows if (m is not None and acc.can_read_row(m)) or e.actor_id == viewer.username
+            (e, m)
+            for e, m in recent_rows
+            if (m is not None and acc.can_read_row(m))
+            or e.actor_id in acc.grants.identities
+            or e.driver_id in acc.grants.identities
         ][:6]
     recent = acc.redact_tree([_event_row(e, m, identity_types) for e, m in recent_rows])
     recent_source = "audit"
@@ -431,19 +474,26 @@ async def overview(
 
     ctx = None
     try:
+        response_tokens = cast(AuditLog.event_metadata["response_tokens"].astext, Float)
+        cache_prefix_hit = cast(AuditLog.event_metadata["cache_prefix_hit"].astext, Boolean)
+        ctx_filters = [
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.event_type == "memory.search",
+            AuditLog.timestamp >= now - timedelta(days=7),
+            *audit_scope,
+            or_(
+                AuditLog.event_metadata.has_key("response_tokens"),  # type: ignore[attr-defined]
+                AuditLog.event_metadata.has_key("cache_prefix_hit"),  # type: ignore[attr-defined]
+            ),
+        ]
         ctx = (
             await db.execute(
-                text(
-                    """
-                    SELECT avg((metadata->>'response_tokens')::float),
-                           avg(CASE WHEN (metadata->>'cache_prefix_hit')::boolean THEN 1.0 ELSE 0.0 END)
-                             FILTER (WHERE metadata ? 'cache_prefix_hit')
-                    FROM audit_log
-                    WHERE tenant_id = :t AND event_type = 'memory.search' AND timestamp >= :since
-                      AND (metadata ? 'response_tokens' OR metadata ? 'cache_prefix_hit')
-                    """
-                ),
-                {"t": tenant_id, "since": now - timedelta(days=7)},
+                select(
+                    func.avg(response_tokens),
+                    func.avg(case((cache_prefix_hit, 1.0), else_=0.0)).filter(
+                        AuditLog.event_metadata.has_key("cache_prefix_hit")  # type: ignore[attr-defined]
+                    ),
+                ).where(*ctx_filters)
             )
         ).first()
     except Exception:
@@ -1073,6 +1123,7 @@ async def export_memories(
     settings: SettingsDep,
     viewer: ViewerDep,
     scope: list[str] | None = Query(default=None),
+    mine: bool = Query(default=False),
 ):
     """JSONL export of current memories (the browser's "Export JSONL")."""
     from fastapi.responses import StreamingResponse
@@ -1081,6 +1132,9 @@ async def export_memories(
     filters = _tab_filters(settings.ui_tenant_id, "current") + acc.filters()
     if scope:
         filters.append(MemoryNode.scope.in_(scope))
+    if mine:
+        own = list(acc.grants.identities) if acc.grants else [viewer.username]
+        filters += [MemoryNode.scope == "user", MemoryNode.owner_id.in_(own)]
     nodes = (
         (await db.execute(select(MemoryNode).where(*filters).order_by(MemoryNode.updated_at.desc()))).scalars().all()
     )
@@ -1682,6 +1736,14 @@ async def _propose_promotion(
         raise HTTPException(status_code=422, detail=f"Cannot promote {node.scope} → {target_scope}")
     if PROMOTION_ORDER.index(target_scope) <= PROMOTION_ORDER.index(node.scope):
         raise HTTPException(status_code=422, detail="Promotion must move to a broader scope")
+    if node.scope == "user" and node.owner_id != viewer.username:
+        from src.me import load_prefs
+
+        owner_prefs = await load_prefs(db, settings.ui_tenant_id, node.owner_id)
+        if not owner_prefs["privacy"]["allow_promotion_by_others"]:
+            raise HTTPException(
+                status_code=403, detail=f"{node.owner_id} does not let others propose promoting their memories"
+            )
     tenant_id = settings.ui_tenant_id
     new_id = uuid.uuid4()
     promoted = MemoryNode(

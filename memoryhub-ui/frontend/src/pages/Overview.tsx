@@ -46,7 +46,7 @@ const KpiCard: React.FC<{ label: string; href?: string; loading: boolean; value?
 };
 
 const Overview: React.FC = () => {
-  const { tenant, standby, refreshCounts } = useApp();
+  const { tenant, role, standby, refreshCounts } = useApp();
   // While the tenant has no memories the page polls every 5 s until the
   // first write_memory arrives, then switches to the live layout.
   const [activityRange, setActivityRange] = useState<OverviewRange>('7d');
@@ -55,6 +55,7 @@ const Overview: React.FC = () => {
   const selectedActivityRange = ACTIVITY_RANGES.find((item) => item.value === activityRange) ?? ACTIVITY_RANGES[4];
   const empty = data ? data.memories.current === 0 : standby;
   const first = loading && !data;
+  const activityReady = Boolean(data && data.activity_range === activityRange);
 
   if (error && !data) {
     return (
@@ -91,6 +92,7 @@ const Overview: React.FC = () => {
     });
   }
   const healthBad = data?.health.filter((h) => h.status === 'down' || h.status === 'degraded') ?? [];
+  const searchesHref = buildHash('/audit', { tab: 'log', op: 'memory.search' });
 
   return (
     <>
@@ -156,7 +158,7 @@ const Overview: React.FC = () => {
           <KpiCard
             label="Searches · 24 h"
             loading={first}
-            href={buildHash('/audit')}
+            href={searchesHref}
             value={empty && !data?.searches.last_24h ? <span className="standby-val">—</span> : fmtInt(data?.searches.last_24h)}
             sub={
               <span className="muted">
@@ -164,7 +166,9 @@ const Overview: React.FC = () => {
                   ? 'Starts with the first memory'
                   : data?.searches.p95_latency_ms
                     ? `p95 latency ${fmtInt(data.searches.p95_latency_ms)} ms`
-                    : 'Across all agents'}
+                    : role === 'user'
+                      ? 'Across your connected agents'
+                      : 'Across all agents'}
               </span>
             }
           />
@@ -213,13 +217,13 @@ const Overview: React.FC = () => {
                 </button>
               </div>
             </div>
-            {first ? (
+            {first || (loading && !activityReady) ? (
               <Sk h={290} r={8} />
             ) : empty ? (
               <Standby>Searches and writes from the audit log will chart here.</Standby>
             ) : (
               <>
-                <ActivityChart data={data!.activity} bucketSeconds={data!.activity_bucket_seconds} />
+                <ActivityChart data={data!.activity} bucketSeconds={data!.activity_bucket_seconds} range={activityRange} />
                 {data!.activity_source === 'memory' && <p className="ops-foot">No audit events yet — showing memory writes only.</p>}
               </>
             )}
@@ -288,7 +292,7 @@ const Overview: React.FC = () => {
             </>
           ) : (
             <p className="sm muted" style={{ margin: 0 }}>
-              No categories have been assigned yet. Add domain tags to memories to build this mix.
+              No categories have been assigned to your visible memories yet. Add domain tags in the Memory browser to build this mix.
             </p>
           )}
         </div>

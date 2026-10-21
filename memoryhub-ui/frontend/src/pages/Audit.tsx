@@ -23,7 +23,10 @@ const localInput = (d: Date) => {
 
 const Audit: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
-  const tab = route.params.get('tab') || 'forensics';
+  const { role } = useApp();
+  const personal = role === 'user';
+  const requestedTab = route.params.get('tab') || 'forensics';
+  const tab = personal && !['log', 'denied'].includes(requestedTab) ? 'log' : requestedTab;
   const setParam = (changes: Record<string, string | undefined>) => {
     const next = new URLSearchParams(route.params);
     Object.entries(changes).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k)));
@@ -55,31 +58,44 @@ const Audit: React.FC<{ route: HashRoute }> = ({ route }) => {
   return (
     <>
       <PageHeader
-        title="Audit & forensics"
-        description="An append-only record of every memory operation, and the ability to reconstruct exactly what an agent knew at any moment."
+        title={personal ? 'My activity' : 'Audit & forensics'}
+        description={
+          personal
+            ? 'Searches, reads and writes made by your connected agents. Other users and their agents are not included.'
+            : 'An append-only record of every memory operation, and the ability to reconstruct exactly what an agent knew at any moment.'
+        }
         actions={
-          <button type="button" className="btn bg" onClick={exportLog}>
-            Export for compliance
-          </button>
+          !personal && (
+            <button type="button" className="btn bg" onClick={exportLog}>
+              Export for compliance
+            </button>
+          )
         }
         tabs={
           <Tabs
             label="Audit views"
             value={tab}
             onChange={(t) => setParam({ tab: t === 'forensics' ? undefined : t, decision: undefined })}
-            tabs={[
-              { value: 'forensics', label: 'Forensics' },
-              { value: 'log', label: 'Audit log' },
-              { value: 'denied', label: 'Denied only', count: denied ? denied.denied_total : null },
-              { value: 'retention', label: 'Retention' },
-            ]}
+            tabs={
+              personal
+                ? [
+                    { value: 'log', label: 'Activity log' },
+                    { value: 'denied', label: 'Denied only', count: denied ? denied.denied_total : null },
+                  ]
+                : [
+                    { value: 'forensics', label: 'Forensics' },
+                    { value: 'log', label: 'Audit log' },
+                    { value: 'denied', label: 'Denied only', count: denied ? denied.denied_total : null },
+                    { value: 'retention', label: 'Retention' },
+                  ]
+            }
           />
         }
       />
       <div className="body">
-        {tab === 'forensics' && <Forensics route={route} />}
-        {tab !== 'retention' && <AuditLog route={route} deniedOnly={tab === 'denied'} setParam={setParam} />}
-        {tab === 'retention' && <Retention />}
+        {tab === 'forensics' && !personal && <Forensics route={route} />}
+        {tab !== 'retention' && tab !== 'forensics' && <AuditLog route={route} deniedOnly={tab === 'denied'} setParam={setParam} personal={personal} />}
+        {tab === 'retention' && !personal && <Retention />}
       </div>
     </>
   );
@@ -239,7 +255,12 @@ const Forensics: React.FC<{ route: HashRoute }> = ({ route }) => {
   );
 };
 
-const AuditLog: React.FC<{ route: HashRoute; deniedOnly: boolean; setParam: (c: Record<string, string | undefined>) => void }> = ({ route, deniedOnly, setParam }) => {
+const AuditLog: React.FC<{
+  route: HashRoute;
+  deniedOnly: boolean;
+  personal?: boolean;
+  setParam: (c: Record<string, string | undefined>) => void;
+}> = ({ route, deniedOnly, setParam, personal }) => {
   const p = route.params;
   const op = p.get('op') || '';
   const decision = deniedOnly ? 'denied' : p.get('decision') || '';
@@ -253,7 +274,7 @@ const AuditLog: React.FC<{ route: HashRoute; deniedOnly: boolean; setParam: (c: 
   return (
     <section className="card" style={{ padding: 0 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', padding: '16px 20px' }}>
-        <h3 style={{ marginRight: 'auto' }}>{deniedOnly ? 'Denied operations' : 'Audit log'}</h3>
+        <h3 style={{ marginRight: 'auto' }}>{deniedOnly ? 'Denied operations' : personal ? 'Your activity' : 'Audit log'}</h3>
         {actor && (
           <span className="chip">
             Actor: {actor}

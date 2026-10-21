@@ -72,11 +72,13 @@ export const ACTIVITY_RANGES: { value: OverviewRange; label: string; title: stri
 const HOUR = 3600;
 const DAY = 86400;
 
-/** Axis label for a bucket start, at a precision that suits the bucket size. */
-const axisLabel = (iso: string, bucket: number, span: number) => {
+/** Axis label for a bucket start, at a precision that suits the selected range. */
+const axisLabel = (iso: string, bucket: number, range?: OverviewRange) => {
   const d = new Date(iso);
-  if (bucket < DAY && span > 1.5 * DAY) {
-    return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+  // Multi-day windows always use dates on the x-axis. The tooltip still shows
+  // the precise bucket span for shorter windows.
+  if (range === 'all' || range === '7d' || range === '30d') {
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
   if (bucket < DAY) return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   if (bucket >= 28 * DAY) return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
@@ -106,8 +108,9 @@ const bucketName = (bucket: number) => {
 export const ActivityChart: React.FC<{
   data: ActivityPoint[];
   bucketSeconds: number;
+  range?: OverviewRange;
   height?: number;
-}> = ({ data, bucketSeconds, height = 300 }) => {
+}> = ({ data, bucketSeconds, range, height = 300 }) => {
   const [hidden, setHidden] = useState<Partial<Record<SeriesKey, boolean>>>({});
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -126,15 +129,19 @@ export const ActivityChart: React.FC<{
   const L = 52;
   const R = 16;
   const T = 14;
-  const B = 30;
+  const B = range === '30d' ? 54 : 30;
   const base = H - B;
   const n = data.length;
   const x = (i: number) => (n <= 1 ? L + (W - L - R) / 2 : L + (i * (W - L - R)) / (n - 1));
   const y = (v: number) => T + (base - T) * (1 - v / top);
   const ticks = [0, 1, 2, 3, 4].map((k) => step * k);
-  const labelCount = Math.min(n, 6);
+  const labelCount = range === '7d' ? Math.min(n, 7) : range === 'all' ? Math.min(n, 8) : Math.min(n, 6);
   const labelIdx =
-    labelCount <= 1 ? [0] : Array.from(new Set(Array.from({ length: labelCount }, (_, k) => Math.round((k * (n - 1)) / (labelCount - 1)))));
+    range === '30d' && n > 1
+      ? Array.from({ length: n }, (_, k) => k)
+      : labelCount <= 1
+        ? [0]
+        : Array.from(new Set(Array.from({ length: labelCount }, (_, k) => Math.round((k * (n - 1)) / (labelCount - 1)))));
 
   const toggle = (key: SeriesKey) => {
     if (!hidden[key] && visible.length === 1) return; // keep at least one series on
@@ -203,8 +210,15 @@ export const ActivityChart: React.FC<{
             </text>
             {n > 0 &&
               labelIdx.map((i) => (
-                <text key={i} x={x(i)} y={H - 8} textAnchor={n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle'}>
-                  {axisLabel(data[i].date, bucketSeconds, n * bucketSeconds)}
+                <text
+                  key={i}
+                  x={x(i)}
+                  y={range === '30d' ? H - 10 : H - 8}
+                  textAnchor={range === '30d' ? 'end' : n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle'}
+                  transform={range === '30d' ? `rotate(-45 ${x(i)} ${H - 10})` : undefined}
+                  fontSize={range === '30d' ? 10 : undefined}
+                >
+                  {axisLabel(data[i].date, bucketSeconds, range)}
                 </text>
               ))}
           </g>

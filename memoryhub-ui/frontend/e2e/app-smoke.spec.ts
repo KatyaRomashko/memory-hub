@@ -71,7 +71,7 @@ test.describe('overview activity', () => {
   test('charts memory operations and loads each activity range', async ({ page }) => {
     await page.goto('/#/overview');
     await expect(page.getByRole('heading', { name: 'Memory operations', exact: true })).toBeVisible();
-    await expect(page.getByRole('img', { name: /Memory operations in 28 6-hour buckets/ })).toBeVisible();
+    await expect(page.getByRole('img', { name: /Memory operations in 7 daily buckets/ })).toBeVisible();
 
     const rangeGroup = page.getByRole('group', { name: 'Memory operation range' });
     await expect(rangeGroup.getByRole('button')).toHaveCount(6);

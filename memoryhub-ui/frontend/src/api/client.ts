@@ -1,4 +1,7 @@
 import type {
+  MyPrefs,
+  MyPrefsResponse,
+  MyReads,
   DreamInsight,
   DreamReport,
   DreamSettings,
@@ -175,6 +178,10 @@ export const api = {
   // Graph & search
   neighbourhood: (params: { focus?: string; depth?: number; types?: string[] }) =>
     get<GraphNeighbourhood>(`/graph/neighbourhood${qs(params)}`),
+  myPrefs: () => get<MyPrefsResponse>('/me/prefs'),
+  saveMyPrefs: (body: Partial<MyPrefs>) => put<{ prefs: MyPrefs }>('/me/prefs', body),
+  myReads: (days = 30, who: 'others' | 'all' = 'others') => get<MyReads>(`/me/reads${qs({ days, who })}`),
+  exportMineUrl: () => `${BASE}/memories/export${qs({ mine: true })}`,
   teams: () => get<TeamsResponse>('/teams'),
   createTeam: (body: { name: string; description?: string; members: string[]; projects: string[] }) =>
     post<{ id: string; name: string; added: number; removed: number }>('/teams', body),

@@ -65,11 +65,13 @@ const toDraft = (r?: CurationRule): Draft => {
 
 const Curation: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
-  const { me } = useApp();
+  const { me, role } = useApp();
+  const isUser = role === 'user';
+  const own = (r: CurationRule) => !isUser || (r.layer === 'user' && r.owner_id === me?.username);
   const layer = route.params.get('layer') || 'all';
   const selectedId = route.params.get('rule');
   const rules = useApi(() => api.rules(), []);
-  const matches = useApi(() => api.ruleMatches(), []);
+  const matches = useApi(() => (isUser ? Promise.resolve(null as never) : api.ruleMatches()), [isUser]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [scanning, setScanning] = useState(false);
   const [deleting, setDeleting] = useState<CurationRule | null>(null);
@@ -121,13 +123,20 @@ const Curation: React.FC<{ route: HashRoute }> = ({ route }) => {
   return (
     <>
       <PageHeader
-        title="Curation rules"
-        description="Rules run inline on every write and again in curator batch scans. Lower priority numbers run first; the first blocking match wins."
+        title={isUser ? 'My curation rules' : 'Curation rules'}
+        crumbs={[{ label: isUser ? 'My curation rules' : 'Curation rules' }]}
+        description={
+          isUser
+            ? 'Personal rules check what your agents write to your memories — block secrets, quarantine sensitive text or flag near-duplicates. System and organization rules always apply and are shown read-only.'
+            : 'Rules run inline on every write and again in curator batch scans. Lower priority numbers run first; the first blocking match wins.'
+        }
         actions={
           <>
-            <button type="button" className="btn bs" disabled={scanning || all.length === 0} onClick={scan}>
-              {scanning ? 'Scanning…' : 'Run batch scan now'}
-            </button>
+            {!isUser && (
+              <button type="button" className="btn bs" disabled={scanning || all.length === 0} onClick={scan}>
+                {scanning ? 'Scanning…' : 'Run batch scan now'}
+              </button>
+            )}
             <button type="button" className="btn bp" onClick={() => select('new')}>
               Create rule
             </button>
@@ -213,7 +222,7 @@ const Curation: React.FC<{ route: HashRoute }> = ({ route }) => {
                             {matches.data?.available ? fmtInt(matches.data.counts[r.name] ?? 0) : '—'}
                           </td>
                           <td onClick={(e) => e.stopPropagation()}>
-                            <Switch on={r.enabled} label={`${r.name} enabled`} onChange={() => toggle(r)} />
+                            <Switch on={r.enabled} label={`${r.name} enabled`} onChange={own(r) ? () => toggle(r) : undefined} />
                           </td>
                         </tr>
                       ))}
@@ -298,8 +307,10 @@ const RuleEditor: React.FC<{
   onDelete: (r: CurationRule) => void;
 }> = ({ initial, rule, onClose, onSaved, onDelete }) => {
   const toast = useToast();
-  const { me } = useApp();
-  const [d, setD] = useState<Draft>(initial);
+  const { me, role } = useApp();
+  const isUser = role === 'user';
+  const readOnly = isUser && !!rule && !(rule.layer === 'user' && rule.owner_id === me?.username);
+  const [d, setD] = useState<Draft>(isUser && !rule ? { ...initial, layer: 'user', owner_id: me?.username ?? '' } : initial);
   const [sample, setSample] = useState('');
   const [test, setTest] = useState<RuleTestResult | null>(null);
   const [testErr, setTestErr] = useState<string | null>(null);
@@ -467,7 +478,13 @@ const RuleEditor: React.FC<{
           <input id="pr" className="in" type="number" value={d.priority} onChange={(e) => set('priority', Number(e.target.value))} />
         </div>
       </div>
-      {!d.id && (
+      {readOnly && (
+        <div className="alert">
+          This is a {d.layer === 'system' ? 'system' : d.layer === 'organizational' ? 'organization' : 'another person’s'} rule. It applies to your memories too; only
+          platform admins can change it.
+        </div>
+      )}
+      {!d.id && !isUser && (
         <div className="f">
           <label htmlFor="ly">Layer</label>
           <select id="ly" className="in" value={d.layer} onChange={(e) => set('layer', e.target.value)}>
@@ -513,13 +530,13 @@ const RuleEditor: React.FC<{
       </div>
       {err && <div className="alert err-a">{err}</div>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button type="button" className="btn bp" disabled={busy || !d.name.trim() || (d.tier === 'regex' && !d.pattern && !d.pattern_set)} onClick={save}>
+        <button type="button" className="btn bp" disabled={readOnly || busy || !d.name.trim() || (d.tier === 'regex' && !d.pattern && !d.pattern_set)} onClick={save}>
           {busy ? 'Saving…' : 'Save rule'}
         </button>
         <button type="button" className="btn bg" onClick={onClose}>
           Cancel
         </button>
-        {rule && rule.layer !== 'system' && (
+        {rule && rule.layer !== 'system' && !readOnly && (
           <button type="button" className="btn bl danger" style={{ marginLeft: 'auto' }} onClick={() => onDelete(rule)}>
             Delete rule
           </button>

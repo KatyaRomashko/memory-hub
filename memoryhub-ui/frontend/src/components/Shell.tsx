@@ -122,10 +122,12 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
   },
   {
     group: 'Governance',
+    groupFor: { user: 'My governance' },
     items: [
       { path: '/review', label: 'Review queue', badge: 'review', labelFor: { user: 'Review requests' } },
-      { path: '/curation', label: 'Curation rules', roles: ADMIN },
-      { path: '/audit', label: 'Audit & forensics', roles: ADMIN },
+      { path: '/curation', label: 'Curation rules', labelFor: { user: 'My curation rules' } },
+      { path: '/reads', label: 'Who read my memories', roles: USER },
+      { path: '/audit', label: 'Audit & forensics', roles: [...ADMIN, 'user'], labelFor: { user: 'My activity' } },
     ],
   },
   {
@@ -138,6 +140,7 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     ],
   },
   { group: 'Platform', items: [{ path: '/settings', label: 'Settings', roles: ADMIN }] },
+  { group: 'Account', items: [{ path: '/preferences', label: 'Preferences & privacy', roles: USER }] },
 ];
 
 export const canSee = (path: string, role: Role) =>
@@ -200,10 +203,22 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
     }
     const target = res?.redirect || '/#/login?signed_out=1';
     if (res?.method === 'POST') {
-      // The OpenShift OAuth server's /logout only accepts a form POST.
+      // The OpenShift OAuth server's /logout only accepts a form POST and
+      // responds with an empty 200 page. Submit it into a hidden frame so the
+      // user never lands on that blank page, then clear oauth-proxy's cookie
+      // and replace the current history entry with our sign-in screen.
+      const frame = document.createElement('iframe');
+      const frameName = `memoryhub-logout-${Date.now()}`;
+      frame.name = frameName;
+      frame.title = 'Signing out';
+      frame.setAttribute('aria-hidden', 'true');
+      frame.style.display = 'none';
+      document.body.appendChild(frame);
       const form = document.createElement('form');
       form.method = 'POST';
       form.action = target;
+      form.target = frameName;
+      form.style.display = 'none';
       Object.entries(res.fields ?? {}).forEach(([name, value]) => {
         const input = document.createElement('input');
         input.type = 'hidden';
@@ -213,6 +228,23 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
       });
       document.body.appendChild(form);
       form.submit();
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        frame.remove();
+        form.remove();
+        window.location.replace('/#/login?signed_out=1');
+      };
+      // Give the cross-origin POST time to clear the OpenShift session before
+      // asking the local oauth-proxy to clear its session cookie as well.
+      window.setTimeout(() => {
+        fetch('/oauth/sign_out', { credentials: 'same-origin', redirect: 'manual' })
+          .catch(() => undefined)
+          .finally(finish);
+      }, 400);
+      // Network failures must still leave the app on a usable sign-in route.
+      window.setTimeout(finish, 2500);
       return;
     }
     window.location.replace(target);

@@ -10,7 +10,7 @@ const activityBuckets: Record<string, [number, number]> = {
   '1h': [12, 300],
   '12h': [24, 1800],
   '1d': [24, 3600],
-  '7d': [28, 21600],
+  '7d': [7, 86400],
   '30d': [30, 86400],
 };
 const activityFor = (range: string) => {
@@ -98,7 +98,7 @@ const overview = {
   categories: [{ name: 'tooling', memory_count: 1 }, { name: 'containers', memory_count: 1 }],
   activity: activityFor('7d'),
   activity_range: '7d',
-  activity_bucket_seconds: 21600,
+  activity_bucket_seconds: 86400,
   activity_source: 'memory',
   recent: [],
   recent_source: 'memory',

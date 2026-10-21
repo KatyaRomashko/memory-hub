@@ -440,6 +440,48 @@ export interface ProjectDetail extends ProjectRow {
   loading_policy: string;
 }
 
+export interface MyPrefs {
+  write: { default_scope: string; default_weight: number };
+  privacy: { allow_promotion_by_others: boolean; show_in_team_directory: boolean };
+  dreaming_fade_days: number;
+}
+
+export interface MyPrefsResponse {
+  prefs: MyPrefs;
+  account: {
+    username: string;
+    name: string;
+    email: string | null;
+    role: Role;
+    source: string;
+    agents: string[];
+    projects: string[];
+    roles: string[];
+    own_memories: number;
+  };
+}
+
+export interface MyReads {
+  days: number;
+  who: 'others' | 'all';
+  identities: string[];
+  total: number;
+  readers: { actor_id: string; driver_id: string | null; count: number; last: string; kinds: string[]; denied: number; yours: boolean; via_dashboard: boolean }[];
+  top_memories: { id: string; stub: string; scope: string; count: number }[];
+  events: {
+    id: number | string;
+    timestamp: string;
+    event_type: string;
+    actor_id: string;
+    driver_id: string | null;
+    decision: string;
+    memory_id: string;
+    memory_stub: string;
+    yours: boolean;
+    break_glass: boolean;
+  }[];
+}
+
 export interface TeamRow {
   id: string;
   name: string;

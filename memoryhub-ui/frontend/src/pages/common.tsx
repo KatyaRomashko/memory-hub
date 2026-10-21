@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '@/api/client';
 import { useApp } from '@/components/Shell';
 import { Modal, useToast } from '@/components/ui';
@@ -82,6 +82,21 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
   const [scopeId, setScopeId] = useState('');
   const [weight, setWeight] = useState(0.7);
   const [domains, setDomains] = useState('');
+  // The user's saved defaults (Preferences & privacy), when available.
+  useEffect(() => {
+    let alive = true;
+    api
+      .myPrefs()
+      .then((r) => {
+        if (!alive) return;
+        setScope(r.prefs.write.default_scope);
+        setWeight(r.prefs.write.default_weight);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsScopeId = ['project', 'role', 'campaign'].includes(scope);

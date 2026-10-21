@@ -22,11 +22,11 @@ from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
 from memoryhub_core.models.project import Project, ProjectMembership
 from memoryhub_core.models.role import RoleAssignment
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, literal_column, or_, select, text
+from sqlalchemy import and_, false, func, literal_column, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import access_for, admin_viewer
+from src.access import ViewerDep, access_for, admin_viewer
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.routes_dashboard import _auth_clients, _event_row, _load_memory, _review_counts, tool_name
@@ -1189,7 +1189,7 @@ class RuleTestRequest(BaseModel):
     action: str = "flag"
 
 
-@router.post("/api/rules/test", dependencies=[Depends(admin_viewer)])
+@router.post("/api/rules/test")
 async def test_rule(body: RuleTestRequest, settings: SettingsDep):
     if body.tier == "regex":
         if body.pattern_set in ("secrets", "pii"):
@@ -1760,6 +1760,7 @@ async def audit_log(
     request: Request,
     db: DbDep,
     settings: SettingsDep,
+    viewer: ViewerDep,
     operation: list[str] | None = Query(default=None),
     decision: str | None = Query(default=None, pattern="^(allowed|denied)$"),
     actor: str | None = Query(default=None, max_length=255),
@@ -1769,12 +1770,19 @@ async def audit_log(
 ):
     tenant_id = settings.ui_tenant_id
     where = [AuditLog.tenant_id == tenant_id]
+    acc = await access_for(db, settings, viewer)
+    mine = acc.grants.identities if acc.grants is not None else None
+    if mine is not None:
+        where.append(or_(AuditLog.actor_id.in_(mine), AuditLog.driver_id.in_(mine)))
     if operation:
         where.append(AuditLog.event_type.in_(operation))
     if decision:
         where.append(AuditLog.decision == decision)
     if actor:
-        where.append(or_(AuditLog.actor_id == actor, AuditLog.driver_id == actor))
+        if mine is not None and actor not in mine:
+            where.append(false())
+        else:
+            where.append(or_(AuditLog.actor_id == actor, AuditLog.driver_id == actor))
     if hours:
         where.append(AuditLog.timestamp >= now_utc() - timedelta(hours=hours))
     total = (await db.execute(select(func.count()).select_from(AuditLog).where(*where))).scalar_one()
@@ -1790,31 +1798,29 @@ async def audit_log(
     ).all()
     items = []
     for event, memory in rows:
+        if memory is not None and not acc.can_read_row(memory):
+            memory = None
         item = _event_row(event, memory, {})
         if event.event_type == "memory.update" and memory is not None and memory.previous_version_id:
             prev = (
-                await db.execute(select(MemoryNode).where(MemoryNode.id == memory.previous_version_id))
+                await db.execute(
+                    select(MemoryNode).where(
+                        MemoryNode.id == memory.previous_version_id,
+                        MemoryNode.tenant_id == tenant_id,
+                    )
+                )
             ).scalar_one_or_none()
-            if prev is not None:
+            if prev is not None and acc.can_read_row(prev):
                 item["change"] = {
                     "before": {"version": prev.version, "content": prev.content, "weight": prev.weight},
                     "after": {"version": memory.version, "content": memory.content, "weight": memory.weight},
                 }
         items.append(item)
-    types = (
-        (await db.execute(select(AuditLog.event_type).where(AuditLog.tenant_id == tenant_id).distinct()))
-        .scalars()
-        .all()
-    )
+    types = (await db.execute(select(AuditLog.event_type).where(*where).distinct())).scalars().all()
     denied_total = (
-        await db.execute(
-            select(func.count())
-            .select_from(AuditLog)
-            .where(AuditLog.tenant_id == tenant_id, AuditLog.decision == "denied")
-        )
+        await db.execute(select(func.count()).select_from(AuditLog).where(*where, AuditLog.decision == "denied"))
     ).scalar_one()
     tenant_settings = await load_tenant_settings(db, tenant_id)
-    acc = await access_for(db, settings, viewer_from_request(request, settings))
     return {
         "items": acc.redact_tree(items),
         "total": total,

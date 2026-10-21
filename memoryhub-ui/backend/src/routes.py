@@ -14,7 +14,7 @@ from memoryhub_core.services.exceptions import MemoryNotFoundError
 from memoryhub_core.services.memory import (
     get_memory_history as get_memory_history_service,
 )
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.access import access_for, admin_viewer, current_viewer, legacy_viewer
@@ -946,8 +946,27 @@ def _rule_to_response(rule: CuratorRule) -> CurationRuleResponse:
     )
 
 
+async def _own_rule_guard(rule_id: str, request: Request, db: DbDep, settings: SettingsDep) -> None:
+    """Users may change only their own user-layer rules; admins any rule."""
+    viewer = viewer_from_request(request, settings)
+    if viewer.can_admin:
+        return
+    try:
+        parsed = uuid.UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {rule_id!r}") from None
+    rule = (
+        await db.execute(
+            select(CuratorRule).where(CuratorRule.id == parsed, CuratorRule.tenant_id == settings.ui_tenant_id)
+        )
+    ).scalar_one_or_none()
+    if rule is None or rule.layer != "user" or rule.owner_id != viewer.username:
+        raise HTTPException(status_code=403, detail="You can change only your own personal rules")
+
+
 @router.get("/api/rules", response_model=list[CurationRuleResponse])
 async def list_rules(
+    request: Request,
     db: DbDep,
     settings: SettingsDep,
     tier: str | None = Query(default=None),
@@ -972,19 +991,29 @@ async def list_rules(
         stmt = stmt.where(CuratorRule.enabled == enabled)
     if layer:
         stmt = stmt.where(CuratorRule.layer == layer)
+    viewer = viewer_from_request(request, settings)
+    if viewer.restricted:
+        # Users see the shared layers and their own personal rules.
+        stmt = stmt.where(or_(CuratorRule.layer != "user", CuratorRule.owner_id == viewer.username))
     result = await db.execute(stmt)
     rules = result.scalars().all()
     return [_rule_to_response(r) for r in rules]
 
 
-@router.post("/api/rules", response_model=CurationRuleResponse, status_code=201, dependencies=[Depends(admin_viewer)])
-async def create_rule(body: CreateRuleRequest, db: DbDep, settings: SettingsDep):
+@router.post("/api/rules", response_model=CurationRuleResponse, status_code=201)
+async def create_rule(body: CreateRuleRequest, request: Request, db: DbDep, settings: SettingsDep):
     """Create a new curation rule.
 
     Phase 6 (#46): stamps ``settings.ui_tenant_id`` on the new rule so it
     is owned by this UI deployment's tenant. The BFF never writes rules
     into other tenants' namespaces.
     """
+    viewer = viewer_from_request(request, settings)
+    if not viewer.can_admin:
+        # Personal rules only: they apply to the user's own writes.
+        body.layer = "user"
+        body.owner_id = viewer.username
+        body.override = False
     rule = CuratorRule(
         tenant_id=settings.ui_tenant_id,
         name=body.name,
@@ -1031,10 +1060,11 @@ async def get_rule(rule_id: str, db: DbDep, settings: SettingsDep):
     return _rule_to_response(rule)
 
 
-@router.patch("/api/rules/{rule_id}", response_model=CurationRuleResponse, dependencies=[Depends(admin_viewer)])
+@router.patch("/api/rules/{rule_id}", response_model=CurationRuleResponse, dependencies=[Depends(_own_rule_guard)])
 async def update_rule(
     rule_id: str,
     body: UpdateRuleRequest,
+    request: Request,
     db: DbDep,
     settings: SettingsDep,
 ):
@@ -1046,6 +1076,10 @@ async def update_rule(
 
     Phase 6 (#46): cross-tenant updates return 404.
     """
+    if not viewer_from_request(request, settings).can_admin:
+        body.layer = None
+        body.owner_id = None
+        body.override = None
     tenant_id = settings.ui_tenant_id
     try:
         parsed_id = uuid.UUID(rule_id)
@@ -1162,7 +1196,7 @@ async def get_rule_history(rule_id: str, db: DbDep, settings: SettingsDep):
     ]
 
 
-@router.delete("/api/rules/{rule_id}", status_code=204, dependencies=[Depends(admin_viewer)])
+@router.delete("/api/rules/{rule_id}", status_code=204, dependencies=[Depends(_own_rule_guard)])
 async def delete_rule(rule_id: str, db: DbDep, settings: SettingsDep):
     """Delete a curation rule.
 

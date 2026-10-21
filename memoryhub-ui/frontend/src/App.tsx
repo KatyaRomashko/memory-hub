@@ -6,6 +6,8 @@ import { ToastProvider } from '@/components/ui';
 import { navigate, useHashRoute, type HashRoute } from '@/hooks/useHashRoute';
 import Accounts from '@/pages/Accounts';
 import Audit from '@/pages/Audit';
+import Preferences from '@/pages/Preferences';
+import WhoRead from '@/pages/WhoRead';
 import Dreaming from '@/pages/Dreaming';
 import Clients from '@/pages/Clients';
 import Curation from '@/pages/Curation';
@@ -37,6 +39,8 @@ const SCREENS: Record<string, Screen> = {
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <Projects route={r} /> },
   '/dreaming': { nav: '/dreaming', title: 'Dreaming', render: () => <Dreaming /> },
+  '/reads': { nav: '/reads', title: 'Who read my memories', render: (r) => <WhoRead route={r} /> },
+  '/preferences': { nav: '/preferences', title: 'Preferences & privacy', render: () => <Preferences /> },
   '/review': { nav: '/review', title: 'Review queue', render: (r) => <Review route={r} /> },
   '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },
   '/audit': { nav: '/audit', title: 'Audit & forensics', render: (r) => <Audit route={r} /> },

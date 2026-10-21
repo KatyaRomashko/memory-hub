@@ -184,6 +184,11 @@ const LoginForm: React.FC<{ status: AuthStatus | null; onDone: () => void; signe
           Log in with OpenShift
         </button>
       )}
+      {!accounts && (
+        <p className="sm" style={{ margin: 0, textAlign: 'center' }}>
+          Need a local account? <a href="#/register">Open registration options</a>
+        </p>
+      )}
       {status?.api_key_login && (
         <details className="auth-dev" open={!accounts}>
           <summary>Development cluster: sign in with an API key</summary>
@@ -280,8 +285,10 @@ const RegisterForm: React.FC<{ status: AuthStatus | null; invite?: string; onDon
   if (status && !status.local_accounts) {
     return (
       <div className="auth-form">
-        <h1>Accounts come from OpenShift</h1>
-        <p className="muted">This deployment signs people in with their OpenShift identity, so there is nothing to register. Ask a cluster admin to add you to the right groups.</p>
+        <h1>Registration options</h1>
+        <p className="muted">
+          Local accounts are not enabled on this deployment yet. You can sign in with OpenShift, or ask a platform admin to enable local accounts if you need email and password login.
+        </p>
         <a className="btn bp block lg" href="#/login">
           Back to log in
         </a>

@@ -1,0 +1,253 @@
+"""The signed-in user's own corner: preferences & privacy, and who read their memories."""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections import defaultdict
+from datetime import timedelta
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from memoryhub_core.models.audit import AuditLog
+from memoryhub_core.models.memory import MemoryNode
+from pydantic import BaseModel, Field
+from sqlalchemy import and_, func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.access import ViewerDep, access_for
+from src.config import Settings, get_settings
+from src.database import get_db
+from src.ui_common import SCOPES, audit, clean_stub, now_utc
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+DbDep = Annotated[AsyncSession, Depends(get_db)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+PREFS = "memoryhub_ui_user_prefs"
+DEFAULT_PREFS = {
+    "write": {"default_scope": "user", "default_weight": 0.7},
+    "privacy": {"allow_promotion_by_others": False, "show_in_team_directory": True},
+    "dreaming_fade_days": 60,
+}
+_ready = False
+
+
+async def _ensure(db: AsyncSession) -> None:
+    global _ready
+    if _ready:
+        return
+    await db.execute(
+        text(
+            f"""
+            CREATE TABLE IF NOT EXISTS {PREFS} (
+                tenant_id VARCHAR(255) NOT NULL,
+                username VARCHAR(255) NOT NULL,
+                prefs JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (tenant_id, username)
+            )
+            """
+        )
+    )
+    await db.commit()
+    _ready = True
+
+
+def _merge(stored: dict) -> dict:
+    merged = json.loads(json.dumps(DEFAULT_PREFS))
+    for key, value in (stored or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key].update({k: v for k, v in value.items() if k in merged[key]})
+        elif key in merged:
+            merged[key] = value
+    return merged
+
+
+async def load_prefs(db: AsyncSession, tenant_id: str, username: str) -> dict:
+    """Never raises: defaults when the table is unavailable."""
+    try:
+        await _ensure(db)
+        row = (
+            await db.execute(
+                text(f"SELECT prefs FROM {PREFS} WHERE tenant_id = :t AND username = :u"),
+                {"t": tenant_id, "u": username},
+            )
+        ).first()
+    except Exception as exc:  # pragma: no cover - needs a database
+        logger.info("User preferences unavailable: %s", exc)
+        await db.rollback()
+        return _merge({})
+    stored = row[0] if row else {}
+    return _merge(json.loads(stored) if isinstance(stored, str) else stored)
+
+
+def _validate(p: dict) -> list[str]:
+    errors = []
+    if p["write"]["default_scope"] not in ("user", "project", "campaign", "role"):
+        errors.append("Default scope must be user, project, campaign or role")
+    if not (0 <= float(p["write"]["default_weight"]) <= 1):
+        errors.append("Default weight must be between 0 and 1")
+    if not (14 <= int(p["dreaming_fade_days"]) <= 365):
+        errors.append("Fade after must be between 14 and 365 days")
+    return errors
+
+
+@router.get("/api/me/prefs")
+async def get_prefs(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
+    acc = await access_for(db, settings, viewer)
+    grants = acc.grants
+    own = (
+        await db.execute(
+            select(func.count())
+            .select_from(MemoryNode)
+            .where(
+                MemoryNode.tenant_id == settings.ui_tenant_id,
+                MemoryNode.deleted_at.is_(None),
+                MemoryNode.is_current.is_(True),
+                MemoryNode.parent_id.is_(None),
+                MemoryNode.scope == "user",
+                MemoryNode.owner_id.in_(list(grants.identities) if grants else [viewer.username]),
+            )
+        )
+    ).scalar_one()
+    return {
+        "prefs": await load_prefs(db, settings.ui_tenant_id, viewer.username),
+        "account": {
+            "username": viewer.username,
+            "name": viewer.name,
+            "email": viewer.email,
+            "role": viewer.role,
+            "source": viewer.source,
+            "agents": sorted(grants.agents) if grants else [],
+            "projects": sorted(grants.projects) if grants else [],
+            "roles": sorted(grants.roles) if grants else [],
+            "own_memories": own,
+        },
+    }
+
+
+class PrefsUpdate(BaseModel):
+    write: dict | None = None
+    privacy: dict | None = None
+    dreaming_fade_days: int | None = Field(default=None, ge=14, le=365)
+
+
+@router.put("/api/me/prefs")
+async def put_prefs(body: PrefsUpdate, db: DbDep, settings: SettingsDep, viewer: ViewerDep):
+    if viewer.source == "anonymous" and viewer.role == "operator":
+        raise HTTPException(status_code=403, detail="Sign in to save preferences")
+    prefs = await load_prefs(db, settings.ui_tenant_id, viewer.username)
+    for key, value in body.model_dump(exclude_none=True).items():
+        if isinstance(value, dict):
+            prefs[key].update({k: v for k, v in value.items() if k in prefs[key]})
+        else:
+            prefs[key] = value
+    errors = _validate(prefs)
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+    await _ensure(db)
+    await db.execute(
+        text(
+            f"""
+            INSERT INTO {PREFS} (tenant_id, username, prefs) VALUES (:t, :u, CAST(:p AS JSONB))
+            ON CONFLICT (tenant_id, username) DO UPDATE SET prefs = EXCLUDED.prefs, updated_at = now()
+            """
+        ),
+        {"t": settings.ui_tenant_id, "u": viewer.username, "p": json.dumps(prefs)},
+    )
+    await audit(
+        db,
+        tenant_id=settings.ui_tenant_id,
+        viewer=viewer,
+        event_type="prefs.update",
+        scope="user",
+        owner_id=viewer.username,
+        memory_id=None,
+        metadata={"privacy": prefs["privacy"]},
+    )
+    await db.commit()
+    return {"prefs": prefs}
+
+
+@router.get("/api/me/reads")
+async def who_read_my_memories(
+    db: DbDep,
+    settings: SettingsDep,
+    viewer: ViewerDep,
+    days: int = Query(default=30, ge=1, le=400),
+    who: str = Query(default="others", pattern="^(others|all)$"),
+):
+    """Who touched the memories you own (your user-scope memories and your agents')."""
+    acc = await access_for(db, settings, viewer)
+    mine = list(acc.grants.identities) if acc.grants else [viewer.username]
+    since = now_utc() - timedelta(days=days)
+    where = [
+        AuditLog.tenant_id == settings.ui_tenant_id,
+        AuditLog.timestamp >= since,
+        MemoryNode.scope == "user",
+        MemoryNode.owner_id.in_(mine),
+    ]
+    if who == "others":
+        where.append(AuditLog.actor_id.not_in(mine))
+    rows = (
+        await db.execute(
+            select(AuditLog, MemoryNode)
+            .join(MemoryNode, and_(MemoryNode.id == AuditLog.memory_id, MemoryNode.tenant_id == settings.ui_tenant_id))
+            .where(*where)
+            .order_by(AuditLog.timestamp.desc())
+            .limit(300)
+        )
+    ).all()
+    readers: dict[str, dict] = {}
+    memories: dict[str, dict] = defaultdict(lambda: {"count": 0})
+    for event, memory in rows:
+        r = readers.setdefault(
+            event.actor_id,
+            {
+                "actor_id": event.actor_id,
+                "driver_id": event.driver_id,
+                "count": 0,
+                "last": event.timestamp,
+                "kinds": set(),
+                "denied": 0,
+                "yours": event.actor_id in mine,
+                "via_dashboard": False,
+            },
+        )
+        r["count"] += 1
+        r["kinds"].add(event.event_type)
+        r["denied"] += 1 if event.decision == "denied" else 0
+        r["via_dashboard"] = r["via_dashboard"] or (event.event_metadata or {}).get("via") == "dashboard"
+        m = memories[str(memory.id)]
+        m.update(id=str(memory.id), stub=clean_stub(memory.stub), scope=memory.scope)
+        m["count"] += 1
+    events = [
+        {
+            "id": event.id,
+            "timestamp": event.timestamp,
+            "event_type": event.event_type,
+            "actor_id": event.actor_id,
+            "driver_id": event.driver_id,
+            "decision": event.decision,
+            "memory_id": str(memory.id),
+            "memory_stub": clean_stub(memory.stub),
+            "yours": event.actor_id in mine,
+            "break_glass": bool((event.event_metadata or {}).get("break_glass")),
+        }
+        for event, memory in rows[:60]
+    ]
+    return {
+        "days": days,
+        "who": who,
+        "identities": sorted(mine),
+        "total": len(rows),
+        "readers": sorted(
+            ({**r, "kinds": sorted(r["kinds"])} for r in readers.values()), key=lambda r: (-r["count"], r["actor_id"])
+        ),
+        "top_memories": sorted(memories.values(), key=lambda m: -m["count"])[:8],
+        "events": events,
+        "scopes": SCOPES,
+    }
