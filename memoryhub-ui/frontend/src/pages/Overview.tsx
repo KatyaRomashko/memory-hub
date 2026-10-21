@@ -4,47 +4,55 @@ import { PageHeader, useApp } from '@/components/Shell';
 import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby, Status } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash } from '@/hooks/useHashRoute';
-import type { Overview as OverviewData } from '@/types';
+import type { Overview as OverviewData, OverviewRange } from '@/types';
 import { fmtInt, fmtTime, scopeMeta } from '@/utils/format';
-import { ActivityChart, actorKind, actorName, decisionOf, EventTarget, WriteMemoryModal } from './common';
+import { ACTIVITY_RANGES, ActivityChart, PIE_COLORS, PieChart } from '@/components/charts';
+import { actorKind, actorName, decisionOf, EventTarget, WriteMemoryModal } from './common';
 
+/** A KPI tile. With an href the whole tile is a link to the records behind the number. */
 const KpiCard: React.FC<{ label: string; href?: string; loading: boolean; value?: React.ReactNode; sub?: React.ReactNode }> = ({
   label,
   href,
   loading,
   value,
   sub,
-}) => (
-  <div className="card">
-    <div className="sm muted">{label}</div>
-    {loading ? (
-      <>
-        <Sk w="55%" h={34} style={{ margin: '8px 0 6px' }} />
-        <Sk w="70%" h={12} />
-      </>
-    ) : (
-      <>
-        <div className="kpi">
-          {href ? (
-            <a href={href} className="link-plain" style={{ color: 'inherit' }}>
-              {value}
-            </a>
-          ) : (
-            value
-          )}
-        </div>
-        <div className="sm">{sub}</div>
-      </>
-    )}
-  </div>
-);
+}) => {
+  const body = (
+    <>
+      <div className="sm muted kpi-label">
+        {label}
+        {href && <span className="kpi-go"><Icon.Arrow size={15} /></span>}
+      </div>
+      {loading ? (
+        <>
+          <Sk w="55%" h={34} style={{ margin: '8px 0 6px' }} />
+          <Sk w="70%" h={12} />
+        </>
+      ) : (
+        <>
+          <div className="kpi">{value}</div>
+          <div className="sm">{sub}</div>
+        </>
+      )}
+    </>
+  );
+  return href ? (
+    <a className="card kpi-card" href={href}>
+      {body}
+    </a>
+  ) : (
+    <div className="card">{body}</div>
+  );
+};
 
 const Overview: React.FC = () => {
   const { tenant, standby, refreshCounts } = useApp();
   // While the tenant has no memories the page polls every 5 s until the
   // first write_memory arrives, then switches to the live layout.
-  const { data, error, loading, reload } = useApi<OverviewData>(() => api.overview(), [], standby ? 5000 : 30000);
+  const [activityRange, setActivityRange] = useState<OverviewRange>('7d');
+  const { data, error, loading, reload } = useApi<OverviewData>(() => api.overview(activityRange), [activityRange], standby ? 5000 : 30000);
   const [writeOpen, setWriteOpen] = useState(false);
+  const selectedActivityRange = ACTIVITY_RANGES.find((item) => item.value === activityRange) ?? ACTIVITY_RANGES[4];
   const empty = data ? data.memories.current === 0 : standby;
   const first = loading && !data;
 
@@ -63,6 +71,25 @@ const Overview: React.FC = () => {
 
   const total = data?.memories.current ?? 0;
   const scopes = (data?.scopes ?? []).filter((s) => s.count > 0 || scopeMeta(s.scope).cls !== 'g');
+  // Largest categories get their own slice; the long tail folds into "Other"
+  // so the pie stays readable.
+  const cats = data?.categories ?? [];
+  const MAX_SLICES = PIE_COLORS.length - 1;
+  const categorySlices = (cats.length > MAX_SLICES + 1 ? cats.slice(0, MAX_SLICES) : cats).map((c) => ({
+    key: c.name,
+    label: c.name,
+    value: c.memory_count,
+    href: buildHash('/memories', { domain: c.name }),
+  }));
+  if (cats.length > MAX_SLICES + 1) {
+    const rest = cats.slice(MAX_SLICES);
+    categorySlices.push({
+      key: '__other',
+      label: `Other (${rest.length} categories)`,
+      value: rest.reduce((a, c) => a + c.memory_count, 0),
+      href: buildHash('/memories'),
+    });
+  }
   const healthBad = data?.health.filter((h) => h.status === 'down' || h.status === 'degraded') ?? [];
 
   return (
@@ -159,41 +186,47 @@ const Overview: React.FC = () => {
         </div>
 
         <div className="grid-2-1">
-          <div className="card span-2">
-            <div className="ch">
-              <h3>Memory operations · last 14 days</h3>
-              <div style={{ display: 'flex', gap: 16, fontSize: 13 }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 3, background: '#0066cc' }} />
-                  Searches
-                </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 3, background: '#92c5f9' }} />
-                  Writes &amp; updates
-                </span>
+          <div className="card span-2 ops">
+            <div className="ops-head">
+              <div>
+                <h3>Memory operations</h3>
+                <div className="ops-sub">{selectedActivityRange.title}</div>
+              </div>
+              <div className="ops-tools">
+                <div className="ops-range" role="group" aria-label="Memory operation range">
+                  {ACTIVITY_RANGES.map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      className={activityRange === item.value ? 'on' : ''}
+                      aria-pressed={activityRange === item.value}
+                      onClick={() => setActivityRange(item.value)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <button type="button" className="ops-refresh" onClick={reload} disabled={loading} aria-label="Refresh memory operations" title="Refresh">
+                  <span className={loading && data ? 'spin' : undefined} style={{ display: 'inline-flex' }}>
+                    <Icon.Refresh size={15} />
+                  </span>
+                </button>
               </div>
             </div>
             {first ? (
-              <Sk h={220} r={10} />
+              <Sk h={290} r={8} />
             ) : empty ? (
-              <Standby>Daily searches and writes from the audit log will chart here.</Standby>
+              <Standby>Searches and writes from the audit log will chart here.</Standby>
             ) : (
               <>
-                <ActivityChart data={data!.activity} />
-                {data!.activity_source === 'memory' && (
-                  <p className="sm muted" style={{ margin: '8px 0 0' }}>
-                    No audit events yet — showing memory writes only.
-                  </p>
-                )}
+                <ActivityChart data={data!.activity} bucketSeconds={data!.activity_bucket_seconds} />
+                {data!.activity_source === 'memory' && <p className="ops-foot">No audit events yet — showing memory writes only.</p>}
               </>
             )}
           </div>
           <div className="card">
             <div className="ch">
               <h3>Memories by scope</h3>
-              <a className="sm" href={buildHash('/memories')}>
-                View all
-              </a>
             </div>
             {first ? (
               <SkLines lines={6} gap={22} />
@@ -226,6 +259,38 @@ const Overview: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+
+        <div className="card">
+          <div className="ch">
+            <div>
+              <h3>Memory categories</h3>
+              <p className="sm muted" style={{ margin: '4px 0 0' }}>
+                Category mix across all memories, by domain tag. A memory can have more than one category.
+              </p>
+            </div>
+          </div>
+          {first ? (
+            <div style={{ display: 'flex', gap: 32, alignItems: 'center' }}>
+              <Sk w={200} h={200} r={100} />
+              <div style={{ flex: 1 }}>
+                <SkLines lines={5} gap={18} />
+              </div>
+            </div>
+          ) : empty ? (
+            <Standby>The mix of domain tags across memories appears here.</Standby>
+          ) : categorySlices.length ? (
+            <>
+              <PieChart slices={categorySlices} label={`Memory categories: ${categorySlices.map((c) => `${c.label} ${c.value}`).join(', ')}`} />
+              <p className="sm muted" style={{ margin: '14px 0 0' }}>
+                {fmtInt(data!.memories.current)} current memories · counts are memory–category assignments and may overlap.
+              </p>
+            </>
+          ) : (
+            <p className="sm muted" style={{ margin: 0 }}>
+              No categories have been assigned yet. Add domain tags to memories to build this mix.
+            </p>
+          )}
         </div>
 
         <div className="grid-2-1">

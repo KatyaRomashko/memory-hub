@@ -14,7 +14,7 @@ import re
 import time
 import uuid
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -25,10 +25,11 @@ from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
 from memoryhub_core.models.project import ProjectMembership
 from memoryhub_core.models.role import RoleAssignment
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, exists, func, literal_column, or_, select, text, update
+from sqlalchemy import String, and_, case, cast, exists, func, literal_column, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from src.access import ContentDep, ViewerDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import (
@@ -119,6 +120,7 @@ async def me(request: Request, settings: SettingsDep):
         "email": viewer.email,
         "initials": viewer.initials,
         "source": viewer.source,
+        "role": viewer.role,
         "tenant_id": settings.ui_tenant_id,
     }
 
@@ -159,13 +161,31 @@ async def _recent_events(db: AsyncSession, tenant_id: str, limit: int) -> list[t
     return [(row[0], row[1]) for row in (await db.execute(stmt)).all()]
 
 
+# Overview activity windows: range -> (window seconds, bucket seconds).
+ACTIVITY_RANGES: dict[str, tuple[int, int]] = {
+    "all": (0, 0),
+    "1h": (3600, 300),
+    "12h": (12 * 3600, 1800),
+    "1d": (86400, 3600),
+    "7d": (7 * 86400, 6 * 3600),
+    "30d": (30 * 86400, 86400),
+}
+# Candidate bucket sizes for "all time", smallest first; the first one that
+# keeps the chart at <= 90 points wins.
+ALL_TIME_BUCKETS = (3600, 6 * 3600, 86400, 7 * 86400, 30 * 86400)
+
+
 @router.get("/api/overview")
-async def overview(db: DbDep, settings: SettingsDep):
+async def overview(
+    db: DbDep, settings: SettingsDep, viewer: ViewerDep, activity_range: str = Query("7d", alias="range")
+):
+    if activity_range not in ACTIVITY_RANGES:
+        raise HTTPException(status_code=422, detail=f"range must be one of: {', '.join(ACTIVITY_RANGES)}")
     tenant_id = settings.ui_tenant_id
     now = now_utc()
     tenant_settings = await load_tenant_settings(db, tenant_id)
     threshold = int(tenant_settings["governance"]["contradiction_threshold"])
-    base = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None)]
+    base = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity"]
 
     total = (await db.execute(select(func.count()).select_from(MemoryNode).where(*base))).scalar_one()
     new_7d = (
@@ -191,6 +211,21 @@ async def overview(db: DbDep, settings: SettingsDep):
     scopes = [{"scope": s, "count": scope_counts.get(s, 0), "pending": pending.get(s, 0)} for s in SCOPES] + [
         {"scope": s, "count": c, "pending": pending.get(s, 0)} for s, c in scope_counts.items() if s not in SCOPES
     ]
+
+    # Domain tags are the dashboard's category vocabulary. Count distinct
+    # memories for every tag rather than partitioning memories into one bucket:
+    # a memory can legitimately belong to several categories.
+    category_col = func.unnest(MemoryNode.domains).label("category")
+    category_rows = (
+        await db.execute(
+            select(category_col, func.count(func.distinct(MemoryNode.id)))
+            .where(*base)
+            .group_by(category_col)
+            .order_by(func.count(func.distinct(MemoryNode.id)).desc(), category_col)
+            .limit(40)
+        )
+    ).all()
+    categories = [{"name": row[0], "memory_count": row[1]} for row in category_rows if row[0]]
 
     # Identities: OAuth clients when the auth service answers, otherwise the
     # distinct writers seen in memory.
@@ -273,42 +308,74 @@ async def overview(db: DbDep, settings: SettingsDep):
         await db.execute(select(func.count()).select_from(per_memory).where(per_memory.c.n >= threshold))
     ).scalar_one()
 
-    # 14-day activity from the audit log; fall back to memory timestamps when
-    # the MCP server has not written audit events yet.
-    start = (now - timedelta(days=13)).replace(hour=0, minute=0, second=0, microsecond=0)
-    day_col = func.date_trunc("day", AuditLog.timestamp)
+    # Activity from the audit log, bucketed to fit the selected window; fall
+    # back to memory timestamps when the MCP server has not written audit
+    # events yet. Every bucket in the window is emitted, including empty ones,
+    # so the chart never hides gaps in the timeline.
+    if activity_range == "all":
+        earliest_audit = (
+            await db.execute(select(func.min(AuditLog.timestamp)).where(AuditLog.tenant_id == tenant_id))
+        ).scalar_one()
+        earliest_memory = (
+            await db.execute(select(func.min(MemoryNode.created_at)).where(MemoryNode.tenant_id == tenant_id))
+        ).scalar_one()
+        earliest = min((v for v in (earliest_audit, earliest_memory) if v is not None), default=now)
+        span = max(1.0, (now - earliest).total_seconds())
+        bucket = next((b for b in ALL_TIME_BUCKETS if span / b <= 90), ALL_TIME_BUCKETS[-1])
+        first_bucket = int(earliest.timestamp()) // bucket * bucket
+    else:
+        window, bucket = ACTIVITY_RANGES[activity_range]
+        first_bucket = (int(now.timestamp()) - window) // bucket * bucket + bucket
+    last_bucket = int(now.timestamp()) // bucket * bucket
+    activity_start = datetime.fromtimestamp(first_bucket, tz=UTC)
+
+    def bucket_of(col):
+        return (func.floor(func.extract("epoch", col) / bucket) * bucket).label("bucket")
+
+    audit_bucket = bucket_of(AuditLog.timestamp)
     activity_rows = (
         await db.execute(
             select(
-                day_col.label("day"),
+                audit_bucket,
                 func.count().filter(AuditLog.event_type.in_(SEARCH_EVENTS)),
                 func.count().filter(AuditLog.event_type.in_(WRITE_EVENTS)),
             )
-            .where(AuditLog.tenant_id == tenant_id, AuditLog.timestamp >= start)
-            .group_by(day_col)
+            .where(AuditLog.tenant_id == tenant_id, AuditLog.timestamp >= activity_start)
+            .group_by(audit_bucket)
         )
     ).all()
     activity_source = "audit"
-    by_day: dict[str, tuple[int, int]] = {row[0].date().isoformat(): (row[1], row[2]) for row in activity_rows}
-    if not any(w or s for s, w in by_day.values()):
-        mem_day = func.date_trunc("day", MemoryNode.created_at)
+    by_bucket: dict[int, tuple[int, int]] = {int(row[0]): (row[1], row[2]) for row in activity_rows}
+    if not any(w or s for s, w in by_bucket.values()):
+        mem_bucket = bucket_of(MemoryNode.created_at)
         mem_rows = (
             await db.execute(
-                select(mem_day, func.count())
-                .where(MemoryNode.tenant_id == tenant_id, MemoryNode.created_at >= start)
-                .group_by(mem_day)
+                select(mem_bucket, func.count())
+                .where(MemoryNode.tenant_id == tenant_id, MemoryNode.created_at >= activity_start)
+                .group_by(mem_bucket)
             )
         ).all()
-        by_day = {row[0].date().isoformat(): (0, row[1]) for row in mem_rows}
+        by_bucket = {int(row[0]): (0, row[1]) for row in mem_rows}
         activity_source = "memory"
     activity = []
-    for i in range(14):
-        day = (start + timedelta(days=i)).date().isoformat()
-        searches, writes = by_day.get(day, (0, 0))
-        activity.append({"date": day, "searches": searches, "writes": writes})
+    for ts in range(first_bucket, last_bucket + 1, bucket):
+        searches, writes = by_bucket.get(ts, (0, 0))
+        activity.append(
+            {
+                "date": datetime.fromtimestamp(ts, tz=UTC).isoformat(),
+                "searches": searches,
+                "writes": writes,
+            }
+        )
 
     identity_types = {c["client_id"]: c.get("identity_type", "user") for c in (clients or [])}
-    recent = [_event_row(e, m, identity_types) for e, m in await _recent_events(db, tenant_id, 6)]
+    acc = await access_for(db, settings, viewer)
+    recent_rows = await _recent_events(db, tenant_id, 6 if acc.grants is None else 40)
+    if acc.grants is not None:
+        recent_rows = [
+            (e, m) for e, m in recent_rows if (m is not None and acc.can_read_row(m)) or e.actor_id == viewer.username
+        ][:6]
+    recent = acc.redact_tree([_event_row(e, m, identity_types) for e, m in recent_rows])
     recent_source = "audit"
     if not recent and total:
         nodes = (
@@ -385,7 +452,10 @@ async def overview(db: DbDep, settings: SettingsDep):
         "contradictions": {"open": open_contradictions, "over_threshold": over_threshold, "threshold": threshold},
         "approvals": {"enterprise_pending": pending.get("enterprise", 0), "pending_total": sum(pending.values())},
         "scopes": scopes,
+        "categories": categories,
         "activity": activity,
+        "activity_range": activity_range,
+        "activity_bucket_seconds": bucket,
         "activity_source": activity_source,
         "recent": recent,
         "recent_source": recent_source,
@@ -405,7 +475,9 @@ async def nav_counts(db: DbDep, settings: SettingsDep):
     queue = await _review_counts(db, tenant_id, int(tenant_settings["governance"]["contradiction_threshold"]))
     memories = (
         await db.execute(
-            select(func.count()).select_from(MemoryNode).where(*live_filters(tenant_id), MemoryNode.parent_id.is_(None))
+            select(func.count())
+            .select_from(MemoryNode)
+            .where(*live_filters(tenant_id), MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity")
         )
     ).scalar_one()
     return {"review_queue": sum(queue.values()), "memories": memories}
@@ -454,6 +526,173 @@ async def _review_counts(db: AsyncSession, tenant_id: str, threshold: int) -> di
 
 
 # ---------------------------------------------------------------------------
+# Entities (screen 03)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/entities")
+async def entities(
+    db: DbDep,
+    settings: SettingsDep,
+    viewer: ContentDep,
+    q: str | None = Query(default=None, max_length=255),
+    entity_type: str = Query(default="all", alias="type", pattern="^(all|person|object|location|event|organization)$"),
+    project: str | None = Query(default=None, max_length=255),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=25, ge=1, le=100),
+):
+    """List extracted entities and the memories/projects that mention them."""
+    tenant_id = settings.ui_tenant_id
+    acc = await access_for(db, settings, viewer)
+    entity_node = aliased(MemoryNode)
+    source_node = aliased(MemoryNode)
+    mention = aliased(MemoryRelationship)
+    project_value = case(
+        (source_node.scope == "project", source_node.scope_id),
+        else_=source_node.metadata_["project"].as_string(),
+    )
+    mentions_count = func.count(func.distinct(source_node.id)).label("memory_count")
+    projects = func.array_agg(func.distinct(project_value)).filter(project_value.is_not(None)).label("projects")
+
+    entity_base_filters = [
+        entity_node.tenant_id == tenant_id,
+        entity_node.scope == "entity",
+        entity_node.is_current.is_(True),
+        entity_node.deleted_at.is_(None),
+    ]
+    if q:
+        pattern = f"%{q.lower()}%"
+        entity_base_filters.append(
+            or_(func.lower(entity_node.content).ilike(pattern), cast(entity_node.metadata_, String).ilike(pattern))
+        )
+
+    source_filters = and_(
+        source_node.tenant_id == tenant_id,
+        source_node.parent_id.is_(None),
+        source_node.is_current.is_(True),
+        source_node.deleted_at.is_(None),
+        source_node.status != "quarantined",
+        source_node.scope != "entity",
+        *acc.filters(source_node),
+    )
+    if acc.grants is not None:
+        # Entity names are derived from memory content: only show those that
+        # appear in at least one memory this user can read.
+        readable_mention = aliased(MemoryRelationship)
+        readable_source = aliased(MemoryNode)
+        entity_base_filters_extra = exists(
+            select(1)
+            .select_from(readable_mention)
+            .join(readable_source, readable_source.id == readable_mention.source_id)
+            .where(
+                readable_mention.target_id == entity_node.id,
+                readable_mention.relationship_type == "mentions",
+                readable_mention.valid_until.is_(None),
+                readable_source.deleted_at.is_(None),
+                acc.clause(readable_source),
+            )
+        )
+    else:
+        entity_base_filters_extra = None
+    project_exists = None
+    if project:
+        project_mention = aliased(MemoryRelationship)
+        project_source = aliased(MemoryNode)
+        project_value_filter = or_(
+            and_(project_source.scope == "project", project_source.scope_id == project),
+            project_source.metadata_["project"].as_string() == project,
+        )
+        project_source_filters = and_(
+            project_source.tenant_id == tenant_id,
+            project_source.parent_id.is_(None),
+            project_source.is_current.is_(True),
+            project_source.deleted_at.is_(None),
+            project_source.status != "quarantined",
+            project_source.scope != "entity",
+        )
+        project_exists = exists(
+            select(1)
+            .select_from(project_mention)
+            .join(project_source, project_source.id == project_mention.source_id)
+            .where(
+                project_mention.target_id == entity_node.id,
+                project_mention.tenant_id == tenant_id,
+                project_mention.relationship_type == "mentions",
+                project_mention.valid_until.is_(None),
+                project_source_filters,
+                project_value_filter,
+            )
+        )
+        entity_base_filters.append(project_exists)
+
+    if entity_base_filters_extra is not None:
+        entity_base_filters.append(entity_base_filters_extra)
+    entity_filters = list(entity_base_filters)
+    if entity_type != "all":
+        entity_filters.append(entity_node.branch_type == f"entity:{entity_type}")
+
+    stmt = (
+        select(entity_node, mentions_count, func.max(source_node.updated_at), projects)
+        .outerjoin(
+            mention,
+            and_(
+                mention.target_id == entity_node.id,
+                mention.tenant_id == tenant_id,
+                mention.relationship_type == "mentions",
+                mention.valid_until.is_(None),
+            ),
+        )
+        .outerjoin(source_node, and_(source_node.id == mention.source_id, source_filters))
+        .where(*entity_filters)
+        .group_by(entity_node.id)
+        .order_by(mentions_count.desc(), func.lower(entity_node.content))
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    count_stmt = select(func.count()).select_from(entity_node).where(*entity_filters)
+    total = (await db.execute(count_stmt)).scalar_one()
+    type_rows = (
+        await db.execute(
+            select(entity_node.branch_type, func.count())
+            .select_from(entity_node)
+            .where(*entity_base_filters)
+            .group_by(entity_node.branch_type)
+        )
+    ).all()
+    type_counts = {str(row[0]).removeprefix("entity:"): row[1] for row in type_rows if row[0]}
+
+    items = []
+    for node, count, last_seen, project_list in rows:
+        entity_kind = node.branch_type.removeprefix("entity:") if node.branch_type else "unknown"
+        items.append(
+            {
+                "id": str(node.id),
+                "name": node.content,
+                "entity_type": entity_kind,
+                "aliases": list((node.metadata_ or {}).get("aliases", [])),
+                "memory_count": int(count or 0),
+                "projects": sorted({p for p in (project_list or []) if p}),
+                "created_at": node.created_at,
+                "last_seen": last_seen,
+            }
+        )
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "has_more": page * per_page < total,
+        "counts": {
+            "all": total,
+            **{kind: type_counts.get(kind, 0) for kind in ("person", "organization", "location", "object", "event")},
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Memory browser (screen 02)
 # ---------------------------------------------------------------------------
 
@@ -468,7 +707,7 @@ _NEAR_DUP = 0.90
 
 
 def _tab_filters(tenant_id: str, tab: str) -> list:
-    roots = [MemoryNode.tenant_id == tenant_id, MemoryNode.parent_id.is_(None)]
+    roots = [MemoryNode.tenant_id == tenant_id, MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity"]
     if tab == "all":
         return roots + [MemoryNode.deleted_at.is_(None)]
     if tab == "quarantined":
@@ -513,10 +752,38 @@ def _near_dup_clause(tenant_id: str):
     )
 
 
+async def _entities_for(db: AsyncSession, tenant_id: str, ids: list) -> dict[uuid.UUID, list[dict]]:
+    """Entities each memory mentions (``mentions`` edges to entity nodes)."""
+    if not ids:
+        return {}
+    entity_node = aliased(MemoryNode)
+    rows = (
+        await db.execute(
+            select(MemoryRelationship.source_id, entity_node.id, entity_node.content, entity_node.branch_type)
+            .join(entity_node, entity_node.id == MemoryRelationship.target_id)
+            .where(
+                MemoryRelationship.source_id.in_(ids),
+                MemoryRelationship.tenant_id == tenant_id,
+                MemoryRelationship.relationship_type == "mentions",
+                MemoryRelationship.valid_until.is_(None),
+                entity_node.scope == "entity",
+                entity_node.deleted_at.is_(None),
+            )
+            .order_by(entity_node.content)
+        )
+    ).all()
+    out: dict[uuid.UUID, list[dict]] = defaultdict(list)
+    for source_id, entity_id, name, branch_type in rows:
+        kind = (branch_type or "entity:object").removeprefix("entity:")
+        out[source_id].append({"id": str(entity_id), "name": name, "type": kind})
+    return out
+
+
 @router.get("/api/memories/browse")
 async def browse_memories(
     db: DbDep,
     settings: SettingsDep,
+    viewer: ViewerDep,
     tab: str = Query(default="current", pattern="^(current|all|quarantined|deleted)$"),
     q: str | None = Query(default=None, max_length=1000),
     mode: str = Query(default="semantic", pattern="^(semantic|text)$"),
@@ -530,9 +797,12 @@ async def browse_memories(
     order: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
+    entity: str | None = Query(default=None, max_length=64),
 ):
     tenant_id = settings.ui_tenant_id
-    base = _tab_filters(tenant_id, tab)
+    acc = await access_for(db, settings, viewer)
+    metadata_only = viewer.redacts_content
+    base = _tab_filters(tenant_id, tab) + acc.filters()
     filters = list(base)
     if scope:
         filters.append(MemoryNode.scope.in_(scope))
@@ -547,8 +817,18 @@ async def browse_memories(
                 MemoryNode.metadata_["project"].as_string() == project,
             )
         )
-    if domain:
+    if domain and not metadata_only:
         filters.append(MemoryNode.domains.overlap(domain))
+    if entity:
+        entity_id = parse_uuid(entity, "entity ID")
+        filters.append(
+            exists().where(
+                MemoryRelationship.source_id == MemoryNode.id,
+                MemoryRelationship.target_id == entity_id,
+                MemoryRelationship.relationship_type == "mentions",
+                MemoryRelationship.valid_until.is_(None),
+            )
+        )
     if min_weight is not None:
         filters.append(MemoryNode.weight >= min_weight)
     flags = set(flag or [])
@@ -562,6 +842,19 @@ async def browse_memories(
     query = (q or "").strip()
     search_mode = "none"
     scores: dict[uuid.UUID, float] = {}
+    if query and metadata_only:
+        # Admins never search what memories say; only who and where.
+        pattern = f"%{query}%"
+        filters.append(
+            or_(
+                MemoryNode.owner_id.ilike(pattern),
+                MemoryNode.actor_id.ilike(pattern),
+                MemoryNode.scope_id.ilike(pattern),
+                cast(MemoryNode.id, String).ilike(f"{query.replace('mem_', '').split('…')[0]}%"),
+            )
+        )
+        search_mode = "metadata"
+        query = ""
     if query:
         vector = await embed(query, settings.embedding_url) if mode == "semantic" else None
         if vector is not None:
@@ -662,6 +955,8 @@ async def browse_memories(
             logger.debug("near-duplicate lookup failed: %s", exc)
             await db.rollback()
 
+    entities_by_memory = await _entities_for(db, tenant_id, ids)
+
     items = []
     for n in nodes:
         branches = branch_info.get(n.id, [])
@@ -690,14 +985,18 @@ async def browse_memories(
                 "updated_at": n.updated_at,
                 "deleted_at": n.deleted_at,
                 "score": round(scores[n.id], 4) if n.id in scores else None,
+                "entities": entities_by_memory.get(n.id, []),
             }
         )
+    items = [acc.redact(i) for i in items]
 
     # Tab counts and facets (over the tab base, independent of facet filters).
     tab_counts = {}
     for t in ("current", "all", "quarantined", "deleted"):
         tab_counts[t] = (
-            await db.execute(select(func.count()).select_from(MemoryNode).where(*_tab_filters(tenant_id, t)))
+            await db.execute(
+                select(func.count()).select_from(MemoryNode).where(*_tab_filters(tenant_id, t), *acc.filters())
+            )
         ).scalar_one()
     facet_scope = {
         row[0]: row[1]
@@ -720,10 +1019,14 @@ async def browse_memories(
     domain_col = func.unnest(MemoryNode.domains).label("d")
     domain_sub = select(domain_col).where(*base).subquery()
     domain_rows = (
-        await db.execute(
-            select(domain_sub.c.d, func.count()).group_by(domain_sub.c.d).order_by(func.count().desc()).limit(40)
-        )
-    ).all()
+        []
+        if metadata_only
+        else (
+            await db.execute(
+                select(domain_sub.c.d, func.count()).group_by(domain_sub.c.d).order_by(func.count().desc()).limit(40)
+            )
+        ).all()
+    )
     contradicted = (
         await db.execute(select(func.count()).select_from(MemoryNode).where(*base, _contradicted_clause(tenant_id)))
     ).scalar_one()
@@ -745,6 +1048,7 @@ async def browse_memories(
         "page": page,
         "per_page": per_page,
         "search_mode": search_mode,
+        "metadata_only": metadata_only,
         "tab_counts": tab_counts,
         "facets": {
             "scopes": [{"value": s, "count": facet_scope.get(s, 0)} for s in SCOPES]
@@ -761,12 +1065,14 @@ async def browse_memories(
 async def export_memories(
     db: DbDep,
     settings: SettingsDep,
+    viewer: ViewerDep,
     scope: list[str] | None = Query(default=None),
 ):
     """JSONL export of current memories (the browser's "Export JSONL")."""
     from fastapi.responses import StreamingResponse
 
-    filters = _tab_filters(settings.ui_tenant_id, "current")
+    acc = await access_for(db, settings, viewer)
+    filters = _tab_filters(settings.ui_tenant_id, "current") + acc.filters()
     if scope:
         filters.append(MemoryNode.scope.in_(scope))
     nodes = (
@@ -777,19 +1083,22 @@ async def export_memories(
         for n in nodes:
             yield (
                 json.dumps(
-                    {
-                        "id": str(n.id),
-                        "scope": n.scope,
-                        "scope_id": n.scope_id,
-                        "owner_id": n.owner_id,
-                        "actor_id": n.actor_id,
-                        "weight": n.weight,
-                        "version": n.version,
-                        "domains": list(n.domains or []),
-                        "content": n.content,
-                        "metadata": n.metadata_,
-                        "updated_at": n.updated_at.isoformat() if n.updated_at else None,
-                    },
+                    acc.redact(
+                        {
+                            "id": str(n.id),
+                            "scope": n.scope,
+                            "scope_id": n.scope_id,
+                            "owner_id": n.owner_id,
+                            "actor_id": n.actor_id,
+                            "weight": n.weight,
+                            "version": n.version,
+                            "domains": list(n.domains or []),
+                            "content": n.content,
+                            "metadata": n.metadata_,
+                            "updated_at": n.updated_at.isoformat() if n.updated_at else None,
+                        },
+                        n.scope,
+                    ),
                     default=str,
                 )
                 + "\n"
@@ -817,6 +1126,15 @@ async def _load_memory(db: AsyncSession, tenant_id: str, memory_id: str) -> Memo
     return node
 
 
+class _Row:
+    """Duck-typed node for the Python read predicate on serialised briefs."""
+
+    def __init__(self, d: dict):
+        self.scope = d.get("scope")
+        self.scope_id = d.get("scope_id")
+        self.owner_id = d.get("owner_id")
+
+
 def _node_brief(n: MemoryNode) -> dict:
     return {
         "id": str(n.id),
@@ -834,9 +1152,11 @@ def _node_brief(n: MemoryNode) -> dict:
 
 
 @router.get("/api/memory/{memory_id}/context")
-async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep):
+async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep, viewer: ViewerDep):
     tenant_id = settings.ui_tenant_id
     node = await _load_memory(db, tenant_id, memory_id)
+    acc = await access_for(db, settings, viewer)
+    acc.ensure_readable(node)
     tenant_settings = await load_tenant_settings(db, tenant_id)
 
     # Versions share a logical_id; fall back to walking the chain.
@@ -965,7 +1285,7 @@ async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep):
             dims = None
 
     full_threshold = float(tenant_settings["retrieval"]["full_content_threshold"])
-    return {
+    result = {
         "memory": {
             **_node_brief(node),
             "content": node.content,
@@ -1029,6 +1349,10 @@ async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep):
         "similar": similar,
         "access_count": access_count,
     }
+    if acc.grants is not None:
+        result["relationships"] = [r for r in result["relationships"] if acc.can_read_row(_Row(r.get("other", {})))]
+        result["similar"] = [x for x in result["similar"] if acc.can_read_row(_Row(x))]
+    return acc.redact_tree(result, node.scope)
 
 
 @router.get("/api/memory/{memory_id}/access-log")
@@ -1036,11 +1360,13 @@ async def memory_access_log(
     memory_id: str,
     db: DbDep,
     settings: SettingsDep,
+    viewer: ViewerDep,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=25, ge=1, le=100),
 ):
     tenant_id = settings.ui_tenant_id
     node = await _load_memory(db, tenant_id, memory_id)
+    (await access_for(db, settings, viewer)).ensure_readable(node)
     ids = [node.id]
     if getattr(node, "logical_id", None):
         ids = list(
@@ -1125,14 +1451,42 @@ def _embedding_service(settings: Settings):
     return HttpEmbeddingService(settings.embedding_url)
 
 
+async def _writable(db: AsyncSession, settings: Settings, viewer, node: MemoryNode) -> None:
+    """Admins never change memory content; users only touch what they can read."""
+    if viewer.redacts_content:
+        raise HTTPException(
+            status_code=403, detail="Platform admins cannot change memories; their content is confidential"
+        )
+    if viewer.restricted:
+        (await access_for(db, settings, viewer)).ensure_readable(node)
+
+
+async def _writable_scope(db: AsyncSession, settings: Settings, viewer, scope: str, scope_id: str | None) -> None:
+    if viewer.redacts_content:
+        raise HTTPException(status_code=403, detail="Platform admins cannot write memories")
+    if not viewer.restricted:
+        return
+    if scope in ("organizational", "enterprise"):
+        raise HTTPException(status_code=403, detail="Write it to your own scope and propose a promotion instead")
+    if scope == "user":
+        return
+    grants = (await access_for(db, settings, viewer)).grants
+    allowed = {"project": grants.projects, "role": grants.roles, "campaign": grants.campaigns}.get(scope, set())
+    if not scope_id or scope_id not in allowed:
+        raise HTTPException(status_code=403, detail=f"You are not a member of that {scope}")
+
+
 @router.post("/api/memories", status_code=201)
 async def write_memory(body: WriteMemoryRequest, request: Request, db: DbDep, settings: SettingsDep):
     from memoryhub_core.models.schemas import MemoryNodeCreate
     from memoryhub_core.services.memory import create_memory
 
     viewer = viewer_from_request(request, settings)
+    await _writable_scope(db, settings, viewer, body.scope, body.scope_id)
     tenant_id = settings.ui_tenant_id
     owner = body.owner_id or (tenant_id if body.scope in ("organizational", "enterprise") else viewer.username)
+    if viewer.restricted:
+        owner = viewer.username if body.scope == "user" else (body.scope_id or owner)
     data = MemoryNodeCreate(
         content=body.content,
         scope=body.scope,
@@ -1183,6 +1537,7 @@ async def new_version(memory_id: str, body: NewVersionRequest, request: Request,
 
     viewer = viewer_from_request(request, settings)
     node = await _load_memory(db, settings.ui_tenant_id, memory_id)
+    await _writable(db, settings, viewer, node)
     if not node.is_current or node.deleted_at is not None:
         raise HTTPException(status_code=409, detail="Only the current version can be edited")
     if body.content is None and body.weight is None and body.domains is None:
@@ -1216,6 +1571,7 @@ async def add_branch(memory_id: str, body: BranchRequest, request: Request, db: 
 
     viewer = viewer_from_request(request, settings)
     node = await _load_memory(db, settings.ui_tenant_id, memory_id)
+    await _writable(db, settings, viewer, node)
     data = MemoryNodeCreate(
         content=body.content,
         scope=node.scope,
@@ -1254,6 +1610,7 @@ async def add_contradiction(
 
     viewer = viewer_from_request(request, settings)
     node = await _load_memory(db, settings.ui_tenant_id, memory_id)
+    await _writable(db, settings, viewer, node)
     count = await report_contradiction(node.id, body.observed_behavior, body.confidence, viewer.username, db)
     await audit(
         db,
@@ -1275,6 +1632,8 @@ async def _relate(db: AsyncSession, settings: Settings, viewer, source_id: str, 
 
     source = await _load_memory(db, settings.ui_tenant_id, source_id)
     target = await _load_memory(db, settings.ui_tenant_id, target_id)
+    await _writable(db, settings, viewer, source)
+    await _writable(db, settings, viewer, target)
     try:
         rel = await create_relationship(
             RelationshipCreate(
@@ -1374,6 +1733,7 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
     for raw_id in body.ids:
         try:
             node = await _load_memory(db, tenant_id, raw_id)
+            await _writable(db, settings, viewer, node)
             if body.action == "weight":
                 if body.weight is None:
                     raise HTTPException(status_code=422, detail="weight is required")
@@ -1439,6 +1799,7 @@ async def promote(
 ):
     viewer = viewer_from_request(request, settings)
     node = await _load_memory(db, settings.ui_tenant_id, memory_id)
+    await _writable(db, settings, viewer, node)
     new_id = await _propose_promotion(db, settings, viewer, node, target_scope, target_scope_id)
     await db.commit()
     return {"id": str(new_id)}
@@ -1453,16 +1814,19 @@ async def promote(
 async def graph_neighbourhood(
     db: DbDep,
     settings: SettingsDep,
+    viewer: ViewerDep,
     focus: str | None = Query(default=None),
     depth: int = Query(default=2, ge=1, le=4),
     types: list[str] | None = Query(default=None),
     max_nodes: int = Query(default=80, ge=5, le=300),
 ):
     tenant_id = settings.ui_tenant_id
-    visible = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None)]
+    acc = await access_for(db, settings, viewer)
+    visible = live_filters(tenant_id) + [MemoryNode.parent_id.is_(None), MemoryNode.scope != "entity"] + acc.filters()
 
     if focus:
         focus_node = await _load_memory(db, tenant_id, focus)
+        acc.ensure_readable(focus_node)
     else:
         # Default focus: the most connected current memory, else the newest one.
         degree = (
@@ -1529,8 +1893,10 @@ async def graph_neighbourhood(
         next_frontier = set()
         for nid in neighbour_ids:
             n = found.get(nid)
-            if n is None or n.tenant_id != tenant_id or n.deleted_at is not None:
+            if n is None or n.tenant_id != tenant_id or n.deleted_at is not None or not acc.can_read_row(n):
                 hidden.add(nid)
+                continue
+            if n.scope == "entity":
                 continue
             if len(nodes) >= max_nodes:
                 hidden.add(nid)
@@ -1571,7 +1937,7 @@ async def graph_neighbourhood(
             .scalars()
             .first()
         )
-        if nxt is None or nxt.id in seen:
+        if nxt is None or nxt.id in seen or not acc.can_read_row(nxt):
             break
         provenance.append(_node_brief(nxt))
         seen.add(nxt.id)
@@ -1607,19 +1973,95 @@ async def graph_neighbourhood(
         )
     ).scalar_one()
 
-    return {
-        "focus": {
-            **_node_brief(focus_node),
-            "content": focus_node.content,
-            "degree": focus_degree,
-            "hidden_degree": focus_hidden,
-        },
-        "nodes": [{**_node_brief(n), "depth": node_depth[n.id]} for n in nodes.values()],
-        "edges": list(edges.values()),
-        "hidden_count": len(hidden),
-        "provenance": provenance if len(provenance) > 1 else [],
-        "conflicts": conflicts,
-    }
+    return acc.redact_tree(
+        {
+            "focus": {
+                **_node_brief(focus_node),
+                "content": focus_node.content,
+                "degree": focus_degree,
+                "hidden_degree": focus_hidden,
+            },
+            "nodes": [{**_node_brief(n), "depth": node_depth[n.id]} for n in nodes.values()],
+            "edges": list(edges.values()),
+            "hidden_count": len(hidden),
+            "provenance": provenance if len(provenance) > 1 else [],
+            "conflicts": conflicts,
+        }
+    )
+
+
+@router.get("/api/graph/all")
+async def graph_all(
+    db: DbDep,
+    settings: SettingsDep,
+    viewer: ViewerDep,
+    types: list[str] | None = Query(default=None),
+    include_superseded: bool = Query(default=False),
+    max_nodes: int = Query(default=300, ge=10, le=1000),
+):
+    """Every readable memory and the links between them, connected or not.
+
+    Powers the graph's "All memories" focus: separate clusters and memories
+    with no relationships at all are returned too (``degree`` 0).
+    """
+    tenant_id = settings.ui_tenant_id
+    acc = await access_for(db, settings, viewer)
+    filters = (
+        live_filters(tenant_id, current=not include_superseded)
+        + [
+            MemoryNode.parent_id.is_(None),
+            MemoryNode.scope != "entity",
+            MemoryNode.status != "quarantined",
+        ]
+        + acc.filters()
+    )
+    total = (await db.execute(select(func.count()).select_from(MemoryNode).where(*filters))).scalar_one()
+    nodes = (
+        (await db.execute(select(MemoryNode).where(*filters).order_by(MemoryNode.updated_at.desc()).limit(max_nodes)))
+        .scalars()
+        .all()
+    )
+    ids = [n.id for n in nodes]
+    edges: list[dict] = []
+    hidden_links = 0
+    if ids:
+        rel_stmt = select(MemoryRelationship).where(
+            MemoryRelationship.tenant_id == tenant_id,
+            MemoryRelationship.valid_until.is_(None),
+            MemoryRelationship.relationship_type != "mentions",
+            or_(MemoryRelationship.source_id.in_(ids), MemoryRelationship.target_id.in_(ids)),
+        )
+        if types:
+            rel_stmt = rel_stmt.where(MemoryRelationship.relationship_type.in_(types))
+        id_set = set(ids)
+        for r in (await db.execute(rel_stmt)).scalars().all():
+            if r.source_id in id_set and r.target_id in id_set:
+                edges.append(
+                    {
+                        "id": str(r.id),
+                        "source": str(r.source_id),
+                        "target": str(r.target_id),
+                        "type": r.relationship_type,
+                    }
+                )
+            else:
+                hidden_links += 1
+    degree: Counter = Counter()
+    for e in edges:
+        degree[e["source"]] += 1
+        degree[e["target"]] += 1
+    out_nodes = [{**_node_brief(n), "depth": 0, "degree": degree.get(str(n.id), 0)} for n in nodes]
+    return acc.redact_tree(
+        {
+            "nodes": out_nodes,
+            "edges": edges,
+            "total": total,
+            "truncated": total > len(nodes),
+            "orphan_count": sum(1 for n in out_nodes if n["degree"] == 0),
+            "hidden_links": hidden_links,
+            "metadata_only": viewer.redacts_content,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1707,7 +2149,10 @@ async def _visible_predicate(db: AsyncSession, tenant_id: str, identity: str | N
 
 
 @router.post("/api/search")
-async def search_playground(body: SearchRequest, db: DbDep, settings: SettingsDep):
+async def search_playground(body: SearchRequest, db: DbDep, settings: SettingsDep, viewer: ContentDep):
+    if viewer.restricted:
+        # Users can only search as themselves.
+        body.identity = viewer.username
     tenant_id = settings.ui_tenant_id
     tenant_settings = await load_tenant_settings(db, tenant_id)
     full_threshold = float(tenant_settings["retrieval"]["full_content_threshold"])

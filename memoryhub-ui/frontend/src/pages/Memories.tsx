@@ -7,12 +7,13 @@ import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { BrowseParams, BrowseResponse, MemoryRow } from '@/types';
 import { errorMessage, fmtCompact, fmtInt, fmtRelative, fmtWeight, SCOPE_ORDER, scopeMeta, shortId } from '@/utils/format';
 import { ConfirmModal, memoryHref, RelationshipModal, WriteMemoryModal } from './common';
+import MemoryGraph, { LockIcon } from './MemoryGraph';
 
 const list = (v: string | null) => (v ? v.split(',').filter(Boolean) : []);
-const COLUMNS = ['scope', 'owner', 'weight', 'version', 'branches', 'updated'] as const;
+const COLUMNS = ['scope', 'entities', 'owner', 'weight', 'version', 'branches', 'updated'] as const;
 type Column = (typeof COLUMNS)[number];
-const COLUMN_LABEL: Record<Column, string> = { scope: 'Scope', owner: 'Owner', weight: 'Weight', version: 'Ver.', branches: 'Branches', updated: 'Updated' };
-const COLS_KEY = 'memoryhub.browser.columns';
+const COLUMN_LABEL: Record<Column, string> = { scope: 'Scope', entities: 'Entities', owner: 'Owner', weight: 'Weight', version: 'Ver.', branches: 'Branches', updated: 'Updated' };
+const COLS_KEY = 'memoryhub.browser.columns.v2';
 
 const readCols = (): Column[] => {
   try {
@@ -26,9 +27,13 @@ const readCols = (): Column[] => {
 
 const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
-  const { standby, refreshCounts } = useApp();
+  const { standby, refreshCounts, role } = useApp();
+  const isAdmin = role === 'admin';
   const p = route.params;
+  const view: 'table' | 'graph' = p.get('view') === 'graph' ? 'graph' : 'table';
   const state = {
+    entity: p.get('entity') || '',
+    entityName: p.get('entityName') || '',
     tab: p.get('tab') || 'current',
     q: p.get('q') || '',
     mode: p.get('mode') || 'semantic',
@@ -69,9 +74,14 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
     order: 'desc',
     page: state.page,
     per_page: state.per,
+    entity: state.entity || undefined,
   };
   const key = JSON.stringify(params);
-  const { data, error, loading, reload } = useApi<BrowseResponse>(() => api.browse(params), [key], standby ? 5000 : null);
+  const { data, error, loading, reload } = useApi<BrowseResponse>(
+    () => (view === 'table' ? api.browse(params) : Promise.resolve(null as unknown as BrowseResponse)),
+    [key, view],
+    standby && view === 'table' ? 5000 : null,
+  );
 
   const [query, setQuery] = useState(state.q);
   useEffect(() => setQuery(state.q), [state.q]);
@@ -108,6 +118,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
     if (state.actor.length) out.push({ label: `Written by: ${state.actor.join(', ')}`, clear: () => setParams({ actor: [] }) });
     if (state.project) out.push({ label: `Project: ${state.project}`, clear: () => setParams({ project: '' }) });
     if (state.domain.length) out.push({ label: `Domain: ${state.domain.join(', ')}`, clear: () => setParams({ domain: [] }) });
+    if (state.entity) out.push({ label: `Entity: ${state.entityName || state.entity.slice(0, 8)}`, clear: () => setParams({ entity: '', entityName: '' }) });
     if (state.minWeight) out.push({ label: `Weight ≥ ${state.minWeight.toFixed(2)}`, clear: () => setParams({ minw: '' }) });
     state.flag.forEach((f) =>
       out.push({ label: FLAG_LABEL[f] ?? f, clear: () => setParams({ flag: state.flag.filter((x) => x !== f) }) }),
@@ -134,34 +145,94 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   return (
     <>
       <PageHeader
-        title="Memory browser"
-        description="Every memory you are allowed to read, across all six scopes. Filters run server-side through the same RBAC predicate agents get."
+        title={
+          isAdmin ? (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              Memory analytics
+              <span className="lbl g" style={{ fontFamily: 'var(--mh-font-text)' }}>
+                <LockIcon size={12} />
+                Metadata only
+              </span>
+            </span>
+          ) : (
+            'Memory browser'
+          )
+        }
+        crumbs={[{ label: isAdmin ? 'Memory analytics' : 'Memory browser' }]}
+        description={
+          isAdmin
+            ? 'Volume, activity, structure and health of every memory in the tenant. What a personal, project, campaign or role memory says is confidential and never reaches this view.'
+            : role === 'user'
+              ? 'Every memory you are allowed to read — your own, and what your projects, campaigns, roles and organization share with you — as a table or as a graph of how they connect.'
+              : 'Every memory you are allowed to read, across all six scopes — as a table or as a graph of how they connect. Nodes you cannot read are counted, never shown.'
+        }
         actions={
           <>
-            <a className="btn bg" href={api.exportUrl(state.scope)} download aria-disabled={standby}>
-              Export JSONL
-            </a>
-            <button type="button" className="btn bp" onClick={() => setModal('write')}>
-              <Icon.Plus />
-              Write memory
-            </button>
+            {view === 'table' && (
+              <a className="btn bg" href={api.exportUrl(state.scope)} download aria-disabled={standby}>
+                {isAdmin ? 'Export metadata' : 'Export JSONL'}
+              </a>
+            )}
+            {!isAdmin && (
+              <button type="button" className="btn bp" onClick={() => setModal('write')}>
+                <Icon.Plus />
+                Write memory
+              </button>
+            )}
           </>
         }
         tabs={
-          <Tabs
-            label="Memory state"
-            value={state.tab}
-            onChange={(t) => setParams({ tab: t === 'current' ? '' : t })}
-            tabs={[
-              { value: 'current', label: 'Current', count: tabCounts?.current ?? null },
-              { value: 'all', label: 'All versions', count: tabCounts?.all ?? null },
-              { value: 'quarantined', label: 'Quarantined', count: tabCounts?.quarantined ?? null },
-              { value: 'deleted', label: 'Deleted', count: tabCounts?.deleted ?? null },
-            ]}
-          />
+          <div className="ph-tabrow">
+            {view === 'table' && (
+              <Tabs
+                label="Memory state"
+                value={state.tab}
+                onChange={(t) => setParams({ tab: t === 'current' ? '' : t })}
+                tabs={[
+                  { value: 'current', label: 'Current', count: tabCounts?.current ?? null },
+                  { value: 'all', label: 'All versions', count: tabCounts?.all ?? null },
+                  { value: 'quarantined', label: 'Quarantined', count: tabCounts?.quarantined ?? null },
+                  { value: 'deleted', label: 'Deleted', count: tabCounts?.deleted ?? null },
+                ]}
+              />
+            )}
+            <div className="viewtoggle">
+              <span className="sm muted">View</span>
+              <div className="seg lg" role="group" aria-label="View as">
+                <button type="button" className={view === 'table' ? 'on' : ''} aria-pressed={view === 'table'} onClick={() => setParams({ view: '' }, false)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2" />
+                    <path d="M3 10h18M3 15h18M9 10v10" />
+                  </svg>
+                  Table
+                </button>
+                <button type="button" className={view === 'graph' ? 'on' : ''} aria-pressed={view === 'graph'} onClick={() => setParams({ view: 'graph' }, false)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <circle cx="6" cy="6" r="2.5" />
+                    <circle cx="18" cy="8" r="2.5" />
+                    <circle cx="10" cy="18" r="2.5" />
+                    <path d="M8.3 7.1l7.4.6M7 8.3l2.2 7.3M16.5 10l-4.8 6.3" />
+                  </svg>
+                  Graph
+                </button>
+              </div>
+            </div>
+          </div>
         }
       />
       <div className="body">
+        {isAdmin && (
+          <div className="alert" role="note">
+            <LockIcon size={18} />
+            <div style={{ flex: '1 1 400px', minWidth: 0 }}>
+              <b>Memory content is confidential.</b> As a platform admin you see counts, scopes, owners, writing agents, weights, versions, links, flags and activity —
+              never what a user, project, campaign or role memory says, and no semantic search over it. Organizational and enterprise policy memories stay readable.
+            </div>
+          </div>
+        )}
+        {view === 'graph' ? (
+          <MemoryGraph route={route} setParams={setParams} />
+        ) : (
         <div className="row-wrap">
           <aside className="card" style={{ flex: '1 1 230px', maxWidth: '100%', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 20 }} aria-label="Filters">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -170,7 +241,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 type="button"
                 className="btn bl sm"
                 disabled={!chips.length}
-                onClick={() => setParams({ scope: [], actor: [], project: '', domain: [], minw: '', flag: [] })}
+                onClick={() => setParams({ scope: [], actor: [], project: '', domain: [], minw: '', flag: [], entity: '', entityName: '' })}
               >
                 Clear all
               </button>
@@ -230,6 +301,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                     options={[{ value: '', label: 'All projects' }, ...(facets.projects ?? []).map((pr) => ({ value: pr.value, label: `${pr.value} · ${fmtCompact(pr.count)}` }))]}
                   />
                 </div>
+                {!isAdmin && (
                 <div>
                   <p className="fh">Domain tags</p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -254,6 +326,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                     )}
                   </div>
                 </div>
+                )}
                 <WeightFilter value={state.minWeight} disabled={filtersDisabled} onCommit={(v) => setParams({ minw: v ? v.toFixed(2) : '' })} />
                 <div>
                   <p className="fh">Flags</p>
@@ -294,10 +367,10 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                   disabled={standby}
                   onChange={(e) => setQuery(e.target.value)}
                   onBlur={() => query.trim() !== state.q && setParams({ q: query.trim(), sort: '' })}
-                  placeholder="Semantic search or filter by text"
+                  placeholder={isAdmin ? 'Filter by memory ID, owner or agent' : 'Semantic search or filter by text'}
                 />
               </div>
-              <SelectMenu
+              {!isAdmin && <SelectMenu
                 label="Search mode"
                 value={state.mode}
                 onChange={(v) => setParams({ mode: v === 'semantic' ? '' : v })}
@@ -305,7 +378,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                   { value: 'semantic', label: 'Semantic' },
                   { value: 'text', label: 'Text' },
                 ]}
-              />
+              />}
               <SelectMenu
                 label="Sort"
                 prefix="Sort: "
@@ -358,6 +431,21 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
             {selected.size > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', background: '#e7f1fa', borderTop: '1px solid #b9dafc', borderBottom: '1px solid #b9dafc', padding: '10px 20px', fontSize: 14 }}>
                 <b>{selected.size} selected</b>
+                {isAdmin ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn bl"
+                      onClick={() => setParams({ view: 'graph', gfocus: 'memory', focus: ids[0] }, false)}
+                    >
+                      Show in graph
+                    </button>
+                    <span style={{ marginLeft: 'auto' }} className="sm muted">
+                      Admin actions never reveal content · audited
+                    </span>
+                  </>
+                ) : (
+                <>
                 <button type="button" className="btn bl" onClick={() => setModal('weight')}>
                   Change weight
                 </button>
@@ -370,9 +458,14 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 <button type="button" className="btn bl danger" onClick={() => setModal('delete')}>
                   Delete
                 </button>
+                <button type="button" className="btn bl" onClick={() => setParams({ view: 'graph', gfocus: 'memory', focus: ids[0] }, false)}>
+                  Show in graph
+                </button>
                 <span style={{ marginLeft: 'auto' }} className="sm muted">
                   Soft delete · whole version chain · audited
                 </span>
+                </>
+                )}
               </div>
             )}
 
@@ -402,7 +495,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 title={state.q || chips.length ? 'No memories match' : state.tab === 'current' ? 'No current memories' : `Nothing ${state.tab === 'all' ? 'here' : state.tab}`}
                 action={
                   chips.length || state.q ? (
-                    <button type="button" className="btn bs" onClick={() => setParams({ q: '', scope: [], actor: [], project: '', domain: [], minw: '', flag: [] })}>
+                    <button type="button" className="btn bs" onClick={() => setParams({ q: '', scope: [], actor: [], project: '', domain: [], minw: '', flag: [], entity: '', entityName: '' })}>
                       Clear search and filters
                     </button>
                   ) : undefined
@@ -432,6 +525,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                         </th>
                         <th>Memory</th>
                         {columns.includes('scope') && <th>Scope</th>}
+                        {columns.includes('entities') && <th style={{ minWidth: 150 }}>Entities</th>}
                         {columns.includes('owner') && <th>Owner</th>}
                         {columns.includes('weight') && <th style={{ width: 120 }}>Weight</th>}
                         {columns.includes('version') && <th>Ver.</th>}
@@ -457,9 +551,22 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                             />
                           </td>
                           <td style={{ maxWidth: 440, minWidth: 300 }}>
-                            <a href={memoryHref(m.id)} style={{ fontWeight: 500, textDecoration: 'none' }}>
-                              {m.content_preview}
-                            </a>
+                            {m.redacted ? (
+                              <div>
+                                <span className="redact">
+                                  <LockIcon />
+                                  Content hidden
+                                </span>{' '}
+                                <a href={memoryHref(m.id)} className="sm">
+                                  Metadata
+                                </a>
+                                <div className="rbar" aria-hidden="true" style={{ width: `${40 + (parseInt(m.id.slice(0, 2), 16) % 55)}%` }} />
+                              </div>
+                            ) : (
+                              <a href={memoryHref(m.id)} style={{ fontWeight: 500, textDecoration: 'none' }}>
+                                {m.content_preview}
+                              </a>
+                            )}
                             <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                               <span className="mono muted">{shortId(m.id)}</span>
                               {m.domains.map((d) => (
@@ -477,6 +584,33 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                           {columns.includes('scope') && (
                             <td>
                               <ScopeLabel scope={m.scope} />
+                            </td>
+                          )}
+                          {columns.includes('entities') && (
+                            <td>
+                              {m.redacted ? (
+                                <span className="sm muted">
+                                  {m.entity_count ?? 0} {(m.entity_count ?? 0) === 1 ? 'entity' : 'entities'}
+                                </span>
+                              ) : m.entities?.length ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                                  {m.entities.slice(0, 3).map((e) => (
+                                    <button
+                                      key={e.id}
+                                      type="button"
+                                      className={`ent ${state.entity === e.id ? 'on' : ''}`}
+                                      title={`${ENTITY_TYPE[e.type]?.label ?? e.type} · show memories that mention it`}
+                                      onClick={() => setParams({ entity: e.id, entityName: e.name })}
+                                    >
+                                      <EntityIcon type={e.type} />
+                                      {e.name}
+                                    </button>
+                                  ))}
+                                  {m.entities.length > 3 && <span className="hint">+{m.entities.length - 3} more</span>}
+                                </div>
+                              ) : (
+                                <span className="muted">—</span>
+                              )}
                             </td>
                           )}
                           {columns.includes('owner') && (
@@ -516,9 +650,9 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                               {(close) => (
                                 <>
                                   <a href={memoryHref(m.id)}>Open</a>
-                                  <a href={buildHash('/graph', { focus: m.id })}>Open in graph</a>
+                                  <a href={buildHash('/memories', { view: 'graph', gfocus: 'memory', focus: m.id })}>Open in graph</a>
                                   <a href={buildHash(`/memory/${m.id}`, { tab: 'access' })}>Access log</a>
-                                  {state.tab !== 'deleted' && (
+                                  {state.tab !== 'deleted' && !isAdmin && (
                                     <>
                                       <hr />
                                       <button
@@ -554,6 +688,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
             )}
           </section>
         </div>
+        )}
       </div>
 
       {modal === 'write' && <WriteMemoryModal onClose={() => setModal(null)} onSaved={() => reload()} />}
@@ -657,6 +792,23 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
         </ConfirmModal>
       )}
     </>
+  );
+};
+
+const ENTITY_TYPE: Record<string, { label: string; color: string; d: string }> = {
+  person: { label: 'Person', color: '#0066cc', d: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21c1.5-4 4.5-6 8-6s6.5 2 8 6' },
+  organization: { label: 'Organization', color: '#3d7317', d: 'M4 21V5l8-3v19M12 9h8v12M3 21h18M7 8h2M7 12h2M7 16h2M15 13h2M15 17h2' },
+  location: { label: 'Location', color: '#009596', d: 'M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11zM12 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z' },
+  object: { label: 'Object', color: '#ca6c0f', d: 'M12 2l9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10' },
+  event: { label: 'Event', color: '#5e40be', d: 'M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zM3 10h18M8 3v4M16 3v4' },
+};
+
+const EntityIcon: React.FC<{ type: string }> = ({ type }) => {
+  const t = ENTITY_TYPE[type] ?? ENTITY_TYPE.object;
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={t.color} strokeWidth="2.2" aria-hidden="true">
+      <path d={t.d} />
+    </svg>
   );
 };
 

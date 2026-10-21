@@ -65,6 +65,26 @@ class Settings(BaseSettings):
     # Label shown in the masthead, e.g. "for OpenShift AI" cluster suffix.
     cluster_domain: str = ""
 
+    # --- Accounts, roles and confidentiality ---
+    # Local dashboard accounts (email + password) with self-service sign-up and
+    # a first-run admin setup. When true, every /api route except auth, health
+    # and public config needs a session, exactly like the dev API-key login.
+    # Behind the OpenShift OAuth proxy leave it false: identities come from
+    # X-Forwarded-* headers and the admin role from ui_admin_group.
+    ui_local_accounts: bool = False
+    # HMAC key for session cookies. Set it in production (a Secret). When empty
+    # the BFF falls back to the dev API key, then to a key derived from the DB
+    # credentials, so sessions survive restarts but rotate with the password.
+    ui_session_secret: str = ""
+    # Optional one-time token required to create the first platform admin
+    # (POST /api/auth/setup). Strongly recommended on shared clusters.
+    ui_setup_token: str = ""
+    # OpenShift group whose members get the platform-admin role.
+    ui_admin_group: str = "memoryhub-admins"
+    # Comma-separated OpenShift usernames that are platform admins. Use this
+    # when the OAuth proxy does not forward X-Forwarded-Groups.
+    ui_admin_users: str = ""
+
     @property
     def database_url(self) -> str:
         return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"

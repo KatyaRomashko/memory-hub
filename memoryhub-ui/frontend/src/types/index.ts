@@ -3,27 +3,113 @@
 
 export type Scope = 'user' | 'project' | 'campaign' | 'role' | 'organizational' | 'enterprise' | string;
 
+/** admin: manages the platform, sees memory metadata only.
+ *  user: owns memories, reads what RBAC allows.
+ *  operator: open development mode (no sign-in configured). */
+export type Role = 'admin' | 'user' | 'operator';
+
 export interface Me {
   username: string;
   name: string;
   email: string | null;
   initials: string;
-  source: 'oauth-proxy' | 'api-key' | 'anonymous';
+  source: 'oauth-proxy' | 'api-key' | 'account' | 'anonymous';
+  role: Role;
   tenant_id: string;
 }
 
+export type SignupMode = 'open' | 'domain' | 'invite' | 'closed';
+
 export interface AuthStatus {
-  mode: 'oauth-proxy' | 'api-key' | 'open';
+  mode: 'oauth-proxy' | 'api-key' | 'accounts' | 'open';
   authenticated: boolean;
   api_key_login: boolean;
+  local_accounts: boolean;
   user: string | null;
+  role: Role;
   cluster_domain: string | null;
+  setup_required: boolean;
+  setup_token_required?: boolean;
+  accounts_available?: boolean;
+  organization?: string | null;
+  signup?: { mode: SignupMode; require_approval: boolean; allowed_domains: string[] };
+  password_min_length?: number;
+}
+
+export interface SetupPayload {
+  setup_token?: string;
+  organization: { name: string; contact_email: string };
+  admin: { username: string; email: string; display_name: string; password: string };
+  signup: { mode: SignupMode; allowed_domains: string[]; require_approval: boolean };
+  privacy: {
+    admin_readable_scopes: string[];
+    break_glass: boolean;
+    break_glass_hours: number;
+    break_glass_approvers: number;
+    notify_owner: boolean;
+  };
+  security: { session_hours: number; password_min_length: number };
+}
+
+export interface RegisterPayload {
+  username: string;
+  email: string;
+  display_name: string;
+  password: string;
+  job_title?: string;
+  requested_projects: string[];
+  invite_code?: string;
+  accept_privacy: boolean;
+}
+
+export interface AccountRow {
+  id: string;
+  username: string;
+  email: string;
+  display_name: string;
+  role: 'admin' | 'user';
+  status: 'active' | 'pending' | 'disabled';
+  job_title: string | null;
+  requested_projects: string[];
+  created_at: string;
+  last_login_at: string | null;
+  approved_by: string | null;
+  invited_by: string | null;
+}
+
+export interface InviteRow {
+  id: string;
+  code: string;
+  role: 'admin' | 'user';
+  email: string | null;
+  note: string | null;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  used_by: string | null;
+  state: 'open' | 'used' | 'expired';
+}
+
+export interface AccountsResponse {
+  items: AccountRow[];
+  counts: { all: number; pending: number; admins: number; disabled: number };
+  invites: InviteRow[];
+}
+
+export interface InviteCreated {
+  code: string;
+  role: 'admin' | 'user';
+  email: string | null;
+  expires_at: string;
+  link: string;
 }
 
 export interface NavCounts {
   review_queue: number;
   memories: number;
 }
+
+export type OverviewRange = 'all' | '1h' | '12h' | '1d' | '7d' | '30d';
 
 export interface HealthItem {
   key: string;
@@ -63,12 +149,38 @@ export interface Overview {
   contradictions: { open: number; over_threshold: number; threshold: number };
   approvals: { enterprise_pending: number; pending_total: number };
   scopes: { scope: Scope; count: number; pending: number }[];
+  categories: { name: string; memory_count: number }[];
+  /** Bucket start (ISO, UTC) with counts for that bucket. */
   activity: { date: string; searches: number; writes: number }[];
+  activity_range: OverviewRange;
+  activity_bucket_seconds: number;
   activity_source: 'audit' | 'memory';
   recent: AuditEvent[];
   recent_source: 'audit' | 'memory';
   health: HealthItem[];
   context_assembly: { avg_tokens: number | null; prefix_hit_rate: number | null };
+}
+
+export type EntityType = 'person' | 'organization' | 'location' | 'object' | 'event';
+
+export interface EntityRow {
+  id: string;
+  name: string;
+  entity_type: EntityType | string;
+  aliases: string[];
+  memory_count: number;
+  projects: string[];
+  created_at: string | null;
+  last_seen: string | null;
+}
+
+export interface EntitiesResponse {
+  items: EntityRow[];
+  total: number;
+  page: number;
+  per_page: number;
+  has_more: boolean;
+  counts: { all: number; person: number; organization: number; location: number; object: number; event: number };
 }
 
 export interface MemoryRow {
@@ -94,6 +206,16 @@ export interface MemoryRow {
   updated_at: string;
   deleted_at: string | null;
   score: number | null;
+  entities: EntityRef[];
+  /** Admins only: content, domains and entity names were withheld. */
+  redacted?: boolean;
+  entity_count?: number;
+}
+
+export interface EntityRef {
+  id: string;
+  name: string;
+  type: string;
 }
 
 export interface Facet {
@@ -106,7 +228,8 @@ export interface BrowseResponse {
   total: number;
   page: number;
   per_page: number;
-  search_mode: 'none' | 'semantic' | 'text';
+  search_mode: 'none' | 'semantic' | 'text' | 'metadata';
+  metadata_only?: boolean;
   tab_counts: { current: number; all: number; quarantined: number; deleted: number };
   facets: {
     scopes: Facet[];
@@ -131,6 +254,7 @@ export interface BrowseParams {
   order?: string;
   page?: number;
   per_page?: number;
+  entity?: string;
 }
 
 export interface NodeBrief {
@@ -145,6 +269,7 @@ export interface NodeBrief {
   status: string;
   created_at: string;
   updated_at: string;
+  redacted?: boolean;
 }
 
 export interface MemoryContext {
@@ -201,6 +326,16 @@ export interface MemoryContext {
   contradiction_threshold: number;
   similar: (NodeBrief & { score: number })[];
   access_count: number;
+}
+
+export interface GraphAll {
+  nodes: (NodeBrief & { depth: number; degree: number; redacted?: boolean })[];
+  edges: { id: string; source: string; target: string; type: string }[];
+  total: number;
+  truncated: boolean;
+  orphan_count: number;
+  hidden_links: number;
+  metadata_only: boolean;
 }
 
 export interface GraphNeighbourhood {
@@ -549,6 +684,10 @@ export interface TenantSettingsValues {
     full_retention_days: number;
     mcp_profile: 'compact' | 'full';
   };
+  organization: { name: string; contact_email: string };
+  signup: { mode: SignupMode; allowed_domains: string[]; require_approval: boolean };
+  privacy: SetupPayload['privacy'];
+  security: SetupPayload['security'];
 }
 
 export interface SettingsResponse {

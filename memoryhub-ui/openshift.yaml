@@ -53,6 +53,12 @@ spec:
           value: "https://mcp-server.example.com/mcp/"
         - name: MEMORYHUB_PUBLIC_AUTH_URL
           value: "https://auth-server.example.com"
+        # Roles: OpenShift users listed here (or members of memoryhub-admins,
+        # when the proxy forwards X-Forwarded-Groups) are platform admins and
+        # see memory metadata only; everyone else is a user and sees only the
+        # memories RBAC lets them read.
+        - name: MEMORYHUB_UI_ADMIN_USERS
+          value: ""
         - name: MEMORYHUB_ADMIN_KEY
           valueFrom:
             secretKeyRef:

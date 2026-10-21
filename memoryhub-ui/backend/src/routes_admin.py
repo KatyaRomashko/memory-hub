@@ -26,6 +26,7 @@ from sqlalchemy import and_, func, literal_column, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.access import access_for, admin_viewer
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.routes_dashboard import _auth_clients, _event_row, _load_memory, _review_counts, tool_name
@@ -59,41 +60,66 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 class LoginRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    # Local account sign-in
+    login: str | None = Field(default=None, max_length=320)
+    password: str | None = Field(default=None, max_length=256)
+    # Development API-key sign-in
+    api_key: str | None = Field(default=None, max_length=1024)
     username: str | None = Field(default=None, max_length=255)
+    role: str = Field(default="admin", pattern="^(admin|user)$")
 
 
 @router.get("/api/auth/status")
-async def auth_status(request: Request, settings: SettingsDep):
+async def auth_status(request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
     if viewer.source == "oauth-proxy":
         mode = "oauth-proxy"
+    elif settings.ui_local_accounts:
+        mode = "accounts"
     elif settings.ui_dev_api_key:
         mode = "api-key"
     else:
         mode = "open"
-    return {
+    body = {
         "mode": mode,
-        "authenticated": mode != "api-key" or viewer.source == "api-key",
+        "authenticated": mode in ("open", "oauth-proxy") or viewer.source in ("api-key", "account"),
         "api_key_login": bool(settings.ui_dev_api_key),
+        "local_accounts": settings.ui_local_accounts,
         "user": viewer.username if viewer.source != "anonymous" else None,
+        "role": viewer.role,
         "cluster_domain": settings.cluster_domain or None,
+        "setup_required": False,
     }
+    if settings.ui_local_accounts and viewer.source != "oauth-proxy":
+        from src.accounts import accounts_status
+
+        body.update(await accounts_status(db, settings))
+    return body
 
 
 @router.post("/api/auth/login")
-async def login(body: LoginRequest, response: Response, settings: SettingsDep):
+async def login(body: LoginRequest, response: Response, db: DbDep, settings: SettingsDep):
     import hmac
 
+    if body.password is not None:
+        if not settings.ui_local_accounts:
+            raise HTTPException(status_code=404, detail="Password sign-in is disabled on this deployment")
+        from src.accounts import password_login
+
+        return await password_login(db, settings, response, body.login or body.username or "", body.password)
     if not settings.ui_dev_api_key:
         raise HTTPException(status_code=404, detail="API-key login is disabled on this deployment")
-    if not hmac.compare_digest(body.api_key, settings.ui_dev_api_key):
+    if not hmac.compare_digest(body.api_key or "", settings.ui_dev_api_key):
         raise HTTPException(status_code=401, detail="That API key is not valid for this dashboard")
     username = (body.username or "dev-operator").strip() or "dev-operator"
     response.set_cookie(
-        SESSION_COOKIE, make_session_cookie(username, settings), httponly=True, samesite="lax", max_age=12 * 3600
+        SESSION_COOKIE,
+        make_session_cookie(username, settings, role=body.role, source="api-key"),
+        httponly=True,
+        samesite="lax",
+        max_age=12 * 3600,
     )
-    return {"ok": True, "user": username}
+    return {"ok": True, "user": username, "role": body.role}
 
 
 @router.post("/api/auth/logout")
@@ -445,7 +471,7 @@ async def list_campaigns(db: DbDep, settings: SettingsDep):
     }
 
 
-@router.post("/api/campaigns", status_code=201)
+@router.post("/api/campaigns", status_code=201, dependencies=[Depends(admin_viewer)])
 async def create_campaign(body: CampaignRequest, request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
     campaign = Campaign(
@@ -477,7 +503,7 @@ async def create_campaign(body: CampaignRequest, request: Request, db: DbDep, se
     return {"id": str(campaign.id)}
 
 
-@router.patch("/api/campaigns/{campaign_id}")
+@router.patch("/api/campaigns/{campaign_id}", dependencies=[Depends(admin_viewer)])
 async def update_campaign(campaign_id: str, body: CampaignUpdate, request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
     campaign = (
@@ -507,7 +533,7 @@ async def update_campaign(campaign_id: str, body: CampaignUpdate, request: Reque
     return {"id": campaign_id}
 
 
-@router.post("/api/campaigns/{campaign_id}/projects", status_code=201)
+@router.post("/api/campaigns/{campaign_id}/projects", status_code=201, dependencies=[Depends(admin_viewer)])
 async def enroll_project(campaign_id: str, body: EnrollRequest, request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
     campaign = (
@@ -697,7 +723,7 @@ async def _identity_rows(db: AsyncSession, settings: Settings) -> tuple[list[dic
     return rows, clients is not None
 
 
-@router.get("/api/identities")
+@router.get("/api/identities", dependencies=[Depends(admin_viewer)])
 async def list_identities(db: DbDep, settings: SettingsDep):
     rows, auth_ok = await _identity_rows(db, settings)
     role_rows = (
@@ -723,7 +749,7 @@ async def list_identities(db: DbDep, settings: SettingsDep):
     }
 
 
-@router.get("/api/identities/{identity_id}")
+@router.get("/api/identities/{identity_id}", dependencies=[Depends(admin_viewer)])
 async def identity_detail(identity_id: str, db: DbDep, settings: SettingsDep):
     rows, _ = await _identity_rows(db, settings)
     row = next((r for r in rows if r["id"] == identity_id), None)
@@ -773,7 +799,7 @@ class RoleRequest(BaseModel):
     role_name: str = Field(min_length=1, max_length=100)
 
 
-@router.post("/api/roles", status_code=201)
+@router.post("/api/roles", status_code=201, dependencies=[Depends(admin_viewer)])
 async def assign_role(body: RoleRequest, request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
     db.add(
@@ -805,7 +831,7 @@ async def assign_role(body: RoleRequest, request: Request, db: DbDep, settings: 
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/credentials")
+@router.get("/api/credentials", dependencies=[Depends(admin_viewer)])
 async def credentials(db: DbDep, settings: SettingsDep):
     from src.routes import _admin_request
 
@@ -899,7 +925,7 @@ class RuleTestRequest(BaseModel):
     action: str = "flag"
 
 
-@router.post("/api/rules/test")
+@router.post("/api/rules/test", dependencies=[Depends(admin_viewer)])
 async def test_rule(body: RuleTestRequest, settings: SettingsDep):
     if body.tier == "regex":
         if body.pattern_set in ("secrets", "pii"):
@@ -946,7 +972,7 @@ async def test_rule(body: RuleTestRequest, settings: SettingsDep):
     raise HTTPException(status_code=422, detail="Policy rules are evaluated by the server and cannot be tested here")
 
 
-@router.get("/api/rules/matches")
+@router.get("/api/rules/matches", dependencies=[Depends(admin_viewer)])
 async def rule_matches(db: DbDep, settings: SettingsDep, days: int = Query(default=7, ge=1, le=90)):
     """Per-rule match counts over the last ``days`` days from the audit log.
 
@@ -966,7 +992,7 @@ async def rule_matches(db: DbDep, settings: SettingsDep, days: int = Query(defau
     return {"days": days, "available": bool(rows), "counts": {r[0]: r[1] for r in rows}}
 
 
-@router.post("/api/rules/scan")
+@router.post("/api/rules/scan", dependencies=[Depends(admin_viewer)])
 async def batch_scan(request: Request, db: DbDep, settings: SettingsDep):
     """Run enabled regex rules over current memories and flag matches.
 
@@ -1049,6 +1075,11 @@ async def batch_scan(request: Request, db: DbDep, settings: SettingsDep):
 class ReviewDecision(BaseModel):
     decision: str = Field(pattern="^(approve|reject|request_changes|restore)$")
     comment: str | None = Field(default=None, max_length=4000)
+
+
+class _BriefRow:
+    def __init__(self, d: dict):
+        self.scope, self.scope_id, self.owner_id = d.get("scope"), d.get("scope_id"), d.get("owner_id")
 
 
 async def _review_item(
@@ -1224,6 +1255,7 @@ async def review_queue(
             "stub": clean_stub(node.stub),
             "content": node.content,
             "scope": node.scope,
+            "scope_id": node.scope_id,
             "owner_id": node.owner_id,
             "actor_id": node.actor_id,
             "created_at": node.created_at,
@@ -1305,6 +1337,11 @@ async def review_queue(
         ).all()
         items = [{"kind": "history", **_event_row(e, m, {})} for e, m in events]
 
+    acc = await access_for(db, settings, viewer)
+    if acc.grants is not None:
+        items = [i for i in items if i.get("kind") == "history" or acc.can_read_row(_BriefRow(i))]
+    items = acc.redact_tree(items)
+
     # "Also waiting": the first item of every other queue.
     also = []
     if tab == "approvals":
@@ -1323,10 +1360,14 @@ async def review_queue(
 
 
 @router.get("/api/review/{memory_id}")
-async def review_item(memory_id: str, db: DbDep, settings: SettingsDep, kind: str = Query(default="approval")):
+async def review_item(
+    memory_id: str, request: Request, db: DbDep, settings: SettingsDep, kind: str = Query(default="approval")
+):
     tenant_id = settings.ui_tenant_id
     tenant_settings = await load_tenant_settings(db, tenant_id)
     node = await _load_memory(db, tenant_id, memory_id)
+    acc = await access_for(db, settings, viewer_from_request(request, settings))
+    acc.ensure_readable(node)
     item = await _review_item(
         db,
         tenant_id,
@@ -1344,7 +1385,7 @@ async def review_item(memory_id: str, db: DbDep, settings: SettingsDep, kind: st
     ).scalar_one()
     item["reach_agents"] = agents
     item["approvers_required"] = int(tenant_settings["governance"]["enterprise_approvers"])
-    return item
+    return acc.redact_tree(item, node.scope)
 
 
 @router.post("/api/review/{memory_id}/decision")
@@ -1450,8 +1491,9 @@ async def review_decision(memory_id: str, body: ReviewDecision, request: Request
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/audit")
+@router.get("/api/audit", dependencies=[Depends(admin_viewer)])
 async def audit_log(
+    request: Request,
     db: DbDep,
     settings: SettingsDep,
     operation: list[str] | None = Query(default=None),
@@ -1508,8 +1550,9 @@ async def audit_log(
         )
     ).scalar_one()
     tenant_settings = await load_tenant_settings(db, tenant_id)
+    acc = await access_for(db, settings, viewer_from_request(request, settings))
     return {
-        "items": items,
+        "items": acc.redact_tree(items),
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -1520,7 +1563,7 @@ async def audit_log(
     }
 
 
-@router.get("/api/audit/sessions")
+@router.get("/api/audit/sessions", dependencies=[Depends(admin_viewer)])
 async def audit_sessions(db: DbDep, settings: SettingsDep, actor: str = Query(min_length=1)):
     """Session registrations for an actor, used to pick a session to reconstruct."""
     rows = (
@@ -1542,8 +1585,9 @@ async def audit_sessions(db: DbDep, settings: SettingsDep, actor: str = Query(mi
     return [{"session_id": (r.event_metadata or {}).get("session_id"), "timestamp": r.timestamp} for r in rows]
 
 
-@router.get("/api/audit/forensics")
+@router.get("/api/audit/forensics", dependencies=[Depends(admin_viewer)])
 async def forensics(
+    request: Request,
     db: DbDep,
     settings: SettingsDep,
     actor: str = Query(min_length=1, max_length=255),
@@ -1639,6 +1683,9 @@ async def forensics(
             ).scalar_one()
             changed_after.append({**entry, "other_actors_exposed": exposed})
     context.sort(key=lambda c: c["served_at"])
+    acc = await access_for(db, settings, viewer_from_request(request, settings))
+    context = acc.redact_tree(context)
+    changed_after = acc.redact_tree(changed_after)
     return {
         "actor": actor,
         "at": at,
@@ -1660,6 +1707,10 @@ class SettingsUpdate(BaseModel):
     retrieval: dict | None = None
     governance: dict | None = None
     audit: dict | None = None
+    organization: dict | None = None
+    signup: dict | None = None
+    privacy: dict | None = None
+    security: dict | None = None
 
 
 def _validate_settings(values: dict) -> dict:
@@ -1685,12 +1736,16 @@ def _validate_settings(values: dict) -> dict:
         errors.append("Retention must be between 1 and 3650 days")
     if a["mcp_profile"] not in ("compact", "full"):
         errors.append("MCP profile must be compact or full")
+    if "signup" in values:
+        from src.accounts import validate_access_settings
+
+        errors.extend(validate_access_settings(values))
     if errors:
         raise HTTPException(status_code=422, detail="; ".join(errors))
     return values
 
 
-@router.get("/api/settings")
+@router.get("/api/settings", dependencies=[Depends(admin_viewer)])
 async def get_tenant_settings(db: DbDep, settings: SettingsDep):
     from src.ui_common import probe_components
 
@@ -1716,7 +1771,7 @@ async def get_tenant_settings(db: DbDep, settings: SettingsDep):
     }
 
 
-@router.put("/api/settings")
+@router.put("/api/settings", dependencies=[Depends(admin_viewer)])
 async def put_tenant_settings(body: SettingsUpdate, request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
     current = await load_tenant_settings(db, settings.ui_tenant_id)

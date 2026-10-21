@@ -158,61 +158,6 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
   );
 };
 
-/** Bar chart of daily searches and writes, drawn like the design's SVG. */
-export const ActivityChart: React.FC<{ data: { date: string; searches: number; writes: number }[] }> = ({ data }) => {
-  const max = Math.max(1, ...data.map((d) => Math.max(d.searches, d.writes)));
-  const step = niceStep(max / 4);
-  const top = step * 4;
-  const base = 198;
-  const y = (v: number) => base - (v / top) * 178;
-  const slot = 600 / Math.max(1, data.length);
-  const label = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  const mid = Math.floor((data.length - 1) / 2);
-  const total = data.reduce((a, d) => a + d.searches + d.writes, 0);
-  return (
-    <svg viewBox="0 0 640 220" role="img" aria-label={`Daily searches and writes for the last ${data.length} days, ${total} operations in total`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-      <g stroke="#e6e6e6" strokeWidth="1">
-        {[4, 3, 2, 1].map((k) => (
-          <line key={k} x1="40" y1={y(step * k)} x2="640" y2={y(step * k)} />
-        ))}
-      </g>
-      <g fontSize="11" fill="#4d4d4d" fontFamily="Red Hat Text">
-        {[4, 3, 2, 1].map((k) => (
-          <text key={k} x="0" y={y(step * k) + 4}>
-            {fmtTick(step * k)}
-          </text>
-        ))}
-        {data.length > 0 && (
-          <>
-            <text x={52} y="214">{label(data[0].date)}</text>
-            <text x={52 + mid * slot} y="214">{label(data[mid].date)}</text>
-            <text x={52 + (data.length - 1) * slot - 12} y="214">{label(data[data.length - 1].date)}</text>
-          </>
-        )}
-      </g>
-      {data.map((d, i) => {
-        const x = 52 + i * slot;
-        return (
-          <g key={d.date}>
-            <title>{`${label(d.date)}: ${d.searches.toLocaleString()} searches, ${d.writes.toLocaleString()} writes & updates`}</title>
-            {d.searches > 0 && <rect x={x} y={y(d.searches)} width="16" height={base - y(d.searches)} rx="3" fill="#0066cc" />}
-            {d.writes > 0 && <rect x={x + 18} y={y(d.writes)} width="10" height={base - y(d.writes)} rx="2" fill="#92c5f9" />}
-          </g>
-        );
-      })}
-    </svg>
-  );
-};
-
-function niceStep(raw: number): number {
-  if (raw <= 1) return 1;
-  const mag = 10 ** Math.floor(Math.log10(raw));
-  const n = raw / mag;
-  const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
-  return nice * mag;
-}
-const fmtTick = (v: number) => (v >= 1000 ? `${Math.round(v / 100) / 10}k`.replace('.0k', 'k') : String(Math.round(v)));
-
 /* ------------------------------------------------------------------ */
 /* Memory picker (relationships, graph focus)                          */
 /* ------------------------------------------------------------------ */

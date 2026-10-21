@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import type { Me } from '@/types';
+import type { Me, Role } from '@/types';
 import { buildHash } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
@@ -12,6 +12,8 @@ const REPO_URL = 'https://github.com/redhat-ai-americas/memory-hub';
 
 export interface AppState {
   me: Me | null;
+  /** Viewer role; 'operator' until /api/me answers and in open development mode. */
+  role: Role;
   tenant: string;
   /** null until the first count arrives. */
   memoryCount: number | null;
@@ -23,6 +25,7 @@ export interface AppState {
 
 const AppContext = createContext<AppState>({
   me: null,
+  role: 'operator',
   tenant: '',
   memoryCount: null,
   standby: false,
@@ -70,6 +73,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     <AppContext.Provider
       value={{
         me,
+        role: me?.role ?? 'operator',
         tenant: me?.tenant_id ?? '',
         memoryCount,
         standby: memoryCount === 0,
@@ -90,36 +94,62 @@ export interface NavItem {
   path: string;
   label: string;
   badge?: 'review';
+  /** Roles that see this item; all roles when omitted. */
+  roles?: Role[];
+  /** Label override per role. */
+  labelFor?: Partial<Record<Role, string>>;
 }
 
-export const NAV: { group?: string; items: NavItem[] }[] = [
-  { items: [{ path: '/overview', label: 'Overview' }] },
+const ADMIN: Role[] = ['admin', 'operator'];
+const USER: Role[] = ['user', 'operator'];
+
+/**
+ * Users work with memories; platform admins run the platform and see memory
+ * metadata only. The open-mode operator (no sign-in configured) sees both.
+ */
+export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; items: NavItem[] }[] = [
+  { items: [{ path: '/overview', label: 'Overview', labelFor: { user: 'My overview', admin: 'Platform overview' } }] },
   {
     group: 'Memory',
+    groupFor: { admin: 'Memory · metadata only', user: 'My memory' },
     items: [
-      { path: '/memories', label: 'Memory browser' },
-      { path: '/graph', label: 'Memory graph' },
-      { path: '/search', label: 'Search playground' },
+      { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Memory analytics' } },
+      { path: '/entities', label: 'Entities', roles: USER },
+      { path: '/search', label: 'Search playground', roles: USER },
       { path: '/projects', label: 'Projects & campaigns' },
     ],
   },
   {
     group: 'Governance',
     items: [
-      { path: '/review', label: 'Review queue', badge: 'review' },
-      { path: '/curation', label: 'Curation rules' },
-      { path: '/audit', label: 'Audit & forensics' },
+      { path: '/review', label: 'Review queue', badge: 'review', labelFor: { user: 'Review requests' } },
+      { path: '/curation', label: 'Curation rules', roles: ADMIN },
+      { path: '/audit', label: 'Audit & forensics', roles: ADMIN },
     ],
   },
   {
     group: 'Access',
     items: [
-      { path: '/identities', label: 'Users & agents' },
-      { path: '/clients', label: 'OAuth clients & keys' },
+      { path: '/accounts', label: 'Accounts & sign-up', roles: ADMIN },
+      { path: '/identities', label: 'Users & agents', roles: ADMIN },
+      { path: '/clients', label: 'OAuth clients & keys', roles: ADMIN },
     ],
   },
-  { group: 'Platform', items: [{ path: '/settings', label: 'Settings' }] },
+  { group: 'Platform', items: [{ path: '/settings', label: 'Settings', roles: ADMIN }] },
 ];
+
+export const canSee = (path: string, role: Role) =>
+  NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role))));
+
+export const navFor = (role: Role) =>
+  NAV.map((s) => ({
+    group: s.groupFor?.[role] ?? s.group,
+    items: s.items
+      .filter((i) => !i.roles || i.roles.includes(role))
+      .map((i) => ({ ...i, label: i.labelFor?.[role] ?? i.label })),
+  })).filter((s) => s.items.length > 0);
+
+export const ROLE_LABEL: Record<Role, string> = { admin: 'Platform admin', user: 'User', operator: 'Open mode' };
 
 const NAV_PREF = 'memoryhub.navOpen';
 const readNavPref = () => {
@@ -131,7 +161,7 @@ const readNavPref = () => {
 };
 
 export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> = ({ activePath, children }) => {
-  const { me, tenant, reviewCount } = useApp();
+  const { me, role, tenant, reviewCount } = useApp();
   const narrow = () => window.innerWidth < 960;
   const [open, setOpen] = useState<boolean>(() => (narrow() ? false : readNavPref()));
 
@@ -175,15 +205,22 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
             MemoryHub<small>for OpenShift AI</small>
           </span>
         </a>
+        {role !== 'operator' && (
+          <span className={`role-pill ${role}`} title={role === 'admin' ? 'You see memory metadata only' : 'You see memories you are allowed to read'}>
+            {ROLE_LABEL[role]}
+          </span>
+        )}
         {tenant && (
           <span className="ctx" title="Each dashboard deployment serves one tenant (MEMORYHUB_UI_TENANT_ID)">
             Tenant: {tenant}
           </span>
         )}
         <div className="mast-r">
-          <a className="icb" aria-label="Search memories" href={buildHash('/search')}>
-            <Icon.Search />
-          </a>
+          {role !== 'admin' && (
+            <a className="icb" aria-label="Search memories" href={buildHash('/search')}>
+              <Icon.Search />
+            </a>
+          )}
           <a className="icb" aria-label={`Review queue, ${reviewCount} waiting`} href={buildHash('/review')}>
             <Icon.Bell />
             {reviewCount > 0 && <span className="dot">{reviewCount > 99 ? '99+' : reviewCount}</span>}
@@ -218,8 +255,12 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
           >
             {() => (
               <>
-                <div className="mh">{me ? `Signed in as ${me.username}` : 'Not signed in'}</div>
-                {me?.source === 'api-key' && (
+                <div className="mh">
+                  {me ? `Signed in as ${me.username}` : 'Not signed in'}
+                  <br />
+                  <span className="muted sm">{ROLE_LABEL[role]}</span>
+                </div>
+                {(me?.source === 'api-key' || me?.source === 'account') && (
                   <button type="button" onClick={onLogout}>
                     Log out
                   </button>
@@ -232,7 +273,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
       </header>
       <div className={`shell ${open ? 'nav-open' : 'nav-closed'}`}>
         <nav className="nav" aria-label="Primary">
-          {NAV.map((section, i) => (
+          {navFor(role).map((section, i) => (
             <React.Fragment key={section.group ?? i}>
               {section.group && <div className="ng">{section.group}</div>}
               {section.items.map((item) => (

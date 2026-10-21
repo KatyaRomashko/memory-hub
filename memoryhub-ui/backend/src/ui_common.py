@@ -75,7 +75,8 @@ class Viewer:
     username: str
     name: str
     email: str | None
-    source: str  # "oauth-proxy" | "api-key" | "anonymous"
+    source: str  # "oauth-proxy" | "account" | "api-key" | "anonymous"
+    role: str = "operator"  # "admin" | "user" | "operator" (open development mode)
 
     @property
     def initials(self) -> str:
@@ -86,59 +87,143 @@ class Viewer:
             return parts[0][:2].upper()
         return (parts[0][0] + parts[-1][0]).upper()
 
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+    @property
+    def can_admin(self) -> bool:
+        """Platform management (identities, keys, rules, settings, audit)."""
+        return self.role in ("admin", "operator")
+
+    @property
+    def restricted(self) -> bool:
+        """Memory reads go through the per-user RBAC predicate.
+
+        Only signed-in users are restricted. Admins are not filtered but never
+        see content (see ``redacts_content``); the open-mode operator keeps the
+        legacy tenant-wide view and exists only when no sign-in is configured.
+        """
+        return self.role == "user"
+
+    @property
+    def redacts_content(self) -> bool:
+        return self.role == "admin"
+
+
+def _groups(header_value: str | None) -> list[str]:
+    return [g for g in re.split(r"[,\s]+", header_value or "") if g]
+
 
 def viewer_from_request(request: Request, settings: Settings) -> Viewer:
     """Identify the human behind the request.
 
     The OpenShift OAuth proxy in front of the UI forwards the authenticated
     user in ``X-Forwarded-User`` / ``X-Forwarded-Preferred-Username`` /
-    ``X-Forwarded-Email``. Development API-key sessions carry the user in the
-    signed session cookie.
+    ``X-Forwarded-Email`` and, when configured, ``X-Forwarded-Groups``; members
+    of ``ui_admin_group`` are platform admins. Local accounts and dev API-key
+    logins carry user and role in the signed session cookie.
     """
     headers = request.headers
     username = headers.get("x-forwarded-preferred-username") or headers.get("x-forwarded-user")
     email = headers.get("x-forwarded-email")
     if username:
-        return Viewer(username=username, name=username, email=email, source="oauth-proxy")
-    session_user = read_session_cookie(request, settings)
-    if session_user:
-        return Viewer(username=session_user, name=session_user, email=None, source="api-key")
-    return Viewer(username="dashboard", name="Dashboard operator", email=None, source="anonymous")
+        in_group = bool(settings.ui_admin_group) and settings.ui_admin_group in _groups(
+            headers.get("x-forwarded-groups")
+        )
+        listed = username in _groups(settings.ui_admin_users)
+        role = "admin" if in_group or listed else "user"
+        return Viewer(username=username, name=username, email=email, source="oauth-proxy", role=role)
+    session = read_session(request, settings)
+    if session:
+        return Viewer(
+            username=session.username,
+            name=session.name or session.username,
+            email=None,
+            source=session.source,
+            role=session.role,
+        )
+    return Viewer(username="dashboard", name="Dashboard operator", email=None, source="anonymous", role="operator")
 
 
 # ---------------------------------------------------------------------------
-# Dev API-key session cookie
+# Session cookie (local accounts and dev API-key login)
 # ---------------------------------------------------------------------------
 
 SESSION_COOKIE = "memoryhub_ui_session"
+SESSION_HOURS = 12
+
+
+def auth_enabled(settings: Settings) -> bool:
+    return bool(settings.ui_dev_api_key or settings.ui_local_accounts)
+
+
+def session_secret(settings: Settings) -> str:
+    if settings.ui_session_secret:
+        return settings.ui_session_secret
+    if settings.ui_dev_api_key:
+        return settings.ui_dev_api_key
+    seed = f"memoryhub-ui-session|{settings.db_user}|{settings.db_password}|{settings.db_host}|{settings.ui_tenant_id}"
+    return hashlib.sha256(seed.encode()).hexdigest()
 
 
 def _sign(value: str, key: str) -> str:
     return hmac.new(key.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
-def make_session_cookie(username: str, settings: Settings) -> str:
-    issued = str(int(time.time()))
-    payload = f"{username}|{issued}"
-    return f"{payload}|{_sign(payload, settings.ui_dev_api_key)}"
+@dataclass
+class Session:
+    username: str
+    role: str
+    source: str
+    name: str | None = None
 
 
-def read_session_cookie(request: Request, settings: Settings) -> str | None:
-    if not settings.ui_dev_api_key:
+def _clean(part: str) -> str:
+    return part.replace("|", "").replace(";", "").strip()
+
+
+def make_session_cookie(
+    username: str,
+    settings: Settings,
+    *,
+    role: str = "admin",
+    source: str = "api-key",
+    name: str | None = None,
+    hours: int = SESSION_HOURS,
+) -> str:
+    expires = str(int(time.time()) + max(1, hours) * 3600)
+    payload = "|".join([_clean(username), role, source, _clean(name or username), expires])
+    return f"{payload}|{_sign(payload, session_secret(settings))}"
+
+
+def read_session(request: Request, settings: Settings) -> Session | None:
+    if not auth_enabled(settings):
         return None
     raw = request.cookies.get(SESSION_COOKIE)
-    if not raw or raw.count("|") != 2:
+    if not raw or raw.count("|") != 5:
         return None
-    username, issued, signature = raw.split("|")
-    if not hmac.compare_digest(signature, _sign(f"{username}|{issued}", settings.ui_dev_api_key)):
+    username, role, source, name, expires, signature = raw.split("|")
+    payload = "|".join([username, role, source, name, expires])
+    if not hmac.compare_digest(signature, _sign(payload, session_secret(settings))):
         return None
-    # Sessions last 12 hours.
+    if role not in ("admin", "user") or source not in ("account", "api-key"):
+        return None
     try:
-        if time.time() - int(issued) > 12 * 3600:
+        if time.time() > int(expires):
             return None
     except ValueError:
         return None
-    return username
+    if source == "api-key" and not settings.ui_dev_api_key:
+        return None
+    if source == "account" and not settings.ui_local_accounts:
+        return None
+    return Session(username=username, role=role, source=source, name=name)
+
+
+def read_session_cookie(request: Request, settings: Settings) -> str | None:
+    session = read_session(request, settings)
+    return session.username if session else None
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +333,29 @@ DEFAULT_TENANT_SETTINGS: dict[str, Any] = {
         "read_detail": "summary",
         "full_retention_days": 90,
         "mcp_profile": "compact",
+    },
+    # Set by the first-run admin setup; editable on the Accounts screen.
+    "organization": {
+        "name": "",
+        "contact_email": "",
+    },
+    "signup": {
+        # open: anyone; domain: emails from allowed_domains; invite: invite code; closed: admins create accounts
+        "mode": "invite",
+        "allowed_domains": [],
+        "require_approval": True,
+    },
+    "privacy": {
+        # Scopes whose content admins may read (shared policy, not personal data).
+        "admin_readable_scopes": ["organizational", "enterprise"],
+        "break_glass": True,
+        "break_glass_hours": 24,
+        "break_glass_approvers": 2,
+        "notify_owner": True,
+    },
+    "security": {
+        "session_hours": 12,
+        "password_min_length": 12,
     },
 }
 

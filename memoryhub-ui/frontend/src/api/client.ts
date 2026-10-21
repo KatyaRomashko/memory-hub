@@ -1,4 +1,10 @@
 import type {
+  AccountRow,
+  AccountsResponse,
+  GraphAll,
+  InviteCreated,
+  RegisterPayload,
+  SetupPayload,
   ApiKeyRotatedResponse,
   AuditResponse,
   AuthStatus,
@@ -32,6 +38,9 @@ import type {
   TenantSettingsValues,
   UpdateClientPayload,
   AuditEvent,
+  EntitiesResponse,
+  EntityType,
+  OverviewRange,
 } from '@/types';
 
 const BASE = '/api';
@@ -100,13 +109,26 @@ export const api = {
   // Session
   me: () => get<Me>('/me'),
   authStatus: () => get<AuthStatus>('/auth/status'),
-  login: (api_key: string, username?: string) => post<{ ok: boolean }>('/auth/login', { api_key, username }),
+  login: (api_key: string, username?: string, role: 'admin' | 'user' = 'admin') =>
+    post<{ ok: boolean; role: string }>('/auth/login', { api_key, username, role }),
+  passwordLogin: (login: string, password: string) =>
+    post<{ ok: boolean; role: string }>('/auth/login', { login, password }),
+  setup: (body: SetupPayload) => post<{ ok: boolean; role: string }>('/auth/setup', body),
+  register: (body: RegisterPayload) =>
+    post<{ ok: boolean; role: string; status: 'active' | 'pending' }>('/auth/register', body),
   logout: () => post<{ ok: boolean }>('/auth/logout'),
+  accounts: () => get<AccountsResponse>('/accounts'),
+  updateAccount: (id: string, body: { status?: 'active' | 'disabled'; role?: 'admin' | 'user' }) =>
+    patch<AccountRow>(`/accounts/${enc(id)}`, body),
+  createInvite: (body: { role: 'admin' | 'user'; email?: string; note?: string; expires_days: number }) =>
+    post<InviteCreated>('/invites', body),
   navCounts: () => get<NavCounts>('/nav-counts'),
   publicConfig: () => get<PublicConfig>('/public-config'),
 
   // Overview & memories
-  overview: () => get<Overview>('/overview'),
+  overview: (range: OverviewRange = '7d') => get<Overview>(`/overview${qs({ range })}`),
+  entities: (params: { q?: string; type?: EntityType | 'all'; project?: string; page?: number; per_page?: number } = {}) =>
+    get<EntitiesResponse>(`/entities${qs(params)}`),
   browse: (params: BrowseParams) => get<BrowseResponse>(`/memories/browse${qs(params as Record<string, unknown>)}`),
   exportUrl: (scope?: string[]) => `${BASE}/memories/export${qs({ scope })}`,
   memoryContext: (id: string) => get<MemoryContext>(`/memory/${enc(id)}/context`),
@@ -144,6 +166,8 @@ export const api = {
   // Graph & search
   neighbourhood: (params: { focus?: string; depth?: number; types?: string[] }) =>
     get<GraphNeighbourhood>(`/graph/neighbourhood${qs(params)}`),
+  graphAll: (params: { types?: string[]; include_superseded?: boolean; max_nodes?: number } = {}) =>
+    get<GraphAll>(`/graph/all${qs(params)}`),
   search: (body: SearchRequest) => post<SearchResponse>('/search', body),
 
   // Projects & campaigns
