@@ -249,3 +249,52 @@ test.describe('memory workspace', () => {
     await expect(page.getByRole('heading', { name: 'Getting started' })).toBeVisible();
   });
 });
+
+test.describe('quality, packs, documents, operations', () => {
+  test('content tabs appear in the menu once they have content', async ({ page }) => {
+    await page.goto('/#/overview');
+    const nav = page.getByRole('navigation');
+    await expect(nav.getByRole('link', { name: 'Documents', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Operations', exact: true })).toBeVisible();
+  });
+
+  test('content tabs stay hidden while empty', async ({ page }) => {
+    await page.route('**/api/nav-features', (route) => route.fulfill({ contentType: 'application/json', body: '{}' }));
+    await page.goto('/#/overview');
+    const nav = page.getByRole('navigation');
+    await expect(nav.getByRole('link', { name: 'Memory browser', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Documents', exact: true })).toHaveCount(0);
+    await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toHaveCount(0);
+    await expect(nav.getByRole('link', { name: 'Operations', exact: true })).toHaveCount(0);
+  });
+
+  test('retrieval checks show recall and why a memory is missing', async ({ page }) => {
+    await page.goto('/#/quality');
+    await expect(page.getByText('50% · 1/2')).toBeVisible();
+    await expect(page.getByText('below weight threshold')).toBeVisible();
+    await page.getByRole('tab', { name: 'My search health' }).click();
+    await expect(page.getByRole('heading', { name: 'Where matches are cut' })).toBeVisible();
+  });
+
+  test('context pack renders a preview within its budget', async ({ page }) => {
+    await page.goto('/#/packs');
+    await page.getByRole('link', { name: /Local dev pack/ }).click();
+    await expect(page).toHaveURL(/#\/packs\/p1/);
+    await expect(page.getByText('12 of 2,000 tokens · 1 memories')).toBeVisible();
+    await expect(page.getByText(/get_context_pack/)).toBeVisible();
+  });
+
+  test('document passages show their memories and can be selected', async ({ page }) => {
+    await page.goto('/#/documents/d1');
+    await expect(page.getByRole('heading', { name: 'Dev handbook' })).toBeVisible();
+    await page.getByRole('checkbox', { name: 'Passage 2' }).check();
+    await expect(page.getByRole('button', { name: 'Write 1 memory' })).toBeEnabled();
+  });
+
+  test('operations lists jobs and offers a retry', async ({ page }) => {
+    await page.goto('/#/operations');
+    await expect(page.getByText('database timeout')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+  });
+});

@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 import uuid
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
@@ -25,7 +24,7 @@ from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
 from memoryhub_core.models.project import ProjectMembership
 from memoryhub_core.models.role import RoleAssignment
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, Float, String, and_, case, cast, exists, func, literal_column, or_, select, text, update
+from sqlalchemy import Boolean, Float, String, and_, case, cast, exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -38,7 +37,6 @@ from src.ui_common import (
     WRITE_EVENTS,
     audit,
     clean_stub,
-    cosine,
     embed,
     live_filters,
     load_tenant_settings,
@@ -46,7 +44,6 @@ from src.ui_common import (
     parse_uuid,
     preview,
     probe_components,
-    rerank,
     viewer_from_request,
 )
 
@@ -1538,10 +1535,17 @@ async def _writable_scope(db: AsyncSession, settings: Settings, viewer, scope: s
 
 @router.post("/api/memories", status_code=201)
 async def write_memory(body: WriteMemoryRequest, request: Request, db: DbDep, settings: SettingsDep):
+    viewer = viewer_from_request(request, settings)
+    return await create_dashboard_memory(db, settings, viewer, body)
+
+
+async def create_dashboard_memory(
+    db: AsyncSession, settings: Settings, viewer, body: WriteMemoryRequest, metadata: dict | None = None
+) -> dict:
+    """Write one memory through memoryhub_core (curation, embedding, audit)."""
     from memoryhub_core.models.schemas import MemoryNodeCreate
     from memoryhub_core.services.memory import create_memory
 
-    viewer = viewer_from_request(request, settings)
     await _writable_scope(db, settings, viewer, body.scope, body.scope_id)
     tenant_id = settings.ui_tenant_id
     owner = body.owner_id or (tenant_id if body.scope in ("organizational", "enterprise") else viewer.username)
@@ -1558,6 +1562,7 @@ async def write_memory(body: WriteMemoryRequest, request: Request, db: DbDep, se
         domains=body.domains,
         content_type=body.content_type,
         source="import",
+        metadata=metadata,
     )
     memory, curation = await create_memory(data, db, _embedding_service(settings), tenant_id=tenant_id)
     if memory is None:
@@ -2220,6 +2225,8 @@ class SearchRequest(BaseModel):
     current_only: bool = True
     include_branches: bool = False
     rerank: bool = True
+    # "Why didn't X come back?" — memory IDs to trace through the pipeline.
+    explain: list[str] = Field(default_factory=list, max_length=10)
 
 
 async def _visible_predicate(db: AsyncSession, tenant_id: str, identity: str | None, project: str | None):
@@ -2288,178 +2295,10 @@ async def _visible_predicate(db: AsyncSession, tenant_id: str, identity: str | N
 
 @router.post("/api/search")
 async def search_playground(body: SearchRequest, db: DbDep, settings: SettingsDep, viewer: ContentDep):
-    if viewer.restricted:
-        # Users can only search as themselves.
-        body.identity = viewer.username
-    tenant_id = settings.ui_tenant_id
-    tenant_settings = await load_tenant_settings(db, tenant_id)
-    full_threshold = float(tenant_settings["retrieval"]["full_content_threshold"])
-    stages: list[dict] = []
+    """Run search exactly as an agent would, with the funnel and drop reasons."""
+    from src.retrieval import run_search
 
-    def stage(name: str, started: float, **extra):
-        stages.append({"name": name, "ms": round((time.perf_counter() - started) * 1000, 1), **extra})
-
-    filters = [MemoryNode.tenant_id == tenant_id, MemoryNode.deleted_at.is_(None), MemoryNode.status == "active"]
-    if body.current_only:
-        filters.append(MemoryNode.is_current.is_(True))
-    if not body.include_branches:
-        filters.append(MemoryNode.parent_id.is_(None))
-
-    t0 = time.perf_counter()
-    qvec = await embed(body.query, settings.embedding_url)
-    stage("embed", t0)
-
-    candidates: list[tuple[MemoryNode, float | None]] = []
-    retrieval = "vector"
-    t0 = time.perf_counter()
-    if qvec is not None:
-        distance = MemoryNode.embedding.cosine_distance(qvec)
-        rows = (
-            await db.execute(
-                select(MemoryNode, (1 - distance).label("score"))
-                .where(*filters, MemoryNode.embedding.is_not(None))
-                .order_by(distance)
-                .limit(50)
-            )
-        ).all()
-        candidates = [(r[0], float(r[1])) for r in rows]
-        stage("pgvector", t0, detail="top-50")
-    else:
-        retrieval = "text"
-        tsq = func.plainto_tsquery("english", body.query)
-        rank = func.ts_rank(literal_column("search_vector"), tsq)
-        rows = (
-            await db.execute(
-                select(MemoryNode, rank.label("score"))
-                .where(*filters, literal_column("search_vector").op("@@")(tsq))
-                .order_by(rank.desc())
-                .limit(50)
-            )
-        ).all()
-        if not rows:
-            pattern = f"%{body.query}%"
-            rows = (
-                await db.execute(
-                    select(MemoryNode, literal_column("0.0"))
-                    .where(*filters, or_(MemoryNode.content.ilike(pattern), MemoryNode.stub.ilike(pattern)))
-                    .limit(50)
-                )
-            ).all()
-        candidates = [(r[0], float(r[1])) for r in rows]
-        stage("full-text", t0, detail="embedding service unavailable")
-
-    t0 = time.perf_counter()
-    visible, run_as = await _visible_predicate(db, tenant_id, body.identity, body.project)
-    allowed = [(n, s) for n, s in candidates if visible(n)]
-    omitted = len(candidates) - len(allowed)
-    stage("rbac", t0)
-
-    focus_scores: dict[uuid.UUID, float] = {}
-    if body.focus and body.session_focus_weight > 0 and allowed:
-        t0 = time.perf_counter()
-        fvec = await embed(body.focus, settings.embedding_url)
-        if fvec is not None:
-            for n, _ in allowed:
-                if n.embedding is not None:
-                    focus_scores[n.id] = cosine(list(n.embedding), fvec)
-        stage("focus", t0)
-
-    t0 = time.perf_counter()
-    k = 60
-    w = body.session_focus_weight if focus_scores else 0.0
-    by_query = sorted(allowed, key=lambda x: x[1] or 0, reverse=True)
-    q_rank = {n.id: i + 1 for i, (n, _) in enumerate(by_query)}
-    f_rank = {nid: i + 1 for i, nid in enumerate(sorted(focus_scores, key=lambda x: focus_scores[x], reverse=True))}
-    rrf = {}
-    for n, _ in allowed:
-        score = (1 - w) / (k + q_rank[n.id])
-        if w:
-            score += w / (k + f_rank.get(n.id, len(allowed) + 1))
-        rrf[n.id] = score * 2
-    fused = sorted(allowed, key=lambda x: rrf[x[0].id], reverse=True)
-    stage("rrf", t0)
-
-    rerank_scores: dict[uuid.UUID, float] = {}
-    rerank_status = "off"
-    if body.rerank and fused:
-        if settings.reranker_url:
-            t0 = time.perf_counter()
-            top = fused[: min(len(fused), 25)]
-            scores = await rerank(body.query, [n.content for n, _ in top], settings.reranker_url)
-            if scores is not None:
-                rerank_scores = {n.id: s for (n, _), s in zip(top, scores, strict=False)}
-                fused = sorted(fused, key=lambda x: rerank_scores.get(x[0].id, -1e9), reverse=True)
-                rerank_status = "on"
-            else:
-                rerank_status = "unavailable"
-            stage("rerank", t0)
-        else:
-            rerank_status = "not_configured"
-
-    t0 = time.perf_counter()
-    weight_filtered = [(n, s) for n, s in fused if n.weight >= body.weight_threshold]
-    selected = weight_filtered[: body.max_results]
-    results = []
-    tokens_used = 0
-    full_count = 0
-    for rank_pos, (n, vscore) in enumerate(selected, start=1):
-        if body.mode == "index":
-            delivery = "stub"
-        elif body.mode == "full_only":
-            delivery = "full"
-        else:
-            delivery = "full" if n.weight >= full_threshold else "stub"
-        text_value = n.content if delivery == "full" else (n.stub or n.content[:80])
-        tokens = max(1, len(text_value) // 4)
-        if tokens_used + tokens > body.max_response_tokens and delivery == "full":
-            delivery, text_value = "stub", (n.stub or n.content[:80])
-            tokens = max(1, len(text_value) // 4)
-        if tokens_used + tokens > body.max_response_tokens:
-            break
-        tokens_used += tokens
-        full_count += delivery == "full"
-        results.append(
-            {
-                "rank": rank_pos,
-                "id": str(n.id),
-                "scope": n.scope,
-                "scope_id": n.scope_id,
-                "owner_id": n.owner_id,
-                "stub": clean_stub(n.stub),
-                "content": n.content if delivery == "full" else None,
-                "delivery": delivery,
-                "weight": n.weight,
-                "version": n.version,
-                "scores": {
-                    "vector": round(vscore, 4) if vscore is not None and retrieval == "vector" else None,
-                    "text": round(vscore, 4) if vscore is not None and retrieval == "text" else None,
-                    "focus": round(focus_scores[n.id], 4) if n.id in focus_scores else None,
-                    "rrf": round(rrf[n.id], 4),
-                    "rerank": round(rerank_scores[n.id], 4) if n.id in rerank_scores else None,
-                    "weight": n.weight,
-                },
-                "tokens": tokens,
-            }
-        )
-    assembled = "\n\n".join(f"[{r['scope']}] {r['content'] if r['delivery'] == 'full' else r['stub']}" for r in results)
-    stage("assemble", t0)
-
-    return {
-        "run_as": run_as,
-        "retrieval": retrieval,
-        "rerank": rerank_status,
-        "stages": stages,
-        "total_ms": round(sum(s["ms"] for s in stages), 1),
-        "candidates": len(candidates),
-        "omitted_count": omitted,
-        "weight_filtered": len(fused) - len(weight_filtered),
-        "returned": len(results),
-        "full_count": full_count,
-        "stub_count": len(results) - full_count,
-        "tokens": tokens_used,
-        "results": results,
-        "assembled_context": assembled,
-    }
+    return await run_search(db, settings, viewer, body, explain_ids=body.explain, source="playground")
 
 
 # ---------------------------------------------------------------------------

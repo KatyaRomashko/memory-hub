@@ -173,7 +173,7 @@ h1, h2, h3, h4 { color: inherit; }
 .alert.err-a { background: #fdf1f1; border-color: #f9a8a8; }
 .alert.ok-a { background: #f3faf0; border-color: #afdc8f; }
 .bar { height: 8px; border-radius: 999px; background: var(--mh-border-soft); overflow: hidden; }
-.bar span { display: block; height: 100%; border-radius: 999px; }
+.bar span { display: block; height: 100%; border-radius: 999px; background: var(--mh-primary); }
 .bar.thin { height: 6px; }
 .bar.thin span { background: var(--mh-primary); }
 
@@ -545,3 +545,40 @@ button.tag { cursor: pointer; border: 1px solid transparent; font: inherit; font
 .onb a.done { background: #f6fbf2; border-color: #cfe9bd; }
 .onb .chk { width: 22px; height: 22px; border-radius: 99px; border: 2px solid #c7c7c7; flex: none; display: grid; place-items: center; font-size: 12px; color: #fff; }
 .onb a.done .chk { background: #3d7317; border-color: #3d7317; }
+
+/* ---------- Retrieval: funnel, why-not, compare ---------- */
+.funnel { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.fstep { display: grid; grid-template-columns: minmax(150px, 230px) 1fr minmax(120px, auto); gap: 12px; align-items: center; border: 0; background: transparent; padding: 6px 8px; margin: 0 -8px; border-radius: 8px; text-align: left; font: inherit; font-size: 13px; color: inherit; cursor: pointer; }
+.fstep:hover:not(:disabled):not(.static) { background: #f5f9fc; }
+.fstep:disabled, .fstep.static { cursor: default; }
+.fstep .fbar { height: 12px; background: #f0f0f0; border-radius: 99px; overflow: hidden; }
+.fstep .fbar i { display: block; height: 100%; border-radius: 99px; }
+.fstep .fn b { font-size: 14px; }
+.fstep .fd { color: var(--mh-danger, #b1380b); margin-left: 8px; font-weight: 600; }
+@media (max-width: 640px) { .fstep { grid-template-columns: 1fr auto; } .fstep .fbar { grid-column: 1 / -1; order: 3; } }
+.why { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--mh-border-soft); border-radius: 10px; padding: 10px 12px; }
+.why.ok { background: #f6fbf2; }
+.cmp-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.cmp-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--mh-border-soft); font-size: 13px; }
+.cmp-row .rk { flex: none; }
+.star { border: 1px solid var(--mh-border); background: #fff; border-radius: 99px; padding: 1px 10px; font: inherit; font-size: 12px; cursor: pointer; color: #6a6e73; }
+.star.on { background: #fff7d6; border-color: #f3d36b; color: #6b4d00; }
+.res.exp { box-shadow: inset 3px 0 0 #f0ab00; }
+
+/* ---------- Packs, documents, operations ---------- */
+.pins { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.pins li { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.pq { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.pq > .in { flex: 1 1 260px; }
+.pitem { border: 1px solid var(--mh-border-soft); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.passages { display: flex; flex-direction: column; gap: 8px; }
+.passage { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--mh-border-soft); border-radius: 10px; padding: 10px 12px; }
+.passage.on { border-color: var(--mh-primary); background: #f5f9fc; }
+.passage.linked { border-left: 4px solid #3d7317; }
+.passage input { margin-top: 3px; }
+.ptext { white-space: pre-wrap; font-size: 14px; line-height: 1.55; word-break: break-word; }
+.srcq { margin: 0; padding: 10px 12px; border-left: 3px solid var(--mh-primary); background: #f5f9fc; font-size: 13px; line-height: 1.55; white-space: pre-wrap; border-radius: 0 8px 8px 0; }
+.srcq mark { background: #fff2b3; padding: 0 2px; }
+.opk { text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.opk.on { border-color: var(--mh-primary); }
+.rkd { min-width: 28px; height: 28px; padding: 0 6px; border-radius: 8px; display: grid; place-items: center; font-weight: 600; font-size: 13px; color: #fff; flex: none; align-self: flex-start; }

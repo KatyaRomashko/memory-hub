@@ -226,6 +226,35 @@ export async function mockDashboardApi(page: Page) {
         co_mentions: [],
         memories: [{ ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0) }],
       });
+    if (path === '/nav-features') return respond(route, { knowledge: 2, documents: 1, packs: 1, checks: 1, check_runs: 1, search_runs: 3, jobs: 2 });
+    if (path === '/checks')
+      return respond(route, {
+        checks: [{ id: 'q1', owner: 'admin', name: 'Local dev', request: { query: 'run locally', max_results: 5 }, expected: [memoryId, otherMemoryId], visibility: 'private', project: null, created_at: now, updated_at: now, last_result: null, mine: true, is_check: true }],
+        queries: [],
+        last: {
+          id: 'r1', started_at: now, duration_ms: 20, trigger: 'manual',
+          summary: { checks: 1, hit_rate: 1, recall: 0.5, precision: 0.5, mrr: 1, p50_ms: 5, failing: 1 },
+          results: [{ query_id: 'q1', name: 'Local dev', query: 'run locally', returned: [memoryId], metrics: { expected: 2, found: 1, hit: true, recall: 0.5, precision: 0.5, mrr: 1, first_rank: 1 }, missing: [{ id: otherMemoryId, found: true, stub: 'The UI is served on port 3000', stage: 'weight', detail: 'Weight 0.30 is below the threshold 0.50.' }], total_ms: 5, funnel: [] }],
+        },
+        runs: [{ id: 'r1', started_at: now, duration_ms: 20, trigger: 'manual', summary: { checks: 1, recall: 0.5 } }],
+      });
+    if (path === '/search/health') return respond(route, { days: 7, scope: 'tenant', runs: 3, latency: { p50: 8, p95: 20 }, avg: { matched: 20, returned: 5, tokens: 300 }, cut: { filters: 0, rbac: 0.1, weight: 0.2, limit: 0.4, budget: 0 }, stages: [{ name: 'embed', p50: 2 }], sources: { playground: 3 }, rerank: { on: 3 }, vector_share: 1, empty_share: 0, by_day: [] });
+    if (path === '/context-packs') return respond(route, { items: [{ id: 'p1', owner: 'admin', name: 'Local dev pack', description: null, pinned: [memoryId], queries: [{ query: 'containers', max_results: 5, weight_threshold: 0 }], token_budget: 2000, visibility: 'private', project: null, read_only: true, agents: [], created_at: now, updated_at: now, last_render: null, mine: true, can_edit: true }] });
+    if (path === '/context-packs/p1')
+      return respond(route, {
+        id: 'p1', owner: 'admin', name: 'Local dev pack', description: null, pinned: [memoryId], queries: [{ query: 'containers', max_results: 5, weight_threshold: 0 }], token_budget: 2000, visibility: 'private', project: null, read_only: true, agents: [], created_at: now, updated_at: now, last_render: null, mine: true, can_edit: true,
+        render: { items: [{ id: memoryId, stub: 'Run the MemoryHub UI locally', scope: 'project', text: 'Run the MemoryHub UI locally with npm run dev', source: 'pinned', tokens: 12, weight: 0.8 }], tokens: 12, budget: 2000, over_budget: [], hidden: 0, missing: 0, markdown: '# Local dev pack', rendered_at: now, as: 'admin' },
+        my_agents: ['claude-code'],
+      });
+    if (path === '/documents') return respond(route, { items: [{ id: 'd1', owner: 'admin', title: 'Dev handbook', mime: 'text/markdown', size: 120, version: 1, project: null, created_at: now, updated_at: now, memories: 1, changed: 0, mine: true }] });
+    if (path === '/documents/d1')
+      return respond(route, {
+        id: 'd1', owner: 'admin', title: 'Dev handbook', mime: 'text/markdown', body: 'Run the UI with npm run dev.\n\nServe it on port 3000.', version: 1, project: null, created_at: now, updated_at: now,
+        passages: [{ i: 0, start: 0, end: 28, text: 'Run the UI with npm run dev.', memories: [memoryId] }, { i: 1, start: 30, end: 52, text: 'Serve it on port 3000.', memories: [] }],
+        links: [{ memory_id: memoryId, start: 0, end: 28, status: 'ok', doc_version: 1, stub: 'Run the MemoryHub UI locally', scope: 'project', is_current: true }],
+        mine: true,
+      });
+    if (path === '/operations') return respond(route, { items: [{ id: 'j1', owner: 'admin', kind: 'dream', label: 'Dream', status: 'failed', trigger: 'scheduled', started_at: now, finished_at: now, duration_ms: 1200, attempts: 1, correlation_id: 'c1c1c1c1-0000-4000-8000-000000000000', retry_of: null, error: 'database timeout', retryable: true, stale: false, detail: {} }], kinds: [{ kind: 'dream', label: 'Dream', ok: 0, failed: 1, running: 0 }], days: 7, scope: 'tenant' });
     if (path === '/notifications') return respond(route, { items: [{ id: 'rd:1', kind: 'reads', severity: 'info', title: 'Other agents used your memories 2 times today', body: 'See who and which memories.', at: now, href: '/reads', unread: true }], unread: 1, seen_at: null });
     if (path === '/me/onboarding') return respond(route, { steps: [{ id: 'agent', title: 'Link an agent', body: 'Link agents.', href: '/identities', done: true }, { id: 'dream', title: 'Run your first dream', body: 'Dream.', href: '/dreaming', done: false }], done: 1, total: 2, dismissed: false });
     if (path === '/graph/neighbourhood') return respond(route, { focus: { ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0), content: commonMemory.content_preview, degree: 1, hidden_degree: 0 }, nodes: [node(memoryId, commonMemory.stub, 0), node(otherMemoryId, 'The UI is served on port 3000', 1)], edges: [{ id: 'rel-1', source: memoryId, target: otherMemoryId, type: 'related_to' }], hidden_count: 0, provenance: [], conflicts: [] });

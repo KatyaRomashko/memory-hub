@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+import uuid
 from datetime import datetime, timedelta
 
 from sqlalchemy import text
@@ -75,14 +77,23 @@ async def due_owners(db, settings: Settings, now: datetime) -> list[str]:
 
 
 async def tick(settings: Settings | None = None) -> dict:
-    """One pass. Returns what it did (also handy in tests and logs)."""
+    """One pass: due dreams (+ knowledge pages), then retrieval checks older than a day.
+
+    Every piece of work is a job in Operations; jobs of one tick share a
+    correlation ID, and the tick itself is recorded when it did anything.
+    """
     from src.database import _get_session_factory
     from src.dreaming import run_for
+    from src.jobs import record_done, run_job
     from src.knowledge import refresh_all_for
+    from src.quality import owners_with_checks, run_checks
 
     settings = settings or get_settings()
     factory = _get_session_factory(settings)
     done: dict[str, dict] = {}
+    failed: list[str] = []
+    correlation = uuid.uuid4()
+    started = time.perf_counter()
     async with factory() as db:
         locked = (await db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY})).scalar()
         if not locked:
@@ -90,19 +101,61 @@ async def tick(settings: Settings | None = None) -> dict:
         try:
             for owner in await due_owners(db, settings, now_utc()):
                 viewer = Viewer(username=owner, name=owner, email=None, source="scheduler", role="user")
+
+                async def dream_work(v=viewer):
+                    report = await run_for(db, settings, v, "scheduled")
+                    pages = await refresh_all_for(db, settings, v)
+                    return {"dream_id": report["id"], "insights": len(report.get("insights", [])), "pages": pages}
+
                 try:
-                    report = await run_for(db, settings, viewer, "scheduled")
-                    pages = await refresh_all_for(db, settings, viewer)
-                    done[owner] = {"insights": len(report.get("insights", [])), "pages": pages}
+                    done[owner] = await run_job(
+                        settings,
+                        kind="dream",
+                        owner=owner,
+                        work=dream_work,
+                        trigger="scheduled",
+                        correlation_id=correlation,
+                    )
                 except Exception as exc:  # keep going for the other users
                     logger.warning("Scheduled dream for %s failed: %s", owner, exc)
+                    failed.append(owner)
+                    await db.rollback()
+            for owner in await owners_with_checks(db, settings):
+                viewer = Viewer(username=owner, name=owner, email=None, source="scheduler", role="user")
+
+                async def check_work(v=viewer):
+                    run = await run_checks(db, settings, v, trigger="scheduled")
+                    return {"run_id": run["id"], **run["summary"]}
+
+                try:
+                    out = await run_job(
+                        settings,
+                        kind="eval.run",
+                        owner=owner,
+                        work=check_work,
+                        trigger="scheduled",
+                        correlation_id=correlation,
+                    )
+                    done.setdefault(owner, {})["checks"] = out.get("checks", 0)
+                except Exception as exc:
+                    logger.warning("Scheduled checks for %s failed: %s", owner, exc)
+                    failed.append(owner)
                     await db.rollback()
         finally:
             await db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LOCK_KEY})
             await db.commit()
-    if done:
-        logger.info("Scheduler ran dreams for %s", ", ".join(done))
-    return {"ran": done}
+    if done or failed:
+        logger.info("Scheduler ran for %s", ", ".join(done) or "-")
+        await record_done(
+            settings,
+            kind="scheduler.tick",
+            owner="scheduler",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            detail={"users": sorted(done), "failed": failed},
+            trigger="scheduled",
+            correlation_id=correlation,
+        )
+    return {"ran": done, "failed": failed}
 
 
 async def _loop(interval: int) -> None:

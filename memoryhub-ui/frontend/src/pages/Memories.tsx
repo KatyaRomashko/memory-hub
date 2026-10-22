@@ -9,6 +9,7 @@ import { errorMessage, fmtCompact, fmtInt, fmtRelative, fmtWeight, SCOPE_ORDER, 
 import { ConfirmModal, memoryHref, RelationshipModal, WriteMemoryModal } from './common';
 import MemoryGraph, { LockIcon } from './MemoryGraph';
 import MemoryTimeline from './MemoryTimeline';
+import { UploadDocumentModal } from './Documents';
 
 const list = (v: string | null) => (v ? v.split(',').filter(Boolean) : []);
 const COLUMNS = ['scope', 'entities', 'owner', 'weight', 'version', 'branches', 'updated'] as const;
@@ -98,6 +99,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const [moreDomains, setMoreDomains] = useState(false);
   const [modal, setModal] = useState<null | 'write' | 'weight' | 'relate' | 'promote' | 'delete'>(null);
   const [rowDelete, setRowDelete] = useState<MemoryRow | null>(null);
+  const [docOpen, setDocOpen] = useState(false);
   const [weightValue, setWeightValue] = useState(0.7);
   const [promoteScope, setPromoteScope] = useState('organizational');
   const [promoteScopeId, setPromoteScopeId] = useState('');
@@ -178,6 +180,11 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
               <a className="btn bg" href={api.exportUrl(state.scope)} download aria-disabled={standby}>
                 {isAdmin ? 'Export metadata' : 'Export JSONL'}
               </a>
+            )}
+            {!isAdmin && (
+              <button type="button" className="btn bg" onClick={() => setDocOpen(true)}>
+                Add document
+              </button>
             )}
             {!isAdmin && (
               <button type="button" className="btn bp" onClick={() => setModal('write')}>
@@ -754,6 +761,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
         )}
       </div>
 
+      {docOpen && <UploadDocumentModal onClose={() => setDocOpen(false)} />}
       {modal === 'write' && <WriteMemoryModal onClose={() => setModal(null)} onSaved={() => reload()} />}
       {modal === 'relate' && <RelationshipModal sourceIds={ids} onClose={() => setModal(null)} onDone={reload} />}
       {modal === 'weight' && (

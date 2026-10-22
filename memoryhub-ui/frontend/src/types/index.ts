@@ -374,6 +374,7 @@ export interface GraphNeighbourhood {
 }
 
 export interface SearchRequest {
+  explain?: string[];
   query: string;
   focus?: string;
   identity?: string;
@@ -390,6 +391,7 @@ export interface SearchRequest {
 
 export interface SearchResult {
   rank: number;
+  downgraded?: boolean;
   id: string;
   scope: Scope;
   scope_id: string | null;
@@ -425,6 +427,44 @@ export interface SearchResponse {
   tokens: number;
   results: SearchResult[];
   assembled_context: string;
+  funnel?: FunnelStage[];
+  dropped?: DroppedMemory[];
+  hidden_dropped?: Record<string, number>;
+  explain?: ExplainResult[];
+}
+
+export type FunnelKey = 'matched' | 'filters' | 'rbac' | 'weight' | 'limit' | 'budget';
+export interface FunnelStage {
+  key: FunnelKey;
+  label: string;
+  count: number;
+  dropped?: number;
+  downgraded?: number;
+}
+export interface DroppedMemory {
+  id: string;
+  stub: string;
+  scope: Scope;
+  scope_id: string | null;
+  owner_id: string;
+  weight: number;
+  version: number;
+  stage: FunnelKey;
+  reason: string;
+  detail: string;
+  score?: number;
+  rank?: number;
+}
+export interface ExplainResult {
+  id: string;
+  found: boolean;
+  stub?: string;
+  scope?: Scope;
+  weight?: number;
+  stage: FunnelKey | 'returned' | 'missing' | 'deleted';
+  detail: string;
+  rank?: number;
+  similarity?: number;
 }
 
 export interface ProjectRow {
@@ -998,4 +1038,213 @@ export interface Onboarding {
   done: number;
   total: number;
   dismissed: boolean;
+}
+
+/* ---------------- Saved queries & retrieval checks ---------------- */
+
+export interface CheckMetrics {
+  expected: number;
+  found: number;
+  hit: boolean;
+  recall: number | null;
+  precision: number;
+  mrr: number;
+  first_rank: number | null;
+}
+
+export interface SavedQuery {
+  id: string;
+  owner: string;
+  name: string;
+  request: Omit<SearchRequest, 'explain'>;
+  expected: string[];
+  visibility: 'private' | 'project';
+  project: string | null;
+  created_at: string;
+  updated_at: string;
+  last_result: (CheckMetrics & { at: string }) | null;
+  mine: boolean;
+  is_check: boolean;
+}
+
+export interface CheckResult {
+  query_id: string;
+  name: string;
+  query: string;
+  returned: string[];
+  metrics: CheckMetrics;
+  missing: ExplainResult[];
+  total_ms: number;
+  funnel: FunnelStage[];
+}
+
+export interface CheckSummary {
+  checks: number;
+  hit_rate?: number;
+  recall?: number;
+  precision?: number;
+  mrr?: number;
+  p50_ms?: number;
+  failing?: number;
+}
+
+export interface CheckRun {
+  id: string;
+  started_at: string;
+  duration_ms: number;
+  trigger: string;
+  summary: CheckSummary;
+  results?: CheckResult[];
+}
+
+export interface ChecksOverview {
+  checks: SavedQuery[];
+  queries: SavedQuery[];
+  last: CheckRun | null;
+  runs: CheckRun[];
+}
+
+export interface SearchHealth {
+  days: number;
+  scope: 'own' | 'tenant';
+  runs: number;
+  sources?: Record<string, number>;
+  vector_share?: number;
+  rerank?: Record<string, number>;
+  latency?: { p50: number; p95: number };
+  stages?: { name: string; p50: number }[];
+  avg?: { matched: number; returned: number; tokens: number };
+  cut?: Record<'filters' | 'rbac' | 'weight' | 'limit' | 'budget', number>;
+  empty_share?: number;
+  by_day: { date: string; runs: number }[];
+}
+
+/* ---------------- Context packs ---------------- */
+
+export interface PackQuery {
+  query: string;
+  max_results: number;
+  weight_threshold: number;
+  project?: string | null;
+}
+
+export interface ContextPack {
+  id: string;
+  owner: string;
+  name: string;
+  description: string | null;
+  pinned: string[];
+  queries: PackQuery[];
+  token_budget: number;
+  visibility: 'private' | 'project';
+  project: string | null;
+  read_only: boolean;
+  agents: string[];
+  created_at: string;
+  updated_at: string;
+  last_render: { at: string; tokens: number; items: number } | null;
+  mine: boolean;
+  can_edit: boolean;
+}
+
+export interface PackRender {
+  items: { id: string; stub: string; scope: Scope; text: string; source: string; tokens: number; weight: number }[];
+  tokens: number;
+  budget: number;
+  over_budget: { id: string; stub: string; source: string; tokens: number }[];
+  hidden: number;
+  missing: number;
+  markdown: string;
+  rendered_at: string;
+  as: string;
+}
+
+export interface ContextPackDetail extends ContextPack {
+  render: PackRender;
+  my_agents: string[];
+}
+
+/* ---------------- Documents ---------------- */
+
+export interface DocumentRow {
+  id: string;
+  owner: string;
+  title: string;
+  mime: string;
+  size: number;
+  version: number;
+  project: string | null;
+  created_at: string;
+  updated_at: string;
+  memories: number;
+  changed: number;
+  mine: boolean;
+}
+
+export interface DocumentDetail {
+  id: string;
+  owner: string;
+  title: string;
+  mime: string;
+  body: string;
+  version: number;
+  project: string | null;
+  created_at: string;
+  updated_at: string;
+  passages: { i: number; start: number; end: number; text: string; memories: string[] }[];
+  links: { memory_id: string; start: number; end: number; status: 'ok' | 'moved' | 'changed' | 'deleted'; doc_version: number; stub: string; scope: Scope; is_current: boolean }[];
+  mine: boolean;
+}
+
+export interface MemorySource {
+  linked: boolean;
+  redacted?: boolean;
+  document_deleted?: boolean;
+  document_id?: string | null;
+  title?: string | null;
+  status?: 'ok' | 'moved' | 'changed';
+  version?: number;
+  linked_version?: number;
+  before?: string;
+  passage?: string;
+  snippet?: string;
+  after?: string;
+}
+
+/* ---------------- Operations ---------------- */
+
+export interface JobRow {
+  id: string;
+  owner: string;
+  kind: string;
+  label: string;
+  status: 'ok' | 'failed' | 'running';
+  trigger: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  attempts: number;
+  correlation_id: string;
+  retry_of: string | null;
+  error: string | null;
+  retryable: boolean;
+  stale: boolean;
+  detail: Record<string, unknown>;
+}
+
+export interface OperationsResponse {
+  items: JobRow[];
+  kinds: { kind: string; label: string; ok: number; failed: number; running: number; avg_ms?: number; p95_ms?: number }[];
+  days: number;
+  scope: 'own' | 'tenant';
+}
+
+export interface NavFeatures {
+  knowledge?: number;
+  documents?: number;
+  packs?: number;
+  checks?: number;
+  check_runs?: number;
+  search_runs?: number;
+  jobs?: number;
 }

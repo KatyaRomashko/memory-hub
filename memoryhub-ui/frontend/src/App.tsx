@@ -14,6 +14,10 @@ import Curation from '@/pages/Curation';
 import Entities from '@/pages/Entities';
 import EntityDetail from '@/pages/EntityDetail';
 import Knowledge from '@/pages/Knowledge';
+import Documents from '@/pages/Documents';
+import Operations from '@/pages/Operations';
+import Packs from '@/pages/Packs';
+import Quality from '@/pages/Quality';
 import Graph from '@/pages/Graph';
 import Identities from '@/pages/Identities';
 import Login from '@/pages/Login';
@@ -40,6 +44,10 @@ const SCREENS: Record<string, Screen> = {
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
   '/entity': { nav: '/entities', title: 'Entity', render: (r) => <EntityDetail route={r} /> },
   '/knowledge': { nav: '/knowledge', title: 'Knowledge', render: (r) => <Knowledge route={r} /> },
+  '/documents': { nav: '/documents', title: 'Documents', render: (r) => <Documents route={r} /> },
+  '/packs': { nav: '/packs', title: 'Context packs', render: (r) => <Packs route={r} /> },
+  '/quality': { nav: '/quality', title: 'Retrieval quality', render: (r) => <Quality route={r} /> },
+  '/operations': { nav: '/operations', title: 'Operations', render: () => <Operations /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <Projects route={r} /> },
   '/dreaming': { nav: '/dreaming', title: 'Dreaming', render: () => <Dreaming /> },
@@ -86,6 +94,8 @@ const screenKey = (path: string) => {
   if (path.startsWith('/memory/')) return '/memory';
   if (path.startsWith('/entity/')) return '/entity';
   if (path.startsWith('/knowledge/')) return '/knowledge';
+  if (path.startsWith('/documents/')) return '/documents';
+  if (path.startsWith('/packs/')) return '/packs';
   return path;
 };
 

@@ -4,7 +4,7 @@ import { PageHeader, Tabs, useApp } from '@/components/Shell';
 import { Empty, ErrorState, Modal, Pager, ScopeLabel, Sk, SkLines, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
-import type { AuditEvent, MemoryContext, MemoryUsage } from '@/types';
+import type { AuditEvent, MemoryContext, MemorySource, MemoryUsage } from '@/types';
 import { errorMessage, fmtDateTime, fmtMonthDay, fmtRelative, fmtShortDateTime, fmtUtc, fmtWeight, scopeMeta, shortId, truncate } from '@/utils/format';
 import { actorName, ConfirmModal, decisionOf, memoryHref, MemoryLink, RelationshipModal } from './common';
 
@@ -389,6 +389,7 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
                     </div>
                   </div>
                 )}
+                <SourceCard id={m.id} />
                 <UsageCard id={m.id} />
                 <div className="card">
                   <h3 style={{ marginBottom: 14 }}>Details</h3>
@@ -795,6 +796,45 @@ const UsageCard: React.FC<{ id: string }> = ({ id }) => {
               ? 'Weight ≥ 0.80: agents get the full text in the search result, so a follow-up read is not needed and skips are not counted.'
               : 'Acted on = the same agent read, updated, linked or reported it within 30 minutes. Memories that are often skipped may need a clearer text, a lower weight, or fading.'}
           </p>
+        </>
+      )}
+    </div>
+  );
+};
+
+/** The document passage this memory was written from, if any. */
+const SourceCard: React.FC<{ id: string }> = ({ id }) => {
+  const { data } = useApi<MemorySource>(() => api.memorySource(id), [id]);
+  if (!data?.linked) return null;
+  return (
+    <div className="card">
+      <div className="ch">
+        <h3>Source</h3>
+        {data.status && data.status !== 'ok' && <span className={`lbl ${data.status === 'changed' ? 'ylw' : 'blue'}`}>{data.status === 'changed' ? 'source changed' : 'moved'}</span>}
+      </div>
+      {data.redacted ? (
+        <p className="sm muted" style={{ margin: 0 }}>
+          Written from a document. Its text is confidential.
+        </p>
+      ) : data.document_deleted ? (
+        <p className="sm muted" style={{ margin: 0 }}>
+          Written from a document that has been deleted. The passage was: “{data.snippet}”
+        </p>
+      ) : (
+        <>
+          <div className="sm b6" style={{ marginBottom: 6 }}>
+            {data.document_id ? <a href={buildHash(`/documents/${data.document_id}`)}>{data.title}</a> : data.title} · v{data.version}
+          </div>
+          <blockquote className="srcq">
+            <span className="muted">{data.before ? `…${data.before.slice(-140)}` : ''}</span>
+            <mark>{data.passage}</mark>
+            <span className="muted">{data.after ? `${data.after.slice(0, 140)}…` : ''}</span>
+          </blockquote>
+          {data.status === 'changed' && (
+            <p className="hint warn" style={{ margin: '8px 0 0' }}>
+              This passage is no longer in version {data.version} of the document (linked from v{data.linked_version}). Check whether the memory still holds.
+            </p>
+          )}
         </>
       )}
     </div>

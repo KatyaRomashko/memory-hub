@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from collections import Counter, defaultdict
 from datetime import timedelta
 from typing import Annotated, Any
@@ -298,6 +299,7 @@ async def refresh_page(
         if row[1] == fingerprint and not force:
             return stored, False
 
+    started = time.perf_counter()
     nodes = (
         (
             await db.execute(
@@ -347,6 +349,16 @@ async def refresh_page(
         {"t": tenant_id, "o": viewer.username, "s": subject, "h": fingerprint, "p": json.dumps(page, default=str)},
     )
     await db.commit()
+    from src.jobs import record_done
+
+    await record_done(
+        settings,
+        kind="knowledge.rebuild",
+        owner=viewer.username,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        detail={"subject_kind": kind, "subject_id": sid, "sources": len(nodes), "forced": force},
+        trigger="manual" if force else "auto",
+    )
     return json.loads(json.dumps(page, default=str)), True
 
 

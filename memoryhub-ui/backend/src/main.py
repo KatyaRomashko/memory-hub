@@ -12,10 +12,16 @@ from fastapi.staticfiles import StaticFiles
 
 from src.accounts import router as accounts_router
 from src.config import get_settings
+from src.documents import router as documents_router
 from src.dreaming import router as dreams_router
+from src.features import router as features_router
+from src.jobs import router as jobs_router
 from src.knowledge import router as knowledge_router
 from src.me import router as me_router
 from src.notifications import router as notifications_router
+from src.packs import router as packs_router
+from src.quality import router as quality_router
+from src.retrieval import router as retrieval_router
 from src.routes import router
 from src.routes_admin import router as admin_router
 from src.routes_dashboard import router as dashboard_router
@@ -95,6 +101,12 @@ def create_app() -> FastAPI:
     app.include_router(dreams_router)
     app.include_router(me_router)
     app.include_router(knowledge_router)
+    app.include_router(documents_router)
+    app.include_router(features_router)
+    app.include_router(jobs_router)
+    app.include_router(packs_router)
+    app.include_router(quality_router)
+    app.include_router(retrieval_router)
     app.include_router(notifications_router)
     app.include_router(workspace_router)
     app.include_router(dashboard_router)

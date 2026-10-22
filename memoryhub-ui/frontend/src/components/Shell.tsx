@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import type { Me, NotificationsResponse, Role, SwitchTargets } from '@/types';
+import type { Me, NavFeatures, NotificationsResponse, Role, SwitchTargets } from '@/types';
 import { buildHash } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
@@ -20,6 +20,8 @@ export interface AppState {
   /** True while the tenant has no memories yet (standby mode). */
   standby: boolean;
   reviewCount: number;
+  /** Which content-backed tabs have something in them (null until loaded). */
+  features: NavFeatures | null;
   refreshCounts: () => void;
 }
 
@@ -30,6 +32,7 @@ const AppContext = createContext<AppState>({
   memoryCount: null,
   standby: false,
   reviewCount: 0,
+  features: null,
   refreshCounts: () => undefined,
 });
 export const useApp = () => useContext(AppContext);
@@ -42,6 +45,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [reviewCount, setReviewCount] = useState(0);
   const [token, setToken] = useState(0);
+  const [features, setFeatures] = useState<NavFeatures | null>(null);
 
   useEffect(() => {
     api.me().then(setMe).catch(() => undefined);
@@ -57,10 +61,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setReviewCount(c.review_queue);
       })
       .catch(() => undefined);
+    api
+      .navFeatures()
+      .then((f) => !cancelled && setFeatures(f))
+      .catch(() => !cancelled && setFeatures({}));
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, me?.role, me?.username]);
 
   // Poll every 5 s while waiting for the first write_memory, then slowly.
   useEffect(() => {
@@ -78,6 +86,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         memoryCount,
         standby: memoryCount === 0,
         reviewCount,
+        features,
         refreshCounts,
       }}
     >
@@ -98,6 +107,11 @@ export interface NavItem {
   roles?: Role[];
   /** Label override per role. */
   labelFor?: Partial<Record<Role, string>>;
+  /**
+   * Shown only once the tab has content (any of these counts > 0), so the
+   * menu never offers empty pages. Direct links keep working.
+   */
+  feature?: Partial<Record<Role, (keyof NavFeatures)[]>>;
 }
 
 const ADMIN: Role[] = ['admin', 'operator'];
@@ -114,7 +128,9 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     groupFor: { admin: 'Memory · metadata only', user: 'My memory' },
     items: [
       { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Memory analytics' } },
-      { path: '/knowledge', label: 'Knowledge', roles: USER },
+      { path: '/knowledge', label: 'Knowledge', roles: USER, feature: { user: ['knowledge'], operator: ['knowledge'] } },
+      { path: '/documents', label: 'Documents', roles: USER, feature: { user: ['documents'], operator: ['documents'] } },
+      { path: '/packs', label: 'Context packs', roles: USER, feature: { user: ['packs'], operator: ['packs'] } },
       { path: '/entities', label: 'Entities', roles: USER },
       { path: '/search', label: 'Search playground', roles: USER },
       { path: '/dreaming', label: 'Dreaming', roles: USER },
@@ -127,6 +143,12 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     items: [
       { path: '/review', label: 'Review queue', badge: 'review', labelFor: { user: 'Review requests' } },
       { path: '/curation', label: 'Curation rules', labelFor: { user: 'My curation rules' } },
+      {
+        path: '/quality',
+        label: 'Retrieval quality',
+        labelFor: { user: 'Retrieval checks', admin: 'Retrieval health' },
+        feature: { user: ['checks', 'check_runs'], operator: ['checks', 'check_runs', 'search_runs'], admin: ['search_runs'] },
+      },
       { path: '/reads', label: 'Who read my memories', roles: USER },
       { path: '/audit', label: 'Audit & forensics', roles: [...ADMIN, 'user'], labelFor: { user: 'My activity' } },
     ],
@@ -140,18 +162,32 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
       { path: '/clients', label: 'OAuth clients & keys', labelFor: { user: 'Agent credentials' } },
     ],
   },
-  { group: 'Platform', items: [{ path: '/settings', label: 'Settings', roles: ADMIN }] },
-  { group: 'Account', items: [{ path: '/preferences', label: 'Preferences & privacy', roles: USER }] },
+  {
+    group: 'Platform',
+    groupFor: { user: 'Account' },
+    items: [
+      { path: '/operations', label: 'Operations', labelFor: { user: 'Background jobs' }, feature: { user: ['jobs'], admin: ['jobs'], operator: ['jobs'] } },
+      { path: '/settings', label: 'Settings', roles: ADMIN },
+      { path: '/preferences', label: 'Preferences & privacy', roles: USER },
+    ],
+  },
 ];
 
 export const canSee = (path: string, role: Role) =>
   NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role))));
 
-export const navFor = (role: Role) =>
+const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => {
+  const keys = item.feature?.[role];
+  if (!keys) return true;
+  return !!features && keys.some((k) => (features[k] ?? 0) > 0);
+};
+
+export const navFor = (role: Role, features: NavFeatures | null = null) =>
   NAV.map((s) => ({
     group: s.groupFor?.[role] ?? s.group,
     items: s.items
       .filter((i) => !i.roles || i.roles.includes(role))
+      .filter((i) => hasContent(i, role, features))
       .map((i) => ({ ...i, label: i.labelFor?.[role] ?? i.label })),
   })).filter((s) => s.items.length > 0);
 
@@ -167,7 +203,7 @@ const readNavPref = () => {
 };
 
 export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> = ({ activePath, children }) => {
-  const { me, role, tenant, reviewCount } = useApp();
+  const { me, role, tenant, reviewCount, features } = useApp();
   const narrow = () => window.innerWidth < 960;
   const [open, setOpen] = useState<boolean>(() => (narrow() ? false : readNavPref()));
 
@@ -406,7 +442,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
       )}
       <div className={`shell ${open ? 'nav-open' : 'nav-closed'}`}>
         <nav className="nav" aria-label="Primary">
-          {navFor(role).map((section, i) => (
+          {navFor(role, features).map((section, i) => (
             <React.Fragment key={section.group ?? i}>
               {section.group && <div className="ng">{section.group}</div>}
               {section.items.map((item) => (

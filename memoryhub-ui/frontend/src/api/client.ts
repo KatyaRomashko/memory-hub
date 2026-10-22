@@ -1,4 +1,16 @@
 import type {
+  CheckRun,
+  ChecksOverview,
+  ContextPack,
+  ContextPackDetail,
+  DocumentDetail,
+  DocumentRow,
+  MemorySource,
+  NavFeatures,
+  OperationsResponse,
+  PackQuery,
+  SavedQuery,
+  SearchHealth,
   EntityDetail,
   EntityMergePreview,
   GraphPrefer,
@@ -236,6 +248,46 @@ export const api = {
   knowledge: () => get<{ items: KnowledgeIndexItem[] }>('/knowledge'),
   knowledgePage: (kind: 'me' | 'project', id: string, refresh = false) =>
     get<KnowledgePage>(`/knowledge/${enc(kind)}/${enc(id)}${qs({ refresh: refresh || undefined })}`),
+
+  // Saved queries & retrieval checks
+  savedQueries: () => get<{ items: SavedQuery[]; checks: number }>('/saved-queries'),
+  createSavedQuery: (body: { name: string; request: SearchRequest; expected?: string[]; visibility?: 'private' | 'project'; project?: string | null }) =>
+    post<{ id: string }>('/saved-queries', body),
+  updateSavedQuery: (id: string, body: Partial<{ name: string; request: SearchRequest; expected: string[]; visibility: 'private' | 'project'; project: string | null }>) =>
+    patch<{ ok: boolean }>(`/saved-queries/${enc(id)}`, body),
+  deleteSavedQuery: (id: string) => del<void>(`/saved-queries/${enc(id)}`),
+  checks: () => get<ChecksOverview>('/checks'),
+  checkRun: (id: string) => get<CheckRun>(`/checks/runs/${enc(id)}`),
+  runChecks: (ids?: string[]) => post<CheckRun>(`/checks/run${qs({ ids })}`),
+  searchHealth: (days = 7) => get<SearchHealth>(`/search/health${qs({ days })}`),
+
+  // Context packs
+  packs: () => get<{ items: ContextPack[] }>('/context-packs'),
+  pack: (id: string) => get<ContextPackDetail>(`/context-packs/${enc(id)}`),
+  packMarkdownUrl: (id: string) => `${BASE}/context-packs/${enc(id)}/markdown`,
+  createPack: (body: { name: string; description?: string; pinned?: string[]; queries?: PackQuery[]; token_budget?: number }) =>
+    post<{ id: string }>('/context-packs', body),
+  updatePack: (id: string, body: Partial<Omit<ContextPack, 'id' | 'owner' | 'created_at' | 'updated_at' | 'last_render' | 'mine' | 'can_edit'>>) =>
+    patch<{ ok: boolean }>(`/context-packs/${enc(id)}`, body),
+  deletePack: (id: string) => del<void>(`/context-packs/${enc(id)}`),
+
+  // Documents
+  documents: () => get<{ items: DocumentRow[] }>('/documents'),
+  document: (id: string) => get<DocumentDetail>(`/documents/${enc(id)}`),
+  createDocument: (body: { title: string; body: string; mime?: string; project?: string | null }) => post<{ id: string }>('/documents', body),
+  updateDocument: (id: string, body: { title?: string; body?: string }) =>
+    put<{ reprocessed: { ok: number; moved: number; changed: number } | null }>(`/documents/${enc(id)}`, body),
+  deleteDocument: (id: string) => del<void>(`/documents/${enc(id)}`),
+  memoriesFromDocument: (
+    id: string,
+    body: { spans: { start: number; end: number; content?: string }[]; scope: string; scope_id?: string; weight: number; domains?: string[] },
+  ) => post<{ created: string[]; failed: { start: number; detail: string }[] }>(`/documents/${enc(id)}/memories`, body),
+  memorySource: (id: string) => get<MemorySource>(`/memory/${enc(id)}/source`),
+
+  // Operations
+  operations: (params: { days?: number; status?: string; kind?: string } = {}) => get<OperationsResponse>(`/operations${qs(params)}`),
+  retryJob: (id: string) => post<{ ok: boolean }>(`/operations/${enc(id)}/retry`),
+  navFeatures: () => get<NavFeatures>('/nav-features'),
 
   // Notifications & onboarding
   notifications: () => get<NotificationsResponse>('/notifications'),

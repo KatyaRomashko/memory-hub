@@ -108,3 +108,90 @@ async def test_admins_get_no_knowledge_or_entity_pages(monkeypatch):
         assert (
             await client.post(f"/api/entities/{uuid.uuid4()}/merge", json={"into": str(uuid.uuid4())})
         ).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Step 2–4: retrieval funnel, checks, documents, operations
+# ---------------------------------------------------------------------------
+
+
+def test_relaxed_reasons_explain_filtered_memories():
+    from src.retrieval import _relaxed_reason
+
+    body = SimpleNamespace(current_only=True, include_branches=False)
+    base = {"status": "active", "is_current": True, "parent_id": None, "version": 2}
+    assert _relaxed_reason(SimpleNamespace(**{**base, "status": "quarantined"}), body)[0] == "quarantined"
+    assert _relaxed_reason(SimpleNamespace(**{**base, "status": "pending"}), body)[0] == "pending"
+    assert _relaxed_reason(SimpleNamespace(**{**base, "is_current": False}), body)[0] == "superseded"
+    assert _relaxed_reason(SimpleNamespace(**{**base, "parent_id": 1}), body)[0] == "branch"
+    assert _relaxed_reason(SimpleNamespace(**base), body) is None
+    assert (
+        _relaxed_reason(
+            SimpleNamespace(**{**base, "parent_id": 1}), SimpleNamespace(current_only=True, include_branches=True)
+        )
+        is None
+    )
+
+
+def test_check_metrics():
+    from src.quality import score, summarise
+
+    m = score(["a", "b"], ["x", "a", "y"])
+    assert m == {"expected": 2, "found": 1, "hit": True, "recall": 0.5, "precision": 0.333, "mrr": 0.5, "first_rank": 2}
+    assert score(["a"], [])["hit"] is False and score(["a"], [])["precision"] == 0.0
+    s = summarise([{"metrics": m, "total_ms": 10}, {"metrics": score(["c"], ["c"]), "total_ms": 30}])
+    assert s["checks"] == 2 and s["hit_rate"] == 1.0 and s["recall"] == 0.75 and s["failing"] == 1
+
+
+def test_search_health_aggregates_counts_only():
+    from src.retrieval import summarise_runs
+
+    rows = [
+        (
+            NOW,
+            "playground",
+            "vector",
+            "on",
+            10.0,
+            {"matched": 10, "budget": 3, "rbac_dropped": 2, "weight_dropped": 1},
+            {"embed": 2},
+        ),
+        (NOW, "check", "text", "off", 30.0, {"matched": 10, "budget": 0, "rbac_dropped": 0}, {"embed": 4}),
+    ]
+    h = summarise_runs(rows)
+    assert h["runs"] == 2 and h["vector_share"] == 0.5 and h["empty_share"] == 0.5
+    assert h["cut"]["rbac"] == 0.1 and h["avg"]["returned"] == 1.5
+    assert summarise_runs([]) == {"runs": 0}
+
+
+def test_document_passages_keep_offsets_and_relocate():
+    from src.documents import passages, relocate
+
+    text = "# Title\n\nFirst paragraph here, long enough to stand alone.\n\nSecond one is here too, also long enough."
+    parts = passages(text)
+    assert all(text[p["start"] : p["end"]] == p["text"] for p in parts)
+    assert parts[0]["text"].startswith("# Title") and len(parts) == 2
+    long = ("Sentence number one is here. " * 80).strip()
+    assert len(passages(long)) > 1
+    assert relocate("Second one", "Intro.\n\n" + text, 60) == (
+        text.index("Second one") + 8,
+        text.index("Second one") + 18,
+    )
+    assert relocate("gone", text, 0) is None
+
+
+@pytest.mark.asyncio
+async def test_admins_get_no_content_features(monkeypatch):
+    admin = Viewer(username="dk", name="dk", email=None, source="account", role="admin")
+    monkeypatch.setattr("src.access.viewer_from_request", lambda request, settings: admin)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        for method, path in [
+            ("get", "/api/saved-queries"),
+            ("get", "/api/checks"),
+            ("post", "/api/checks/run"),
+            ("get", "/api/context-packs"),
+            ("get", "/api/documents"),
+            ("post", "/api/search"),
+        ]:
+            resp = await getattr(client, method)(path, **({"json": {"query": "x"}} if method == "post" else {}))
+            assert resp.status_code == 403, path

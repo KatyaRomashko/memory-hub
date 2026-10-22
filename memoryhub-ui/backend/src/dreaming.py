@@ -404,7 +404,13 @@ async def run_dream(
     viewer: ContentDep,
     trigger: str = Query(default="manual", pattern="^(manual|scheduled)$"),
 ):
-    return await run_for(db, settings, viewer, trigger)
+    from src.jobs import run_job
+
+    async def work():
+        report = await run_for(db, settings, viewer, trigger)
+        return {"dream_id": report["id"], "insights": len(report["insights"]), "_value": report}
+
+    return await run_job(settings, kind="dream", owner=viewer.username, work=work, trigger=trigger)
 
 
 async def run_for(db: AsyncSession, settings: Settings, viewer, trigger: str) -> dict:
