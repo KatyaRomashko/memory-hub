@@ -1,4 +1,14 @@
 import type {
+  EntityDetail,
+  EntityMergePreview,
+  GraphPrefer,
+  KnowledgeIndexItem,
+  KnowledgePage,
+  MemoryUsage,
+  NotificationsResponse,
+  Onboarding,
+  TimelineResponse,
+  UsageSummary,
   MyPrefs,
   MyPrefsResponse,
   MyReads,
@@ -164,7 +174,7 @@ export const api = {
     post<{ id: string }>('/relationships', body),
   deleteMemory: (id: string) => del<void>(`/memory/${enc(id)}`),
   bulk: (body: {
-    action: 'weight' | 'delete' | 'promote' | 'relate';
+    action: 'weight' | 'delete' | 'restore' | 'promote' | 'relate';
     ids: string[];
     weight?: number;
     target_scope?: string;
@@ -176,7 +186,7 @@ export const api = {
     post<{ id: string }>(`/memory/${enc(id)}/promote${qs({ target_scope })}`),
 
   // Graph & search
-  neighbourhood: (params: { focus?: string; depth?: number; types?: string[] }) =>
+  neighbourhood: (params: { focus?: string; depth?: number; types?: string[]; max_nodes?: number }) =>
     get<GraphNeighbourhood>(`/graph/neighbourhood${qs(params)}`),
   myPrefs: () => get<MyPrefsResponse>('/me/prefs'),
   saveMyPrefs: (body: Partial<MyPrefs>) => put<{ prefs: MyPrefs }>('/me/prefs', body),
@@ -197,8 +207,40 @@ export const api = {
   saveDreamSettings: (body: Partial<DreamSettings>) => put<DreamSettings>('/dreams/settings', body),
   decideInsight: (dreamId: string, insightId: string, decision: 'accept' | 'dismiss') =>
     post<DreamInsight>(`/dreams/${enc(dreamId)}/insights/${enc(insightId)}`, { decision }),
-  graphAll: (params: { types?: string[]; include_superseded?: boolean; max_nodes?: number } = {}) =>
-    get<GraphAll>(`/graph/all${qs(params)}`),
+  graphAll: (
+    params: {
+      types?: string[];
+      include_superseded?: boolean;
+      max_nodes?: number;
+      scope?: string[];
+      min_weight?: number;
+      project?: string;
+      entity?: string;
+      prefer?: GraphPrefer;
+    } = {},
+  ) => get<GraphAll>(`/graph/all${qs(params)}`),
+
+  // Memory workspace
+  restoreMemory: (id: string) => post<{ id: string; restored_rows: number }>(`/memory/${enc(id)}/restore`),
+  timeline: (params: { scope?: string[]; project?: string; entity?: string; min_weight?: number; days?: number; by?: 'created' | 'updated'; max_items?: number }) =>
+    get<TimelineResponse>(`/memories/timeline${qs(params)}`),
+  entity: (id: string) => get<EntityDetail>(`/entities/${enc(id)}`),
+  updateEntity: (id: string, body: { name?: string; entity_type?: string; aliases?: string[] }) =>
+    patch<{ id: string; name: string; entity_type: string; aliases: string[] }>(`/entities/${enc(id)}`, body),
+  mergeEntity: (id: string, into: string, dryRun: boolean) =>
+    post<EntityMergePreview>(`/entities/${enc(id)}/merge`, { into, dry_run: dryRun }),
+  memoryUsage: (id: string, days = 30) => get<MemoryUsage>(`/memory/${enc(id)}/usage${qs({ days })}`),
+  usageSummary: (days = 30) => get<UsageSummary>(`/usage/summary${qs({ days })}`),
+
+  // Knowledge pages
+  knowledge: () => get<{ items: KnowledgeIndexItem[] }>('/knowledge'),
+  knowledgePage: (kind: 'me' | 'project', id: string, refresh = false) =>
+    get<KnowledgePage>(`/knowledge/${enc(kind)}/${enc(id)}${qs({ refresh: refresh || undefined })}`),
+
+  // Notifications & onboarding
+  notifications: () => get<NotificationsResponse>('/notifications'),
+  markNotificationsSeen: () => post<{ ok: boolean }>('/notifications/seen'),
+  onboarding: () => get<Onboarding>('/me/onboarding'),
   search: (body: SearchRequest) => post<SearchResponse>('/search', body),
 
   // Projects & campaigns

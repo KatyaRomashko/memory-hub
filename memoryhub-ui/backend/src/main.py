@@ -2,6 +2,7 @@
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -12,10 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from src.accounts import router as accounts_router
 from src.config import get_settings
 from src.dreaming import router as dreams_router
+from src.knowledge import router as knowledge_router
 from src.me import router as me_router
+from src.notifications import router as notifications_router
 from src.routes import router
 from src.routes_admin import router as admin_router
 from src.routes_dashboard import router as dashboard_router
+from src.routes_workspace import router as workspace_router
 from src.teams import router as teams_router
 from src.ui_common import auth_enabled, read_session_cookie
 
@@ -33,6 +37,16 @@ _local_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
 FRONTEND_DIST = _default_dist if _default_dist.is_dir() else _local_dist
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start the background scheduler (dreams, knowledge pages) with the app."""
+    from src import scheduler
+
+    scheduler.start(get_settings())
+    yield
+    await scheduler.stop()
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
@@ -43,6 +57,7 @@ def create_app() -> FastAPI:
         title="MemoryHub UI BFF",
         description="Read-only BFF API for the MemoryHub dashboard",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     app.add_middleware(
@@ -79,6 +94,9 @@ def create_app() -> FastAPI:
     app.include_router(teams_router)
     app.include_router(dreams_router)
     app.include_router(me_router)
+    app.include_router(knowledge_router)
+    app.include_router(notifications_router)
+    app.include_router(workspace_router)
     app.include_router(dashboard_router)
     app.include_router(admin_router)
     app.include_router(router)

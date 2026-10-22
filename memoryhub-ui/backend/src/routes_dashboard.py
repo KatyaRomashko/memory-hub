@@ -1488,7 +1488,7 @@ class RelationshipRequest(BaseModel):
 
 
 class BulkRequest(BaseModel):
-    action: str = Field(pattern="^(weight|delete|promote|relate)$")
+    action: str = Field(pattern="^(weight|delete|restore|promote|relate)$")
     ids: list[str] = Field(min_length=1, max_length=200)
     weight: float | None = Field(default=None, ge=0, le=1)
     target_scope: str | None = None
@@ -1801,6 +1801,11 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
     for raw_id in body.ids:
         try:
             node = await _load_memory(db, tenant_id, raw_id)
+            if body.action == "restore":
+                from src.routes_workspace import restore_memory
+
+                done.append((await restore_memory(db, settings, viewer, raw_id))["id"])
+                continue
             await _writable(db, settings, viewer, node)
             if body.action == "weight":
                 if body.weight is None:
@@ -1830,7 +1835,7 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
             elif body.action == "delete":
                 from src.routes import delete_memory as delete_route
 
-                await delete_route(raw_id, db, settings)
+                await delete_route(raw_id, db, settings, viewer)
                 await audit(
                     db,
                     tenant_id=tenant_id,
@@ -1886,7 +1891,7 @@ async def graph_neighbourhood(
     focus: str | None = Query(default=None),
     depth: int = Query(default=2, ge=1, le=4),
     types: list[str] | None = Query(default=None),
-    max_nodes: int = Query(default=80, ge=5, le=300),
+    max_nodes: int = Query(default=120, ge=5, le=600),
 ):
     tenant_id = settings.ui_tenant_id
     acc = await access_for(db, settings, viewer)
@@ -1928,7 +1933,16 @@ async def graph_neighbourhood(
                 .first()
             )
         if row is None:
-            return {"focus": None, "nodes": [], "edges": [], "hidden_count": 0, "provenance": [], "conflicts": []}
+            return {
+                "focus": None,
+                "nodes": [],
+                "edges": [],
+                "hidden_count": 0,
+                "cut_count": 0,
+                "max_nodes": max_nodes,
+                "provenance": [],
+                "conflicts": [],
+            }
         focus_node = row
 
     rel_types = types or None
@@ -1936,6 +1950,7 @@ async def graph_neighbourhood(
     node_depth: dict[uuid.UUID, int] = {focus_node.id: 0}
     edges: dict[str, dict] = {}
     hidden: set[uuid.UUID] = set()
+    cut: set[uuid.UUID] = set()
     frontier = {focus_node.id}
     for level in range(1, depth + 1):
         if not frontier or len(nodes) >= max_nodes:
@@ -1967,7 +1982,7 @@ async def graph_neighbourhood(
             if n.scope == "entity":
                 continue
             if len(nodes) >= max_nodes:
-                hidden.add(nid)
+                cut.add(nid)
                 continue
             nodes[nid] = n
             node_depth[nid] = level
@@ -2052,10 +2067,15 @@ async def graph_neighbourhood(
             "nodes": [{**_node_brief(n), "depth": node_depth[n.id]} for n in nodes.values()],
             "edges": list(edges.values()),
             "hidden_count": len(hidden),
+            "cut_count": len(cut),
+            "max_nodes": max_nodes,
             "provenance": provenance if len(provenance) > 1 else [],
             "conflicts": conflicts,
         }
     )
+
+
+GRAPH_MAX_NODES = 1500
 
 
 @router.get("/api/graph/all")
@@ -2065,12 +2085,23 @@ async def graph_all(
     viewer: ViewerDep,
     types: list[str] | None = Query(default=None),
     include_superseded: bool = Query(default=False),
-    max_nodes: int = Query(default=300, ge=10, le=1000),
+    max_nodes: int = Query(default=300, ge=10, le=GRAPH_MAX_NODES),
+    scope: list[str] | None = Query(default=None),
+    min_weight: float = Query(default=0, ge=0, le=1),
+    project: str | None = Query(default=None, max_length=255),
+    entity: str | None = Query(default=None),
+    prefer: str = Query(default="connected", pattern="^(connected|recent|weight)$"),
 ):
     """Every readable memory and the links between them, connected or not.
 
     Powers the graph's "All memories" focus: separate clusters and memories
     with no relationships at all are returned too (``degree`` 0).
+
+    When there are more memories than ``max_nodes``, ``prefer`` decides which
+    ones are kept: ``connected`` (default) keeps the most linked memories so
+    clusters stay whole, ``recent`` the newest, ``weight`` the strongest. The
+    response says how many matched, how many were left out and how many links
+    point outside the drawn set.
     """
     tenant_id = settings.ui_tenant_id
     acc = await access_for(db, settings, viewer)
@@ -2083,12 +2114,47 @@ async def graph_all(
         ]
         + acc.filters()
     )
+    if scope:
+        filters.append(MemoryNode.scope.in_(scope))
+    if min_weight:
+        filters.append(MemoryNode.weight >= min_weight)
+    if project:
+        filters.append(
+            or_(
+                and_(MemoryNode.scope == "project", MemoryNode.scope_id == project),
+                MemoryNode.metadata_["project"].as_string() == project,
+            )
+        )
+    if entity:
+        filters.append(
+            exists().where(
+                MemoryRelationship.source_id == MemoryNode.id,
+                MemoryRelationship.target_id == parse_uuid(entity, "entity ID"),
+                MemoryRelationship.relationship_type == "mentions",
+                MemoryRelationship.valid_until.is_(None),
+            )
+        )
     total = (await db.execute(select(func.count()).select_from(MemoryNode).where(*filters))).scalar_one()
-    nodes = (
-        (await db.execute(select(MemoryNode).where(*filters).order_by(MemoryNode.updated_at.desc()).limit(max_nodes)))
-        .scalars()
-        .all()
-    )
+    stmt = select(MemoryNode).where(*filters)
+    if prefer == "connected" and total > max_nodes:
+        links = (
+            select(func.count())
+            .select_from(MemoryRelationship)
+            .where(
+                MemoryRelationship.tenant_id == tenant_id,
+                MemoryRelationship.valid_until.is_(None),
+                MemoryRelationship.relationship_type != "mentions",
+                or_(MemoryRelationship.source_id == MemoryNode.id, MemoryRelationship.target_id == MemoryNode.id),
+            )
+            .correlate(MemoryNode)
+            .scalar_subquery()
+        )
+        stmt = stmt.order_by(links.desc(), MemoryNode.updated_at.desc())
+    elif prefer == "weight":
+        stmt = stmt.order_by(MemoryNode.weight.desc(), MemoryNode.updated_at.desc())
+    else:
+        stmt = stmt.order_by(MemoryNode.updated_at.desc())
+    nodes = (await db.execute(stmt.limit(max_nodes))).scalars().all()
     ids = [n.id for n in nodes]
     edges: list[dict] = []
     hidden_links = 0
@@ -2125,6 +2191,10 @@ async def graph_all(
             "edges": edges,
             "total": total,
             "truncated": total > len(nodes),
+            "left_out": max(0, total - len(nodes)),
+            "max_nodes": max_nodes,
+            "limit_ceiling": GRAPH_MAX_NODES,
+            "prefer": prefer,
             "orphan_count": sum(1 for n in out_nodes if n["degree"] == 0),
             "hidden_links": hidden_links,
             "metadata_only": viewer.redacts_content,

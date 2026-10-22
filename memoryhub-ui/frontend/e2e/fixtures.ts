@@ -175,6 +175,59 @@ export async function mockDashboardApi(page: Page) {
     if (path.startsWith('/identities/')) return respond(route, { ...identity, grant: 'password', scope_matrix: [], activity_24h: { searches: 1, writes: 1, denied: 0, total: 2 }, hourly: [], agents: [] });
     if (path === '/memories/browse') return respond(route, { items: [commonMemory], total: 1, page: 1, per_page: 20, search_mode: 'none', tab_counts: { current: 1, all: 1, quarantined: 0, deleted: 0 }, facets: { scopes: ['user', 'project', 'campaign', 'role', 'organizational', 'enterprise'].map((value) => ({ value, count: value === 'project' ? 1 : 0 })), writers: [{ value: 'admin', count: 1 }], projects: [{ value: 'memoryhub-ui', count: 1 }], domains: [{ value: 'tooling', count: 1 }], flags: { contradicted: 0, has_branches: 0, near_duplicate: null } } });
     if (path === '/graph/all') return respond(route, { nodes: [{ ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0), degree: 1 }, { ...node(otherMemoryId, 'The UI is served on port 3000', 0), degree: 1 }], edges: [{ id: 'rel-1', source: memoryId, target: otherMemoryId, type: 'related_to' }], total: 2, truncated: false, orphan_count: 0, hidden_links: 0, metadata_only: false });
+    if (path === '/memories/timeline')
+      return respond(route, {
+        items: [
+          { ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0), domains: ['tooling'], at: now },
+          { ...node(otherMemoryId, 'The UI is served on port 3000', 0), domains: [], created_at: '2026-10-01T12:00:00.000Z', at: '2026-10-01T12:00:00.000Z' },
+        ],
+        total: 2,
+        truncated: false,
+        by: 'created',
+        days: 90,
+        first: '2026-10-01T12:00:00.000Z',
+        now,
+        metadata_only: false,
+      });
+    if (path === '/knowledge') return respond(route, { items: [{ kind: 'me', id: 'admin', title: 'What memory knows about Admin User', source_count: 2, generated_at: now, fresh: true, summary: { facts: 2, folded: 0, sections: 1, entities: 1, open_questions: 0, stale: 0 }, sections: ['tooling'] }] });
+    if (path.startsWith('/knowledge/me'))
+      return respond(route, {
+        subject: { kind: 'me', id: 'admin', title: 'What memory knows about Admin User' },
+        generated_at: now,
+        rebuilt: false,
+        truncated: false,
+        source_count: 2,
+        last_source_change: now,
+        summary: { facts: 2, folded: 0, sections: 1, entities: 1, open_questions: 0, stale: 0 },
+        highlights: [{ text: 'Run the MemoryHub UI locally with npm run dev', memory_id: memoryId, memory_ids: [memoryId], similar: 0, scope: 'user', weight: 0.8, updated_at: now, stale: false, contradicted: 0 }],
+        sections: [{ title: 'tooling', facts: [{ text: 'Run the MemoryHub UI locally with npm run dev', memory_id: memoryId, memory_ids: [memoryId, otherMemoryId], similar: 1, scope: 'user', weight: 0.8, updated_at: now, stale: false, contradicted: 0 }] }],
+        entities: [{ id: entityId, name: 'MemoryHub UI', type: 'object', count: 2 }],
+        recent: [],
+        questions: [],
+        stale: [],
+        changes: null,
+        scopes: { user: 2 },
+      });
+    if (path === `/entities/${entityId}`)
+      return respond(route, {
+        id: entityId,
+        name: 'MemoryHub UI',
+        entity_type: 'object',
+        aliases: ['ui'],
+        created_at: now,
+        memory_count: 1,
+        hidden_mentions: 0,
+        first_seen: now,
+        last_seen: now,
+        scopes: { project: 1 },
+        writers: [{ value: 'admin', count: 1 }],
+        projects: [{ value: 'memoryhub-ui', count: 1 }],
+        months: [{ month: '2026-10', count: 1 }],
+        co_mentions: [],
+        memories: [{ ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0) }],
+      });
+    if (path === '/notifications') return respond(route, { items: [{ id: 'rd:1', kind: 'reads', severity: 'info', title: 'Other agents used your memories 2 times today', body: 'See who and which memories.', at: now, href: '/reads', unread: true }], unread: 1, seen_at: null });
+    if (path === '/me/onboarding') return respond(route, { steps: [{ id: 'agent', title: 'Link an agent', body: 'Link agents.', href: '/identities', done: true }, { id: 'dream', title: 'Run your first dream', body: 'Dream.', href: '/dreaming', done: false }], done: 1, total: 2, dismissed: false });
     if (path === '/graph/neighbourhood') return respond(route, { focus: { ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0), content: commonMemory.content_preview, degree: 1, hidden_degree: 0 }, nodes: [node(memoryId, commonMemory.stub, 0), node(otherMemoryId, 'The UI is served on port 3000', 1)], edges: [{ id: 'rel-1', source: memoryId, target: otherMemoryId, type: 'related_to' }], hidden_count: 0, provenance: [], conflicts: [] });
     if (path === '/credentials') return respond(route, { auth_available: true, issuer: 'https://auth.test', clients: [client], api_keys: [], issuers: [{ name: 'OpenShift', kind: 'oauth-proxy', description: 'Cluster issuer', status: 'active' }] });
     if (path === '/projects') return respond(route, { items: [{ name: 'memoryhub-ui', description: 'UI project', invite_only: false, created_at: now, created_by: 'admin', memories: 1, last_write: now, members: 1, campaigns: [] }], total: 1, campaign_total: 0, viewer: 'admin' });

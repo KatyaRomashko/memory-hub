@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, Tabs } from '@/components/Shell';
 import { Empty, ErrorState, ScopeLabel, SkLines, Switch, useToast } from '@/components/ui';
@@ -32,27 +32,34 @@ const KindIcon: React.FC<{ kind: DreamKind }> = ({ kind }) => (
   </span>
 );
 
-const nextRun = (s: DreamSettings): string => {
+/** The schedule window is stored in UTC; people pick and read it in their own time. */
+const utcToLocal = (hhmm: string): string => {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date();
+  d.setUTCHours(h, m, 0, 0);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+const localToUtc = (hhmm: string): string => {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+};
+
+/** When the server scheduler runs the next dream (same rule as src/scheduler.py). */
+const nextRun = (s: DreamSettings, lastRun?: string | null): string => {
   if (s.schedule === 'off') return 'Off — dream only when you ask';
   const [h, m] = s.window.split(':').map(Number);
   const next = new Date();
-  next.setHours(h, m, 0, 0);
-  if (next <= new Date()) next.setDate(next.getDate() + 1);
-  if (s.schedule === 'weekly') while (next.getDay() !== 0) next.setDate(next.getDate() + 1);
+  next.setUTCHours(h, m, 0, 0);
+  if (next <= new Date()) next.setUTCDate(next.getUTCDate() + 1);
+  if (s.schedule === 'weekly' && lastRun) {
+    const earliest = new Date(lastRun).getTime() + 6 * 86_400_000;
+    while (next.getTime() <= earliest) next.setUTCDate(next.getUTCDate() + 1);
+  }
   const soon = next.getTime() - Date.now() < 24 * 3600_000;
-  const day = s.schedule === 'nightly' || soon ? (h < 6 ? 'Tonight' : 'Today') : next.toLocaleDateString(undefined, { weekday: 'long' });
-  return `${day} at ${s.window}`;
-};
-
-/** The most recent scheduled time that has already passed. */
-const lastDue = (s: DreamSettings): Date | null => {
-  if (s.schedule === 'off') return null;
-  const [h, m] = s.window.split(':').map(Number);
-  const due = new Date();
-  due.setHours(h, m, 0, 0);
-  if (due > new Date()) due.setDate(due.getDate() - 1);
-  if (s.schedule === 'weekly') while (due.getDay() !== 0) due.setDate(due.getDate() - 1);
-  return due;
+  const day = soon ? (next.getDate() === new Date().getDate() ? 'Today' : 'Tomorrow') : next.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  return `${day} at ${utcToLocal(s.window)}`;
 };
 
 const Dreaming: React.FC = () => {
@@ -62,17 +69,6 @@ const Dreaming: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<{ insight: DreamInsight; text: string } | null>(null);
   const report = data?.last ?? null;
-
-  // Scheduled dreams: there is no background worker yet, so a dream that was
-  // due while you were away runs the next time you open this page.
-  const [caughtUp, setCaughtUp] = useState(false);
-  useEffect(() => {
-    if (!data || caughtUp || busy) return;
-    setCaughtUp(true);
-    const due = lastDue(data.settings);
-    if (due && (!data.last || new Date(data.last.started_at) < due)) void dreamNow('scheduled');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
 
   const open = useMemo(() => (report?.insights ?? []).filter((i) => i.status === 'proposed'), [report]);
   const shown = (report?.insights ?? []).filter((i) => kind === 'all' || i.kind === kind);
@@ -168,7 +164,7 @@ const Dreaming: React.FC = () => {
                       Next dream
                     </div>
                     <div className="num-lg" style={{ color: '#fff' }}>
-                      {data ? nextRun(data.settings) : '—'}
+                      {data ? nextRun(data.settings, data.last?.started_at) : "—"}
                     </div>
                   </div>
                   <div>
@@ -233,8 +229,10 @@ const Dreaming: React.FC = () => {
                   {data.settings.schedule !== 'off' && (
                     <div className="f" style={{ marginTop: 14 }}>
                       <label htmlFor="dw">Dream at (your time)</label>
-                      <input id="dw" className="in auto" type="time" value={data.settings.window} onChange={(e) => e.target.value && saveSettings({ window: e.target.value })} />
-                      <span className="hint">The dream runs at this time — or, if you were away, the next time you open Dreaming.</span>
+                      <input id="dw" className="in auto" type="time" value={utcToLocal(data.settings.window)} onChange={(e) => e.target.value && saveSettings({ window: localToUtc(e.target.value) })} />
+                      <span className="hint">
+                        Runs on the server at this time even when the dashboard is closed, and refreshes your knowledge pages. Next: {nextRun(data.settings, data.last?.started_at)}.
+                      </span>
                     </div>
                   )}
 

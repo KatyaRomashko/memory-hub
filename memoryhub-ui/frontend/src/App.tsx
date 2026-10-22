@@ -12,6 +12,8 @@ import Dreaming from '@/pages/Dreaming';
 import Clients from '@/pages/Clients';
 import Curation from '@/pages/Curation';
 import Entities from '@/pages/Entities';
+import EntityDetail from '@/pages/EntityDetail';
+import Knowledge from '@/pages/Knowledge';
 import Graph from '@/pages/Graph';
 import Identities from '@/pages/Identities';
 import Login from '@/pages/Login';
@@ -36,6 +38,8 @@ const SCREENS: Record<string, Screen> = {
   '/graph': { nav: '/memories', title: 'Memory graph', render: (r) => <Graph route={r} /> },
   '/accounts': { nav: '/accounts', title: 'Accounts & sign-up', render: () => <Accounts /> },
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
+  '/entity': { nav: '/entities', title: 'Entity', render: (r) => <EntityDetail route={r} /> },
+  '/knowledge': { nav: '/knowledge', title: 'Knowledge', render: (r) => <Knowledge route={r} /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <Projects route={r} /> },
   '/dreaming': { nav: '/dreaming', title: 'Dreaming', render: () => <Dreaming /> },
@@ -80,6 +84,8 @@ const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, ch
 
 const screenKey = (path: string) => {
   if (path.startsWith('/memory/')) return '/memory';
+  if (path.startsWith('/entity/')) return '/entity';
+  if (path.startsWith('/knowledge/')) return '/knowledge';
   return path;
 };
 

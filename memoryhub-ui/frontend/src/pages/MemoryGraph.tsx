@@ -4,8 +4,8 @@ import { useApp } from '@/components/Shell';
 import { Empty, ErrorState, Icon, Modal, ScopeLabel, Sk, SkLines, Standby, Switch, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, type HashRoute } from '@/hooks/useHashRoute';
-import type { GraphAll, GraphNeighbourhood, NodeBrief } from '@/types';
-import { fmtRelative, fmtWeight, SCOPE_ORDER, scopeMeta, shortId, truncate } from '@/utils/format';
+import type { GraphAll, GraphNeighbourhood, GraphPrefer, NodeBrief } from '@/types';
+import { fmtInt, fmtRelative, fmtWeight, SCOPE_ORDER, scopeMeta, shortId, truncate } from '@/utils/format';
 import { MemoryPicker, RelationshipModal } from './common';
 
 /**
@@ -14,8 +14,13 @@ import { MemoryPicker, RelationshipModal } from './common';
  * Focus "All memories" draws every readable memory — separate clusters and
  * memories with no relationships at all; selecting one keeps its links bright.
  * Focus "One memory" is the neighbourhood of a memory up to N hops.
- * Layouts: Force, Provenance tree (derived_from / supersedes by scope tier)
- * and Timeline (time × scope, coloured light orange → bright red by recency).
+ * Layouts: Force and Provenance tree (derived_from / supersedes by scope
+ * tier). Time has its own view next to Table and Graph (MemoryTimeline).
+ *
+ * Scope, project, entity, weight and the selected memory live in the URL and
+ * are shared with the table and the timeline, so switching views keeps them.
+ * "All memories" draws up to a node limit the viewer picks; when more match,
+ * the canvas says how many were left out and which ones were kept.
  */
 
 const W = 640;
@@ -29,7 +34,9 @@ const EDGE_STYLE: Record<string, { color: string; dash?: string; marker: string 
 };
 const edgeStyle = (t: string) => EDGE_STYLE[t] ?? EDGE_STYLE.related_to;
 
-export type Layout = 'force' | 'tree' | 'timeline';
+export type Layout = 'force' | 'tree';
+const LIMITS = [150, 300, 600, 1000, 1500];
+const PREFER_LABEL: Record<GraphPrefer, string> = { connected: 'most connected', recent: 'newest', weight: 'strongest' };
 type ColorBy = 'scope' | 'recency';
 type GNode = NodeBrief & { depth: number; degree?: number };
 type GEdge = { id: string; source: string; target: string; type: string };
@@ -40,9 +47,6 @@ interface Geometry {
   h: number;
   island: Box | null;
   treeLanes?: { scope: string; y: number; h: number }[];
-  timeLanes?: string[];
-  min?: number;
-  max?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -89,7 +93,8 @@ function forceIn(ids: string[], edges: GEdge[], box: { x: number; y: number; w: 
   const local = edges.filter((e) => pos[e.source] && pos[e.target]);
   const rest = Math.max(70, Math.min(230, Math.sqrt((box.w * box.h) / Math.max(1, ids.length)) * 0.9));
   const repel = rest * rest * 0.8;
-  for (let iter = 0; iter < 240; iter += 1) {
+  const iterations = ids.length > 400 ? 60 : ids.length > 150 ? 120 : 240;
+  for (let iter = 0; iter < iterations; iter += 1) {
     const force: Pos = {};
     ids.forEach((id) => (force[id] = { x: 0, y: 0 }));
     for (let i = 0; i < ids.length; i += 1)
@@ -123,7 +128,7 @@ function forceIn(ids: string[], edges: GEdge[], box: { x: number; y: number; w: 
       force[e.target].x -= (dx / d) * f;
       force[e.target].y -= (dy / d) * f;
     });
-    const cool = 1 - iter / 240;
+    const cool = 1 - iter / iterations;
     ids.forEach((id) => {
       if (id === pin) return;
       const p = pos[id];
@@ -207,19 +212,6 @@ function treeLayout(nodes: GNode[]): { pos: Pos; h: number; lanes: { scope: stri
   return { pos, h: Math.max(BASE_H, y + 20), lanes: out };
 }
 
-function timelineLayout(nodes: GNode[]): { pos: Pos; min: number; max: number; lanes: string[] } {
-  const pos: Pos = {};
-  const times = nodes.map((n) => new Date(n.created_at).getTime());
-  const min = Math.min(...times);
-  const max = Math.max(...times, Date.now());
-  const lanes: string[] = [...SCOPE_ORDER].reverse();
-  nodes.forEach((n, i) => {
-    const lane = Math.max(0, lanes.indexOf(n.scope));
-    pos[n.id] = { x: 100 + (max === min ? 0.5 : (times[i] - min) / (max - min)) * (W - 140), y: 50 + lane * ((BASE_H - 130) / 5) };
-  });
-  return { pos, min, max, lanes };
-}
-
 /* ------------------------------------------------------------------ */
 /* Component                                                           */
 /* ------------------------------------------------------------------ */
@@ -234,16 +226,22 @@ const MemoryGraph: React.FC<{
   const focusMode: 'all' | 'memory' = p.get('gfocus') === 'memory' && p.get('focus') ? 'memory' : 'all';
   const focusId = p.get('focus') || undefined;
   const depth = Number(p.get('depth') || 2);
-  const layout = (p.get('layout') as Layout) || 'force';
-  const colorBy: ColorBy = (p.get('color') as ColorBy) || (layout === 'timeline' ? 'recency' : 'scope');
+  const layout: Layout = p.get('layout') === 'tree' ? 'tree' : 'force';
+  const colorBy: ColorBy = (p.get('color') as ColorBy) || 'scope';
+  const limit = Number(p.get('glimit') || 300);
+  const prefer = (p.get('gprefer') as GraphPrefer) || 'connected';
+  const scopes = (p.get('scope') || '').split(',').filter(Boolean);
+  const project = p.get('project') || undefined;
+  const entity = p.get('entity') || undefined;
+  const minWeight = p.get('minw') ? Number(p.get('minw')) : 0;
 
   const [types, setTypes] = useState<Set<string>>(new Set(EDGE_TYPES));
   const [showOrphans, setShowOrphans] = useState(true);
   const [superseded, setSuperseded] = useState(false);
   const [labels, setLabels] = useState(true);
   const [fade, setFade] = useState(true);
-  const [minWeight, setMinWeight] = useState(0);
-  const [selected, setSelected] = useState<string | null>(focusId ?? null);
+  const selected = p.get('sel') || (focusMode === 'memory' ? focusId ?? null : null);
+  const setSelected = (id: string | null) => setParams({ sel: id ?? '' }, false);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [picker, setPicker] = useState(false);
   const [relate, setRelate] = useState(false);
@@ -251,12 +249,15 @@ const MemoryGraph: React.FC<{
   const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
 
   const all = useApi<GraphAll>(
-    () => (focusMode === 'all' ? api.graphAll({ include_superseded: superseded }) : Promise.resolve(null as unknown as GraphAll)),
-    [focusMode, superseded],
+    () =>
+      focusMode === 'all'
+        ? api.graphAll({ include_superseded: superseded, max_nodes: limit, prefer, scope: scopes, project, entity, min_weight: minWeight || undefined })
+        : Promise.resolve(null as unknown as GraphAll),
+    [focusMode, superseded, limit, prefer, scopes.join(','), project, entity, minWeight],
     standby ? 5000 : null,
   );
   const hood = useApi<GraphNeighbourhood>(
-    () => (focusMode === 'memory' ? api.neighbourhood({ focus: focusId, depth }) : Promise.resolve(null as unknown as GraphNeighbourhood)),
+    () => (focusMode === 'memory' ? api.neighbourhood({ focus: focusId, depth, max_nodes: 300 }) : Promise.resolve(null as unknown as GraphNeighbourhood)),
     [focusMode, focusId, depth],
     standby ? 5000 : null,
   );
@@ -264,9 +265,6 @@ const MemoryGraph: React.FC<{
   const data = active.data;
 
   useEffect(() => setView({ x: 0, y: 0, k: 1 }), [focusMode, focusId, layout]);
-  useEffect(() => {
-    if (focusMode === 'memory' && hood.data?.focus) setSelected(hood.data.focus.id);
-  }, [focusMode, hood.data?.focus?.id]);
 
   const rawNodes: GNode[] = useMemo(() => {
     if (!data) return [];
@@ -311,10 +309,6 @@ const MemoryGraph: React.FC<{
     if (layout === 'tree') {
       const t = treeLayout(nodes);
       return { pos: t.pos, h: t.h, island: null, treeLanes: t.lanes };
-    }
-    if (layout === 'timeline') {
-      const t = timelineLayout(nodes);
-      return { pos: t.pos, h: BASE_H, island: null, timeLanes: t.lanes, min: t.min, max: t.max };
     }
     if (focusMode === 'memory') {
       const depthOf = Object.fromEntries(nodes.map((n) => [n.id, n.depth]));
@@ -373,8 +367,7 @@ const MemoryGraph: React.FC<{
   const radius = (n: GNode) => {
     const isFocus = focusNode && n.id === focusNode.id && layout === 'force';
     if (isFocus) return 26;
-    const base = 6 + n.weight * 8;
-    return layout === 'timeline' ? base * 0.8 : base;
+    return 6 + n.weight * 8;
   };
 
   const legendScopes = [...new Set(nodes.map((n) => n.scope))];
@@ -384,11 +377,45 @@ const MemoryGraph: React.FC<{
         `${nodes.length} memories`,
         `${edges.length} links`,
         focusMode === 'all' ? `${orphanCount} unconnected` : `${(data as GraphNeighbourhood).hidden_count} hidden`,
-        focusMode === 'all' && (data as GraphAll).truncated ? `newest ${rawNodes.length} of ${(data as GraphAll).total.toLocaleString()}` : null,
       ]
         .filter(Boolean)
         .join(' · ')
     : '';
+
+  const ga = focusMode === 'all' ? (data as GraphAll | null) : null;
+  const gh = focusMode === 'memory' ? (data as GraphNeighbourhood | null) : null;
+  const nextLimit = LIMITS.find((n) => n > limit && n <= (ga?.limit_ceiling ?? 1500));
+  const truncation =
+    ga && ga.truncated ? (
+      <div className="gtrunc" role="status">
+        <span>
+          <b>
+            Showing {fmtInt(ga.nodes.length)} of {fmtInt(ga.total)} memories
+          </b>{' '}
+          — the {PREFER_LABEL[ga.prefer]} ones. {fmtInt(ga.left_out)} left out
+          {ga.hidden_links ? `, ${fmtInt(ga.hidden_links)} links lead to them` : ''}.
+        </span>
+        <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {nextLimit && (
+            <button type="button" className="btn bs sm" onClick={() => setParams({ glimit: String(nextLimit) }, false)}>
+              Draw up to {fmtInt(nextLimit)}
+            </button>
+          )}
+          <button type="button" className="btn bl sm" onClick={() => setParams({ view: '' }, false)}>
+            Narrow with filters
+          </button>
+          <button type="button" className="btn bl sm" onClick={() => (selected ? setFocus('memory', selected) : setPicker(true))}>
+            Focus on one memory
+          </button>
+        </span>
+      </div>
+    ) : gh && gh.cut_count > 0 ? (
+      <div className="gtrunc" role="status">
+        <span>
+          <b>{fmtInt(gh.cut_count)} more connected memories</b> were not drawn (limit {fmtInt(gh.max_nodes)}). Lower the depth or pick a closer memory.
+        </span>
+      </div>
+    ) : null;
 
   return (
     <div className="row-wrap">
@@ -405,8 +432,7 @@ const MemoryGraph: React.FC<{
               setSuperseded(false);
               setLabels(true);
               setFade(true);
-              setMinWeight(0);
-              setParams({ gfocus: '', focus: undefined, depth: '', layout: '', color: '' }, false);
+              setParams({ gfocus: '', focus: undefined, depth: '', layout: '', color: '', glimit: '', gprefer: '', sel: '' }, false);
             }}
           >
             Reset
@@ -512,9 +538,35 @@ const MemoryGraph: React.FC<{
         </div>
 
         <div>
-          <p className="fh">Weight ≥ {minWeight.toFixed(2)}</p>
-          <input type="range" min={0} max={100} step={5} value={Math.round(minWeight * 100)} aria-label="Minimum weight" style={{ width: '100%' }} onChange={(e) => setMinWeight(Number(e.target.value) / 100)} />
+          <GraphWeight value={minWeight} onCommit={(v) => setParams({ minw: v ? v.toFixed(2) : '' }, false)} />
         </div>
+
+        {focusMode === 'all' && (
+          <div>
+            <p className="fh">Size</p>
+            <label className="sm b6" htmlFor="glimit" style={{ display: 'block', marginBottom: 6 }}>
+              Draw up to
+            </label>
+            <div className="seg full" role="group" aria-label="Node limit" id="glimit">
+              {LIMITS.map((n) => (
+                <button key={n} type="button" className={limit === n ? 'on' : ''} aria-pressed={limit === n} onClick={() => setParams({ glimit: n === 300 ? '' : String(n) }, false)}>
+                  {n >= 1000 ? `${n / 1000}k` : n}
+                </button>
+              ))}
+            </div>
+            <label className="sm b6" htmlFor="gprefer" style={{ display: 'block', margin: '10px 0 6px' }}>
+              When more match, keep
+            </label>
+            <select id="gprefer" className="in" value={prefer} onChange={(e) => setParams({ gprefer: e.target.value === 'connected' ? '' : e.target.value }, false)}>
+              <option value="connected">Most connected — clusters stay whole</option>
+              <option value="recent">Newest first</option>
+              <option value="weight">Strongest (highest weight)</option>
+            </select>
+            <p className="hint" style={{ margin: '6px 0 0' }}>
+              Large graphs draw slower. Narrow by scope or project in the table filters — they apply here too.
+            </p>
+          </div>
+        )}
 
         <hr className="sep" />
 
@@ -547,7 +599,6 @@ const MemoryGraph: React.FC<{
               [
                 ['force', 'Force'],
                 ['tree', 'Provenance tree'],
-                ['timeline', 'Timeline'],
               ] as [Layout, string][]
             ).map(([v, label]) => (
               <button key={v} type="button" className={layout === v ? 'on' : ''} aria-pressed={layout === v} onClick={() => setLayout(v)}>
@@ -562,6 +613,7 @@ const MemoryGraph: React.FC<{
             Export PNG
           </button>
         </div>
+        {truncation}
         <div className="graph-wrap" style={{ minHeight: 0 }}>
           {standby ? (
             <div className="gstate">
@@ -628,32 +680,6 @@ const MemoryGraph: React.FC<{
                       </text>
                     </g>
                   ))}
-                {layout === 'timeline' && geometry.timeLanes && (
-                  <g fontFamily="Red Hat Text" fontSize="11" fill="#4d4d4d">
-                    {geometry.timeLanes.map((s, i) => (
-                      <g key={s}>
-                        <line x1={100} x2={W - 20} y1={50 + i * ((BASE_H - 130) / 5)} y2={50 + i * ((BASE_H - 130) / 5)} stroke="#e6e6e6" strokeDasharray="4 4" />
-                        <text x={12} y={54 + i * ((BASE_H - 130) / 5)}>
-                          {scopeMeta(s).label}
-                        </text>
-                      </g>
-                    ))}
-                    <line x1={100} x2={W - 20} y1={BASE_H - 60} y2={BASE_H - 60} stroke="#8a8d90" />
-                    {[0, 0.25, 0.5, 0.75, 1].map((f) => {
-                      const t = (geometry.min ?? 0) + f * ((geometry.max ?? 0) - (geometry.min ?? 0));
-                      const x = 100 + f * (W - 140);
-                      return (
-                        <g key={f}>
-                          <line x1={x} x2={x} y1={BASE_H - 60} y2={BASE_H - 54} stroke="#8a8d90" />
-                          <text x={x} y={BASE_H - 40} textAnchor="middle">
-                            {f === 1 ? 'Now' : new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    <line x1={W - 40} x2={W - 40} y1={30} y2={BASE_H - 60} stroke="#e0000f" strokeOpacity=".45" strokeDasharray="2 4" strokeWidth="2" />
-                  </g>
-                )}
                 {geometry.island && (
                   <g>
                     <rect x={geometry.island.x} y={geometry.island.y} width={geometry.island.w} height={geometry.island.h} rx={14} fill="#fff" fillOpacity=".6" stroke="#b8bbbe" strokeDasharray="5 4" />
@@ -676,7 +702,7 @@ const MemoryGraph: React.FC<{
                     const d = Math.sqrt(dx * dx + dy * dy) || 1;
                     let cut = radius(nodeById[e.target]) + 4;
                     if (layout === 'tree') cut = Math.min(Math.abs(dx) > 1e-6 ? 70 / Math.abs(dx / d) : 1e9, Math.abs(dy) > 1e-6 ? 27 / Math.abs(dy / d) : 1e9);
-                    const opacity = dim ? (touchesSel ? 1 : 0.1) : layout === 'timeline' ? (touchesSel ? 0.9 : 0.4) : touchesFocus || touchesSel ? 1 : 0.6;
+                    const opacity = dim ? (touchesSel ? 1 : 0.1) : touchesFocus || touchesSel ? 1 : 0.6;
                     return (
                       <line
                         key={e.id}
@@ -711,7 +737,7 @@ const MemoryGraph: React.FC<{
                       (labels || isSel) &&
                       (layout === 'tree' ||
                         isSel ||
-                        (layout === 'timeline' ? false : focusMode === 'memory' ? isFocus || n.depth === 1 || nodes.length <= 14 : dim ? near : !orphan && (n.weight >= 0.8 || nodes.length <= 14)));
+                        (focusMode === 'memory' ? isFocus || n.depth === 1 || nodes.length <= 14 : dim ? near : !orphan && (n.weight >= 0.8 || nodes.length <= 14)));
                     const aria = `${scopeMeta(n.scope).label} memory: ${n.redacted ? shortId(n.id) : n.stub}`;
                     if (layout === 'tree') {
                       return (
@@ -729,23 +755,17 @@ const MemoryGraph: React.FC<{
                       );
                     }
                     const r = radius(n);
-                    const right = layout === 'timeline' && pt.x < W / 2;
                     return (
                       <g key={n.id} className="node" tabIndex={0} role="button" aria-label={aria} onClick={() => setSelected(n.id)} onDoubleClick={() => setFocus('memory', n.id)} onKeyDown={(e) => e.key === 'Enter' && setSelected(n.id)}>
                         <title>{n.redacted ? `${shortId(n.id)} · content hidden` : n.stub}</title>
                         <circle cx={pt.x} cy={pt.y} r={r} fill={color} fillOpacity={opacity} stroke="#fff" strokeWidth={isFocus ? 4 : 3} />
                         {(isFocus || isSel) && <circle cx={pt.x} cy={pt.y} r={r + 7} fill="none" stroke={colorBy === 'recency' ? '#b1380b' : color} strokeWidth="2" strokeDasharray="3 4" />}
-                        {showLabel &&
-                          (layout === 'timeline' ? (
-                            <text x={right ? pt.x + r + 6 : pt.x - r - 6} y={pt.y + 4} textAnchor={right ? 'start' : 'end'} fontWeight={600} className="glabel">
-                              {label}
-                            </text>
-                          ) : (
-                            <text x={pt.x} y={pt.y + r + 16} textAnchor="middle" fontWeight={isFocus || isSel ? 600 : 400} fill={n.depth > 1 ? '#4d4d4d' : '#151515'} className="glabel">
-                              {label}
-                              {!n.is_current ? ` (v${n.version})` : ''}
-                            </text>
-                          ))}
+                        {showLabel && (
+                          <text x={pt.x} y={pt.y + r + 16} textAnchor="middle" fontWeight={isFocus || isSel ? 600 : 400} fill={n.depth > 1 ? '#4d4d4d' : '#151515'} className="glabel">
+                            {label}
+                            {!n.is_current ? ` (v${n.version})` : ''}
+                          </text>
+                        )}
                       </g>
                     );
                   })}
@@ -813,7 +833,7 @@ const MemoryGraph: React.FC<{
             edges={rawEdges}
             nodeById={Object.fromEntries(rawNodes.map((n) => [n.id, n]))}
             provenance={focusNode && focusNode.id === sel.id ? (data as GraphNeighbourhood).provenance : []}
-            recency={colorBy === 'recency' || layout === 'timeline' ? recencyColor(recency(sel)) : undefined}
+            recency={colorBy === 'recency' ? recencyColor(recency(sel)) : undefined}
             focused={focusMode === 'memory' && focusId === sel.id}
             canWrite={role !== 'admin'}
             onSelect={setSelected}
@@ -991,3 +1011,26 @@ export const LockIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
 );
 
 export default MemoryGraph;
+
+const GraphWeight: React.FC<{ value: number; onCommit: (v: number) => void }> = ({ value, onCommit }) => {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  return (
+    <>
+      <p className="fh">Weight ≥ {v.toFixed(2)}</p>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={5}
+        value={Math.round(v * 100)}
+        aria-label="Minimum weight"
+        style={{ width: '100%' }}
+        onChange={(e) => setV(Number(e.target.value) / 100)}
+        onMouseUp={() => onCommit(v)}
+        onKeyUp={() => onCommit(v)}
+        onTouchEnd={() => onCommit(v)}
+      />
+    </>
+  );
+};

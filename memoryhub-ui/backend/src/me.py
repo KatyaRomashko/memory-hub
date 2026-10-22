@@ -31,6 +31,7 @@ DEFAULT_PREFS = {
     "write": {"default_scope": "user", "default_weight": 0.7},
     "privacy": {"allow_promotion_by_others": False, "show_in_team_directory": True},
     "dreaming_fade_days": 60,
+    "onboarding_dismissed": False,
 }
 _ready = False
 
@@ -133,6 +134,7 @@ class PrefsUpdate(BaseModel):
     write: dict | None = None
     privacy: dict | None = None
     dreaming_fade_days: int | None = Field(default=None, ge=14, le=365)
+    onboarding_dismissed: bool | None = None
 
 
 @router.put("/api/me/prefs")
@@ -250,4 +252,97 @@ async def who_read_my_memories(
         "top_memories": sorted(memories.values(), key=lambda m: -m["count"])[:8],
         "events": events,
         "scopes": SCOPES,
+    }
+
+
+@router.get("/api/me/onboarding")
+async def onboarding(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
+    """Getting-started checklist for a user who is new to MemoryHub."""
+    tenant_id = settings.ui_tenant_id
+    acc = await access_for(db, settings, viewer)
+    mine = list(acc.grants.identities) if acc.grants else [viewer.username]
+    agents = sorted(acc.grants.agents) if acc.grants else []
+    own = (
+        await db.execute(
+            select(func.count())
+            .select_from(MemoryNode)
+            .where(
+                MemoryNode.tenant_id == tenant_id,
+                MemoryNode.deleted_at.is_(None),
+                MemoryNode.scope == "user",
+                MemoryNode.owner_id.in_(mine),
+            )
+        )
+    ).scalar_one()
+    searched = (
+        await db.execute(
+            select(AuditLog.id)
+            .where(AuditLog.tenant_id == tenant_id, AuditLog.event_type == "memory.search", AuditLog.actor_id.in_(mine))
+            .limit(1)
+        )
+    ).first() is not None
+
+    async def has_row(table: str, column: str) -> bool:
+        try:
+            row = (
+                await db.execute(
+                    text(f"SELECT 1 FROM {table} WHERE tenant_id = :t AND {column} = :u LIMIT 1"),
+                    {"t": tenant_id, "u": viewer.username},
+                )
+            ).first()
+            return row is not None
+        except Exception:  # table not created yet
+            await db.rollback()
+            return False
+
+    prefs = await load_prefs(db, tenant_id, viewer.username)
+    steps = [
+        {
+            "id": "agent",
+            "title": "Link an agent",
+            "body": "Memories are written by agents. Link the agents you use so their memories count as yours.",
+            "href": "/identities",
+            "done": bool(agents) or not viewer.restricted,
+        },
+        {
+            "id": "memory",
+            "title": "Get your first memory",
+            "body": "Let an agent call write_memory, or write one yourself in the Memory browser.",
+            "href": "/memories",
+            "done": own > 0,
+        },
+        {
+            "id": "search",
+            "title": "See what agents get back",
+            "body": "Run a query in the Search playground to see exactly what an agent would receive.",
+            "href": "/search",
+            "done": searched,
+        },
+        {
+            "id": "prefs",
+            "title": "Set your defaults and privacy",
+            "body": "Default scope and weight for new memories, and who may build on yours.",
+            "href": "/preferences",
+            "done": await has_row(PREFS, "username"),
+        },
+        {
+            "id": "knowledge",
+            "title": "Open your knowledge page",
+            "body": "A summary of what memory knows about you, citing every memory it uses.",
+            "href": "/knowledge",
+            "done": await has_row("memoryhub_ui_knowledge", "owner"),
+        },
+        {
+            "id": "dream",
+            "title": "Run your first dream",
+            "body": "Dreaming finds duplicates, missing links, stale memories and contradictions.",
+            "href": "/dreaming",
+            "done": await has_row("memoryhub_ui_dreams", "owner"),
+        },
+    ]
+    return {
+        "steps": steps,
+        "done": sum(1 for s in steps if s["done"]),
+        "total": len(steps),
+        "dismissed": bool(prefs.get("onboarding_dismissed")),
     }

@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import type { Me, Role, SwitchTargets } from '@/types';
+import type { Me, NotificationsResponse, Role, SwitchTargets } from '@/types';
 import { buildHash } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
@@ -114,6 +114,7 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     groupFor: { admin: 'Memory · metadata only', user: 'My memory' },
     items: [
       { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Memory analytics' } },
+      { path: '/knowledge', label: 'Knowledge', roles: USER },
       { path: '/entities', label: 'Entities', roles: USER },
       { path: '/search', label: 'Search playground', roles: USER },
       { path: '/dreaming', label: 'Dreaming', roles: USER },
@@ -293,10 +294,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
               <Icon.Search />
             </a>
           )}
-          <a className="icb" aria-label={`Review queue, ${reviewCount} waiting`} href={buildHash('/review')}>
-            <Icon.Bell />
-            {reviewCount > 0 && <span className="dot">{reviewCount > 99 ? '99+' : reviewCount}</span>}
-          </a>
+          <Notifications fallbackCount={reviewCount} />
           <Dropdown
             align="right"
             toggle={(p) => (
@@ -493,3 +491,98 @@ export function Tabs<T extends string>({
     </nav>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Notifications (the bell)                                            */
+/* ------------------------------------------------------------------ */
+
+const POLL_NOTIFICATIONS_MS = 60000;
+
+const Notifications: React.FC<{ fallbackCount: number }> = ({ fallbackCount }) => {
+  const { role } = useApp();
+  const [data, setData] = useState<NotificationsResponse | null>(null);
+  const load = useCallback(() => {
+    api
+      .notifications()
+      .then(setData)
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    load();
+    const id = window.setInterval(load, POLL_NOTIFICATIONS_MS);
+    return () => window.clearInterval(id);
+  }, [load, role]);
+  const unread = data ? data.unread : fallbackCount;
+  return (
+    <Dropdown
+      align="right"
+      toggle={(p) => (
+        <button
+          type="button"
+          className="icb"
+          aria-label={unread ? `Notifications, ${unread} new` : 'Notifications'}
+          {...p}
+          onClick={() => {
+            p.onClick();
+            if (data?.unread) {
+              api
+                .markNotificationsSeen()
+                .then(() => setData((d) => (d ? { ...d, unread: 0 } : d)))
+                .catch(() => undefined);
+            }
+          }}
+        >
+          <Icon.Bell />
+          {unread > 0 && <span className="dot">{unread > 99 ? '99+' : unread}</span>}
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="notif">
+          <div className="notif-h">
+            <b>Notifications</b>
+            {role === 'admin' && (
+              <a className="sm" href={buildHash('/review')} onClick={close}>
+                Review queue
+              </a>
+            )}
+          </div>
+          {!data ? (
+            <div style={{ padding: 16 }} className="sm muted">
+              Loading…
+            </div>
+          ) : data.items.length === 0 ? (
+            <div style={{ padding: 16 }} className="sm muted">
+              {role === 'admin' ? 'The review queue is empty.' : 'Nothing new. Break-glass access, contradictions on your memories, other agents using them and Dreaming suggestions show up here.'}
+            </div>
+          ) : (
+            data.items.map((n) => (
+              <a key={n.id} href={buildHash(n.href)} className={`notif-i ${n.unread ? 'unread' : ''}`} onClick={close}>
+                <span className={`ndot ${n.severity}`} aria-hidden="true" />
+                <span style={{ minWidth: 0 }}>
+                  <span className="sm b6" style={{ display: 'block' }}>
+                    {n.title}
+                  </span>
+                  {n.body && (
+                    <span className="hint ellipsis" style={{ display: 'block' }}>
+                      {n.body}
+                    </span>
+                  )}
+                  {n.at && <span className="hint">{fmtRelativeShort(n.at)}</span>}
+                </span>
+              </a>
+            ))
+          )}
+        </div>
+      )}
+    </Dropdown>
+  );
+};
+
+const fmtRelativeShort = (iso: string) => {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+};

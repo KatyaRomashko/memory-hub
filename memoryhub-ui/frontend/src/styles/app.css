@@ -505,3 +505,43 @@ pre.small { font-size: 12px; padding: 10px 12px; }
 .dream-stub { font-size: 14px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .dream-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 14px; }
 @media (max-width: 700px) { .dream-mems.pair { grid-template-columns: 1fr; } .dream-join { transform: rotate(90deg); } }
+
+/* ---------- Workspace: carried filters, graph limit, timeline ---------- */
+.carried { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #f5f9fc; border: 1px solid #b9dafc; border-radius: 12px; padding: 8px 14px; }
+.gtrunc { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 10px 16px; background: #fdf7e7; border-bottom: 1px solid #f9e0a2; font-size: 13px; }
+.tag.on { background: #e7f1fa; border: 1px solid var(--mh-primary); color: var(--mh-primary-dark, #004d99); }
+button.tag { cursor: pointer; border: 1px solid transparent; font: inherit; font-size: 12px; }
+.stats4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 14px; }
+.statv { font-family: var(--mh-font-display); font-size: 24px; font-weight: 500; line-height: 1.2; }
+.months { display: flex; align-items: flex-end; gap: 6px; height: 90px; margin-top: 12px; }
+.months > div { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; justify-content: flex-end; height: 100%; }
+.months span { width: 100%; max-width: 26px; border-radius: 4px 4px 0 0; background: linear-gradient(180deg, #f0602c, #f8b26a); }
+.months small { font-size: 10.5px; color: var(--mh-muted); }
+
+/* ---------- Knowledge pages ---------- */
+.kgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.kcard { color: inherit; display: block; transition: border-color .15s; }
+.kcard:hover { border-color: var(--mh-primary); }
+.kfacts { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; }
+.kfact { padding: 10px 0; border-top: 1px solid var(--mh-border-soft); line-height: 1.5; font-size: 14px; }
+.kfact:first-child { border-top: 0; padding-top: 2px; }
+.khigh { border-left: 4px solid var(--mh-brand); }
+.cites { display: inline-flex; gap: 3px; vertical-align: 1px; }
+.cite { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 6px; background: #e7f1fa; color: #004d99; font-size: 11px; font-weight: 600; text-decoration: none; }
+.cite:hover { background: #b9dafc; }
+.grn-t { color: #3d7317; }
+
+/* ---------- Notifications & onboarding ---------- */
+.notif { width: min(380px, calc(100vw - 32px)); padding: 0 !important; }
+.notif-h { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--mh-border-soft); }
+.notif-i { display: flex !important; gap: 10px; padding: 12px 16px !important; border-bottom: 1px solid var(--mh-border-soft); color: inherit !important; text-decoration: none; white-space: normal !important; }
+.notif-i:hover { background: #f5f9fc; }
+.notif-i.unread { background: #f5f9fc; }
+.notif-i .ndot { width: 8px; height: 8px; border-radius: 99px; flex: none; margin-top: 6px; }
+.ndot.danger { background: var(--mh-danger, #c9190b); } .ndot.warning { background: #f0ab00; } .ndot.info { background: var(--mh-primary); }
+.onb { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 14px; }
+.onb a { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--mh-border); border-radius: 12px; padding: 12px; color: inherit; text-decoration: none; background: #fff; }
+.onb a:hover { border-color: var(--mh-primary); }
+.onb a.done { background: #f6fbf2; border-color: #cfe9bd; }
+.onb .chk { width: 22px; height: 22px; border-radius: 99px; border: 2px solid #c7c7c7; flex: none; display: grid; place-items: center; font-size: 12px; color: #fff; }
+.onb a.done .chk { background: #3d7317; border-color: #3d7317; }

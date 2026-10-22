@@ -4,7 +4,7 @@ import { PageHeader, Tabs, useApp } from '@/components/Shell';
 import { Empty, ErrorState, Modal, Pager, ScopeLabel, Sk, SkLines, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
-import type { AuditEvent, MemoryContext } from '@/types';
+import type { AuditEvent, MemoryContext, MemoryUsage } from '@/types';
 import { errorMessage, fmtDateTime, fmtMonthDay, fmtRelative, fmtShortDateTime, fmtUtc, fmtWeight, scopeMeta, shortId, truncate } from '@/utils/format';
 import { actorName, ConfirmModal, decisionOf, memoryHref, MemoryLink, RelationshipModal } from './common';
 
@@ -56,7 +56,8 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
   const id = decodeURIComponent(route.path.replace(/^\/memory\//, ''));
   const tab = route.params.get('tab') || 'details';
   const toast = useToast();
-  const { refreshCounts } = useApp();
+  const { refreshCounts, role } = useApp();
+  const [restoring, setRestoring] = useState(false);
   const { data, error, loading, reload } = useApi<MemoryContext>(() => api.memoryContext(id), [id]);
   const [modal, setModal] = useState<null | 'contradiction' | 'branch' | 'edit' | 'delete' | 'relate'>(null);
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
@@ -141,7 +142,29 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
           ) : null
         }
         actions={
-          m && !deleted ? (
+          m && deleted && role !== 'admin' ? (
+            <button
+              type="button"
+              className="btn bp"
+              disabled={restoring}
+              onClick={async () => {
+                setRestoring(true);
+                try {
+                  const res = await api.restoreMemory(m.id);
+                  toast(`Restored ${res.restored_rows} ${res.restored_rows === 1 ? 'row' : 'rows'} — agents get it again.`);
+                  refreshCounts();
+                  if (res.id !== m.id) navigate(`/memory/${res.id}`);
+                  else reload();
+                } catch (e) {
+                  toast(errorMessage(e), 'err');
+                } finally {
+                  setRestoring(false);
+                }
+              }}
+            >
+              {restoring ? 'Restoring…' : 'Restore memory'}
+            </button>
+          ) : m && !deleted ? (
             <>
               <button type="button" className="btn bg" onClick={() => setModal('contradiction')}>
                 Report contradiction
@@ -358,6 +381,15 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
               </div>
 
               <aside className="col-side" style={{ flex: '1 1 320px' }}>
+                {deleted && (
+                  <div className="alert" role="note">
+                    <div>
+                      <b>Deleted {fmtRelative(m.deleted_at as string).toLowerCase()}.</b> Agents no longer receive it.
+                      {role !== 'admin' ? ' Restore brings back every version deleted with it and makes the newest one current.' : ''}
+                    </div>
+                  </div>
+                )}
+                <UsageCard id={m.id} />
                 <div className="card">
                   <h3 style={{ marginBottom: 14 }}>Details</h3>
                   <dl className="dl">
@@ -721,3 +753,50 @@ const EditModal: React.FC<{
 };
 
 export default MemoryDetail;
+
+/** Do agents act on this memory when search returns it? From the audit log. */
+const UsageCard: React.FC<{ id: string }> = ({ id }) => {
+  const { data } = useApi<MemoryUsage>(() => api.memoryUsage(id, 30), [id]);
+  if (!data) return null;
+  const measured = data.used + data.skipped;
+  return (
+    <div className="card">
+      <div className="ch">
+        <h3>Agent usage</h3>
+        <span className="sm muted">30 days</span>
+      </div>
+      {data.served === 0 ? (
+        <p className="sm muted" style={{ margin: 0 }}>
+          No agent search returned this memory in the last 30 days.
+        </p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div>
+              <div className="b6" style={{ fontSize: 22 }}>{data.served}</div>
+              <div className="hint">times returned</div>
+            </div>
+            <div>
+              <div className="b6" style={{ fontSize: 22 }}>{data.used}</div>
+              <div className="hint">acted on</div>
+            </div>
+            <div>
+              <div className="b6" style={{ fontSize: 22 }}>{data.skipped}</div>
+              <div className="hint">skipped</div>
+            </div>
+          </div>
+          {measured > 0 && (
+            <div className="bar" aria-label={`Used ${Math.round((data.use_rate ?? 0) * 100)}% of the time`}>
+              <span style={{ width: `${Math.round((data.use_rate ?? 0) * 100)}%` }} />
+            </div>
+          )}
+          <p className="hint" style={{ margin: '8px 0 0' }}>
+            {data.full_text
+              ? 'Weight ≥ 0.80: agents get the full text in the search result, so a follow-up read is not needed and skips are not counted.'
+              : 'Acted on = the same agent read, updated, linked or reported it within 30 minutes. Memories that are often skipped may need a clearer text, a lower weight, or fading.'}
+          </p>
+        </>
+      )}
+    </div>
+  );
+};

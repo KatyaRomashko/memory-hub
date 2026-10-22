@@ -132,7 +132,7 @@ const Entities: React.FC<{ route: HashRoute }> = ({ route }) => {
                       return (
                         <tr key={entity.id}>
                           <td>
-                            <a href={buildHash('/memories', { entity: entity.id, entityName: entity.name })} className="link-plain" style={{ fontWeight: 600 }}>
+                            <a href={buildHash(`/entity/${entity.id}`)} className="link-plain" style={{ fontWeight: 600 }}>
                               {entity.name}
                             </a>
                             <div className="sm muted mono">{shortId(entity.id, 'ent')}</div>
@@ -142,7 +142,7 @@ const Entities: React.FC<{ route: HashRoute }> = ({ route }) => {
                             <span className={`lbl ${type?.cls ?? 'g'}`}>{type?.label ?? entity.entity_type}</span>
                           </td>
                           <td>
-                            <a href={buildHash('/memories', { q: entity.name, mode: 'text' })}>{fmtInt(entity.memory_count)}</a>
+                            <a href={buildHash('/memories', { entity: entity.id, entityName: entity.name })}>{fmtInt(entity.memory_count)}</a>
                           </td>
                           <td>
                             {entity.projects.length > 0 ? (

@@ -110,7 +110,7 @@ test.describe('entities', () => {
     await page.goto('/#/entities');
     await expect(page.getByRole('heading', { name: 'Entities', exact: true })).toBeVisible();
     await expect(page.getByRole('tab', { name: /All/ })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'MemoryHub UI' })).toHaveAttribute('href', /#\/memories\?entity=/);
+    await expect(page.getByRole('link', { name: 'MemoryHub UI' })).toHaveAttribute('href', /#\/entity\//);
     await expect(page.getByText('memoryhub-ui', { exact: true })).toBeVisible();
     await page.getByLabel('Search entities').fill('MemoryHub');
     await page.getByRole('button', { name: 'Apply filters' }).click();
@@ -136,14 +136,26 @@ test.describe('memory graph', () => {
     await page.getByRole('group', { name: 'Depth' }).getByRole('button', { name: '3 hops' }).click();
     await expect(page).toHaveURL(/depth=3/);
 
-    await page.getByRole('group', { name: 'Layout' }).getByRole('button', { name: 'Timeline' }).click();
-    await expect(page.getByRole('group', { name: 'Layout' }).getByRole('button', { name: 'Timeline' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByText('Brighter = written more recently')).toBeVisible();
+    // Time is its own view now, not a graph layout.
+    await expect(page.getByRole('group', { name: 'Layout' }).getByRole('button', { name: 'Timeline' })).toHaveCount(0);
 
     const related = page.getByRole('checkbox', { name: 'related_to' });
     await expect(related).toBeChecked();
     await related.uncheck();
     await expect(related).not.toBeChecked();
+  });
+
+  test('graph says when it is truncated and offers a bigger limit', async ({ page }) => {
+    await page.route('**/api/graph/all**', (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ nodes: [], edges: [], total: 900, truncated: true, left_out: 600, max_nodes: 300, limit_ceiling: 1500, prefer: 'connected', orphan_count: 0, hidden_links: 12, metadata_only: false }),
+      }),
+    );
+    await page.goto('/#/memories?view=graph');
+    await expect(page.getByText(/Showing 0 of 900 memories/)).toBeVisible();
+    await page.getByRole('button', { name: 'Draw up to 600' }).click();
+    await expect(page).toHaveURL(/glimit=600/);
   });
 
   test('old graph links land in the browser graph view', async ({ page }) => {
@@ -176,5 +188,64 @@ test.describe('write and credentials actions', () => {
     const credentials = page.getByRole('dialog', { name: 'Copy these credentials now' });
     await expect(credentials).toBeVisible();
     await expect(credentials.getByText('browser-test-agent', { exact: true })).toBeVisible();
+  });
+});
+
+test.describe('memory workspace', () => {
+  test('timeline view keeps filters and selection across views', async ({ page }) => {
+    await page.goto('/#/memories?scope=project');
+    await page.getByRole('group', { name: 'View as' }).getByRole('button', { name: 'Timeline' }).click();
+    await expect(page).toHaveURL(/view=timeline/);
+    await expect(page).toHaveURL(/scope=project/);
+    await expect(page.getByRole('heading', { name: 'Timeline settings' })).toBeVisible();
+    await expect(page.getByText('Filters from the table:')).toBeVisible();
+    await page.locator('svg g.node').first().click();
+    await expect(page).toHaveURL(/sel=/);
+    await page.getByRole('group', { name: 'View as' }).getByRole('button', { name: 'Graph' }).click();
+    await expect(page).toHaveURL(/sel=/);
+  });
+
+  test('old timeline layout links open the timeline view', async ({ page }) => {
+    await page.goto('/#/memories?view=graph&layout=timeline');
+    await expect(page).toHaveURL(/view=timeline/);
+  });
+
+  test('knowledge page cites its memories', async ({ page }) => {
+    await page.goto('/#/knowledge');
+    await page.getByRole('link', { name: /What memory knows about Admin User/ }).click();
+    await expect(page).toHaveURL(/#\/knowledge\/me/);
+    await expect(page.getByRole('heading', { name: 'In short' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Tooling' })).toBeVisible();
+    await expect(page.getByText('+1 similar folded')).toBeVisible();
+    await expect(page.locator('a.cite').first()).toHaveAttribute('href', new RegExp(memoryId));
+  });
+
+  test('entity page shows memories and offers rename and merge', async ({ page }) => {
+    await page.goto('/#/entities');
+    await page.getByRole('link', { name: 'MemoryHub UI' }).click();
+    await expect(page.getByRole('heading', { name: /MemoryHub UI/ })).toBeVisible();
+    await expect(page.getByText('Also known as ui.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Merge into…' })).toBeVisible();
+    await page.getByRole('button', { name: 'Rename · aliases' }).click();
+    await expect(page.getByRole('textbox', { name: 'Aliases' })).toHaveValue('ui');
+  });
+
+  test('deleted memories can be restored from the table', async ({ page }) => {
+    let restored = false;
+    await page.route('**/api/memories/bulk', async (route) => {
+      restored = JSON.parse(route.request().postData() || '{}').action === 'restore';
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ done: [memoryId], errors: [] }) });
+    });
+    await page.goto('/#/memories?tab=deleted');
+    await page.getByRole('checkbox', { name: 'Select memory' }).first().check();
+    await page.getByRole('button', { name: 'Restore', exact: true }).click();
+    await expect.poll(() => restored).toBe(true);
+  });
+
+  test('notifications open from the bell', async ({ page }) => {
+    await page.goto('/#/overview');
+    await page.getByRole('button', { name: /Notifications, 1 new/ }).click();
+    await expect(page.getByText('Other agents used your memories 2 times today')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Getting started' })).toBeVisible();
   });
 });

@@ -8,6 +8,7 @@ import type { BrowseParams, BrowseResponse, MemoryRow } from '@/types';
 import { errorMessage, fmtCompact, fmtInt, fmtRelative, fmtWeight, SCOPE_ORDER, scopeMeta, shortId } from '@/utils/format';
 import { ConfirmModal, memoryHref, RelationshipModal, WriteMemoryModal } from './common';
 import MemoryGraph, { LockIcon } from './MemoryGraph';
+import MemoryTimeline from './MemoryTimeline';
 
 const list = (v: string | null) => (v ? v.split(',').filter(Boolean) : []);
 const COLUMNS = ['scope', 'entities', 'owner', 'weight', 'version', 'branches', 'updated'] as const;
@@ -30,7 +31,12 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const { standby, refreshCounts, role } = useApp();
   const isAdmin = role === 'admin';
   const p = route.params;
-  const view: 'table' | 'graph' = p.get('view') === 'graph' ? 'graph' : 'table';
+  const view: 'table' | 'graph' | 'timeline' = p.get('view') === 'graph' ? 'graph' : p.get('view') === 'timeline' ? 'timeline' : 'table';
+  // Old links drew time inside the graph; it is its own view now.
+  useEffect(() => {
+    if (p.get('layout') === 'timeline') navigate('/memories', { ...Object.fromEntries(p), layout: '', view: 'timeline' }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const state = {
     entity: p.get('entity') || '',
     entityName: p.get('entityName') || '',
@@ -163,8 +169,8 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
           isAdmin
             ? 'Volume, activity, structure and health of every memory in the tenant. What a personal, project, campaign or role memory says is confidential and never reaches this view.'
             : role === 'user'
-              ? 'Every memory you are allowed to read — your own, and what your projects, campaigns, roles and organization share with you — as a table or as a graph of how they connect.'
-              : 'Every memory you are allowed to read, across all six scopes — as a table or as a graph of how they connect. Nodes you cannot read are counted, never shown.'
+              ? 'Every memory you are allowed to read — your own, and what your projects, campaigns, roles and organization share with you — as a table, a graph of how they connect, or a timeline.'
+              : 'Every memory you are allowed to read, across all six scopes — as a table, a graph of how they connect, or a timeline. Nodes you cannot read are counted, never shown.'
         }
         actions={
           <>
@@ -215,6 +221,12 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                   </svg>
                   Graph
                 </button>
+                <button type="button" className={view === 'timeline' ? 'on' : ''} aria-pressed={view === 'timeline'} onClick={() => setParams({ view: 'timeline' }, false)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path d="M3 18h18M6 18V9M11 18V5M16 18v-7M21 18v-4" />
+                  </svg>
+                  Timeline
+                </button>
               </div>
             </div>
           </div>
@@ -230,8 +242,27 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
             </div>
           </div>
         )}
+        {view !== 'table' && (chips.length > 0 || state.q) && (
+          <div className="carried" role="note">
+            <span className="sm muted">Filters from the table:</span>
+            {chips.map((c) => (
+              <span className="chip" key={c.label}>
+                {c.label}
+                <button type="button" aria-label={`Remove ${c.label}`} onClick={c.clear}>
+                  ✕
+                </button>
+              </span>
+            ))}
+            {state.q && <span className="sm muted">Search text and the Current / Deleted tabs apply to the table only.</span>}
+            <button type="button" className="btn bl sm" onClick={() => setParams({ view: '' }, false)}>
+              Edit filters
+            </button>
+          </div>
+        )}
         {view === 'graph' ? (
           <MemoryGraph route={route} setParams={setParams} />
+        ) : view === 'timeline' ? (
+          <MemoryTimeline route={route} setParams={setParams} />
         ) : (
         <div className="row-wrap">
           <aside className="card" style={{ flex: '1 1 230px', maxWidth: '100%', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 20 }} aria-label="Filters">
@@ -431,7 +462,24 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
             {selected.size > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', background: '#e7f1fa', borderTop: '1px solid #b9dafc', borderBottom: '1px solid #b9dafc', padding: '10px 20px', fontSize: 14 }}>
                 <b>{selected.size} selected</b>
-                {isAdmin ? (
+                {state.tab === 'deleted' && !isAdmin ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn bp"
+                      onClick={() =>
+                        runBulk({ action: 'restore', ids }, `${fmtInt(ids.length)} restored — agents get ${ids.length === 1 ? 'it' : 'them'} again.`).catch((e) =>
+                          toast(errorMessage(e), 'err'),
+                        )
+                      }
+                    >
+                      Restore
+                    </button>
+                    <span style={{ marginLeft: 'auto' }} className="sm muted">
+                      Brings back every version deleted with it · newest becomes current · audited
+                    </span>
+                  </>
+                ) : isAdmin ? (
                   <>
                     <button
                       type="button"
@@ -506,7 +554,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                   : state.tab === 'quarantined'
                     ? 'Writes held by a quarantine rule will be listed here for review.'
                     : state.tab === 'deleted'
-                      ? 'Soft-deleted memories stay here, with their version chains, for forensics.'
+                      ? 'Soft-deleted memories stay here, with their version chains. Select one and press Restore to bring it back.'
                       : 'Memories appear here as agents write them.'}
               </Empty>
             ) : (
@@ -536,7 +584,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                     </thead>
                     <tbody>
                       {items.map((m) => (
-                        <tr key={m.id} className={selected.has(m.id) ? 'is-sel' : ''}>
+                        <tr key={m.id} className={selected.has(m.id) || p.get('sel') === m.id ? 'is-sel' : ''}>
                           <td>
                             <input
                               type="checkbox"
@@ -650,8 +698,23 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                               {(close) => (
                                 <>
                                   <a href={memoryHref(m.id)}>Open</a>
-                                  <a href={buildHash('/memories', { view: 'graph', gfocus: 'memory', focus: m.id })}>Open in graph</a>
+                                  <a href={buildHash('/memories', { ...Object.fromEntries(p), view: 'graph', gfocus: 'memory', focus: m.id, sel: m.id })}>Open in graph</a>
+                                  <a href={buildHash('/memories', { ...Object.fromEntries(p), view: 'timeline', sel: m.id })}>Show on timeline</a>
                                   <a href={buildHash(`/memory/${m.id}`, { tab: 'access' })}>Access log</a>
+                                  {state.tab === 'deleted' && !isAdmin && (
+                                    <>
+                                      <hr />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          close();
+                                          runBulk({ action: 'restore', ids: [m.id] }, 'Memory restored.').catch((e) => toast(errorMessage(e), 'err'));
+                                        }}
+                                      >
+                                        Restore
+                                      </button>
+                                    </>
+                                  )}
                                   {state.tab !== 'deleted' && !isAdmin && (
                                     <>
                                       <hr />

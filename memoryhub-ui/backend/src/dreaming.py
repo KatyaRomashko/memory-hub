@@ -13,7 +13,7 @@ user approves one by one (or lets run automatically for the safe kinds):
 * **themes** — clusters of recent memories sharing a domain tag: write one
   consolidated memory (prefilled draft) instead of many small ones.
 
-Runs on demand ("Dream now"); the schedule is stored for the curator worker.
+Runs on demand ("Dream now") and on the stored schedule (see ``src.scheduler``).
 Tables: ``memoryhub_ui_dreams`` (one row per run, report as JSON) and
 ``memoryhub_ui_dream_settings`` (per user).
 """
@@ -404,6 +404,11 @@ async def run_dream(
     viewer: ContentDep,
     trigger: str = Query(default="manual", pattern="^(manual|scheduled)$"),
 ):
+    return await run_for(db, settings, viewer, trigger)
+
+
+async def run_for(db: AsyncSession, settings: Settings, viewer, trigger: str) -> dict:
+    """One dream for one viewer; the endpoint and the background scheduler share it."""
     prefs = await _load_settings(db, settings.ui_tenant_id, viewer.username)
     started = time.perf_counter()
     report = await dream(db, settings, viewer, prefs)

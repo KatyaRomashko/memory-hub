@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     # whoever is signed in view the dashboard as another identity and role
     # (admin / user), without logging out. Never enable in production.
     ui_test_mode: bool = False
+    # Background scheduler inside the BFF: runs due dreams (nightly / weekly)
+    # and rebuilds stale knowledge pages. One replica works per tick
+    # (Postgres advisory lock).
+    ui_scheduler_enabled: bool = True
+    ui_scheduler_interval_s: int = 300
 
     @property
     def database_url(self) -> str:

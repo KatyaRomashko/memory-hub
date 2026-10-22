@@ -351,16 +351,24 @@ export interface GraphAll {
   edges: { id: string; source: string; target: string; type: string }[];
   total: number;
   truncated: boolean;
+  left_out: number;
+  max_nodes: number;
+  limit_ceiling: number;
+  prefer: GraphPrefer;
   orphan_count: number;
   hidden_links: number;
   metadata_only: boolean;
 }
+
+export type GraphPrefer = 'connected' | 'recent' | 'weight';
 
 export interface GraphNeighbourhood {
   focus: (NodeBrief & { content: string; degree: number; hidden_degree: number }) | null;
   nodes: (NodeBrief & { depth: number })[];
   edges: { id: string; source: string; target: string; type: string }[];
   hidden_count: number;
+  cut_count: number;
+  max_nodes: number;
   provenance: NodeBrief[];
   conflicts: NodeBrief[];
 }
@@ -444,6 +452,7 @@ export interface MyPrefs {
   write: { default_scope: string; default_weight: number };
   privacy: { allow_promotion_by_others: boolean; show_in_team_directory: boolean };
   dreaming_fade_days: number;
+  onboarding_dismissed?: boolean;
 }
 
 export interface MyPrefsResponse {
@@ -825,4 +834,168 @@ export interface SettingsResponse {
   };
   mcp: Partial<HealthItem> & { public_url: string; internal_url: string };
   tenant: { tenant_id: string; auth_url: string; cluster_domain: string | null };
+}
+
+/* ---------------- Memory workspace: timeline, entities, usage ---------------- */
+
+export interface TimelineItem {
+  id: string;
+  stub: string;
+  scope: Scope;
+  scope_id: string | null;
+  owner_id: string;
+  weight: number;
+  version: number;
+  domains: string[];
+  created_at: string;
+  updated_at: string;
+  at: string;
+  redacted?: boolean;
+}
+
+export interface TimelineResponse {
+  items: TimelineItem[];
+  total: number;
+  truncated: boolean;
+  by: 'created' | 'updated';
+  days: number;
+  first: string | null;
+  now: string;
+  metadata_only: boolean;
+}
+
+export interface EntityMemory {
+  id: string;
+  stub: string;
+  scope: Scope;
+  scope_id: string | null;
+  owner_id: string;
+  weight: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntityDetail {
+  id: string;
+  name: string;
+  entity_type: string;
+  aliases: string[];
+  created_at: string;
+  memory_count: number;
+  hidden_mentions: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  scopes: Record<string, number>;
+  writers: { value: string; count: number }[];
+  projects: { value: string; count: number }[];
+  months: { month: string; count: number }[];
+  co_mentions: { id: string; name: string; type: string; count: number }[];
+  memories: EntityMemory[];
+}
+
+export interface EntityMergePreview {
+  source: { id: string; name: string; entity_type: string; aliases: string[] };
+  target: { id: string; name: string; entity_type: string; aliases: string[] };
+  moving: number;
+  both: number;
+  staying: number;
+  aliases_after: string[];
+  source_removed: boolean;
+  memories: { id: string; stub: string; scope: Scope }[];
+  dry_run: boolean;
+}
+
+export interface MemoryUsage {
+  days: number;
+  full_text?: boolean;
+  served: number;
+  used: number;
+  skipped: number;
+  full: number;
+  reads?: number;
+  last?: string | null;
+  use_rate: number | null;
+}
+
+export interface UsageSummary extends MemoryUsage {
+  memories_served: number;
+  skipped_most: { id: string; stub: string; scope: Scope; weight: number; served: number; used: number; skipped: number; use_rate: number | null; redacted?: boolean }[];
+}
+
+/* ---------------- Knowledge pages ---------------- */
+
+export interface KnowledgeFact {
+  text: string;
+  memory_id: string;
+  memory_ids: string[];
+  similar: number;
+  scope: Scope;
+  weight: number;
+  updated_at: string;
+  stale: boolean;
+  contradicted: number;
+}
+
+export interface KnowledgePage {
+  subject: { kind: 'me' | 'project'; id: string; title: string };
+  generated_at: string;
+  rebuilt: boolean;
+  truncated: boolean;
+  source_count: number;
+  last_source_change: string | null;
+  summary: { facts: number; folded: number; sections: number; entities: number; open_questions: number; stale: number };
+  highlights: KnowledgeFact[];
+  sections: { title: string; facts: KnowledgeFact[] }[];
+  entities: { id: string; name: string; type: string; count: number }[];
+  recent: { memory_id: string; text: string; updated_at: string; change: 'new' | 'updated'; version: number }[];
+  questions: { kind: 'contradiction'; memory_id: string; text: string; count: number }[];
+  stale: KnowledgeFact[];
+  changes: { since: string | null; added: { memory_id: string; text: string }[]; removed: { memory_id: string; text: string }[] } | null;
+  scopes: Record<string, number>;
+}
+
+export interface KnowledgeIndexItem {
+  kind: 'me' | 'project';
+  id: string;
+  title: string;
+  source_count: number;
+  generated_at: string | null;
+  fresh: boolean;
+  summary: KnowledgePage['summary'] | null;
+  sections: string[];
+}
+
+/* ---------------- Notifications & onboarding ---------------- */
+
+export interface NotificationItem {
+  id: string;
+  kind: 'break_glass' | 'contradiction' | 'reads' | 'dream' | 'review';
+  severity: 'danger' | 'warning' | 'info';
+  title: string;
+  body: string;
+  at: string | null;
+  href: string;
+  unread: boolean;
+}
+
+export interface NotificationsResponse {
+  items: NotificationItem[];
+  unread: number;
+  seen_at: string | null;
+}
+
+export interface OnboardingStep {
+  id: string;
+  title: string;
+  body: string;
+  href: string;
+  done: boolean;
+}
+
+export interface Onboarding {
+  steps: OnboardingStep[];
+  done: number;
+  total: number;
+  dismissed: boolean;
 }

@@ -4,7 +4,7 @@ import { PageHeader, useApp } from '@/components/Shell';
 import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby, Status } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash } from '@/hooks/useHashRoute';
-import type { Overview as OverviewData, OverviewRange } from '@/types';
+import type { Onboarding, UsageSummary, Overview as OverviewData, OverviewRange } from '@/types';
 import { fmtInt, fmtTime, scopeMeta } from '@/utils/format';
 import { ACTIVITY_RANGES, ActivityChart, PIE_COLORS, PieChart } from '@/components/charts';
 import { actorKind, actorName, decisionOf, EventTarget, WriteMemoryModal } from './common';
@@ -126,6 +126,9 @@ const Overview: React.FC = () => {
             </a>
           </div>
         )}
+
+        {role !== 'admin' && <GettingStarted />}
+        {role !== 'admin' && !empty && <AgentUsage />}
 
         <div className="grid-kpi">
           <KpiCard
@@ -456,3 +459,96 @@ const Header: React.FC<{ tenant: string; onWrite: () => void }> = ({ tenant, onW
 );
 
 export default Overview;
+
+/** Getting started: what a new user still has to do. Hidden once done or dismissed. */
+const GettingStarted: React.FC = () => {
+  const { data, setData } = useApi<Onboarding>(() => api.onboarding(), []);
+  if (!data?.steps || data.dismissed || data.done === data.total) return null;
+  const dismiss = () => {
+    setData({ ...data, dismissed: true });
+    api.saveMyPrefs({ onboarding_dismissed: true }).catch(() => undefined);
+  };
+  return (
+    <section className="card" aria-label="Getting started">
+      <div className="ch">
+        <div>
+          <h3>Getting started</h3>
+          <p className="sm muted" style={{ margin: '4px 0 0' }}>
+            {data.done} of {data.total} done. Each step takes a minute.
+          </p>
+        </div>
+        <button type="button" className="btn bl sm" onClick={dismiss}>
+          Hide
+        </button>
+      </div>
+      <div className="bar thin" style={{ marginTop: 10 }}>
+        <span style={{ width: `${Math.round((data.done / data.total) * 100)}%` }} />
+      </div>
+      <div className="onb">
+        {data.steps.map((s) => (
+          <a key={s.id} href={buildHash(s.href)} className={s.done ? 'done' : ''}>
+            <span className="chk" aria-hidden="true">
+              {s.done ? '✓' : ''}
+            </span>
+            <span>
+              <span className="sm b6" style={{ display: 'block' }}>
+                {s.title}
+                {s.done && <span className="vh"> (done)</span>}
+              </span>
+              <span className="hint">{s.body}</span>
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+/** Do agents act on what search returns? The memories they keep skipping. */
+const AgentUsage: React.FC = () => {
+  const { data } = useApi<UsageSummary>(() => api.usageSummary(30), []);
+  if (!data || !data.served || !data.skipped_most) return null;
+  const pct = data.use_rate === null ? null : Math.round(data.use_rate * 100);
+  return (
+    <section className="card" aria-label="Agent usage">
+      <div className="ch">
+        <h3>Do agents use what they get?</h3>
+        <span className="sm muted">Last 30 days</span>
+      </div>
+      <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ flex: '0 1 260px' }}>
+          <div className="statv">{pct === null ? '—' : `${pct}%`}</div>
+          <div className="hint">
+            of {fmtInt(data.used + data.skipped)} measured search hits were acted on — read, updated, linked or reported by the same agent within 30 minutes. {fmtInt(data.full)} more were delivered in full (weight ≥ 0.80).
+          </div>
+        </div>
+        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+          <div className="sm b6" style={{ marginBottom: 6 }}>
+            Skipped most often
+          </div>
+          {data.skipped_most.length === 0 ? (
+            <p className="sm muted" style={{ margin: 0 }}>
+              Nothing stands out — agents act on what they get.
+            </p>
+          ) : (
+            data.skipped_most.slice(0, 5).map((m) => (
+              <a key={m.id} className="conn link-plain" href={buildHash(`/memory/${m.id}`)}>
+                <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>
+                  {m.stub}
+                </span>
+                <span className="hint" style={{ whiteSpace: 'nowrap' }}>
+                  skipped {m.skipped} of {m.served}
+                </span>
+              </a>
+            ))
+          )}
+          {data.skipped_most.length > 0 && (
+            <p className="hint" style={{ margin: '6px 0 0' }}>
+              Rewrite them more clearly, lower their weight, or let Dreaming fade them.
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+};
