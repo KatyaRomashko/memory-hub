@@ -63,7 +63,11 @@ spec:
         # dashboard as another identity / role without logging out).
         # Set to "false" or remove before production.
         - name: MEMORYHUB_UI_TEST_MODE
-          value: "true"
+          value: "false"
+        # Release 1 surface: features beyond R1 (knowledge pages, packs,
+        # retrieval checks, entity merge…) stay hidden unless set to "true".
+        - name: MEMORYHUB_UI_LABS
+          value: "false"
         - name: MEMORYHUB_ADMIN_KEY
           valueFrom:
             secretKeyRef:

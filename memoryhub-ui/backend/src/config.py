@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     # Background scheduler inside the BFF: runs due dreams (nightly / weekly)
     # and rebuilds stale knowledge pages. One replica works per tick
     # (Postgres advisory lock).
+    # Run the UI's Alembic migrations (backend/migrations) when the app starts.
+    # Turn off when a deploy step runs `alembic upgrade head` instead.
+    ui_migrate_on_start: bool = True
+    # MemoryHub Labs: dashboard features beyond the Release 1 scope (knowledge
+    # pages, documents, context packs, retrieval checks, memory hygiene,
+    # entity merge). Off by default; their API answers 404 while off.
+    ui_labs: bool = False
     ui_scheduler_enabled: bool = True
     ui_scheduler_interval_s: int = 300
 

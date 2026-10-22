@@ -97,57 +97,11 @@ def password_problems(password: str, min_length: int) -> list[str]:
 # Storage
 # ---------------------------------------------------------------------------
 
-_ready = False
-
 
 async def ensure_tables(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {ACCOUNTS} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                username VARCHAR(64) NOT NULL,
-                email VARCHAR(320) NOT NULL,
-                display_name VARCHAR(255) NOT NULL,
-                password_hash TEXT NOT NULL,
-                role VARCHAR(16) NOT NULL DEFAULT 'user',
-                status VARCHAR(16) NOT NULL DEFAULT 'active',
-                job_title VARCHAR(255),
-                requested_projects JSONB,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_login_at TIMESTAMPTZ,
-                approved_by VARCHAR(255),
-                invited_by VARCHAR(255),
-                UNIQUE (tenant_id, username),
-                UNIQUE (tenant_id, email)
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {INVITES} (
-                code VARCHAR(64) PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                role VARCHAR(16) NOT NULL DEFAULT 'user',
-                email VARCHAR(320),
-                note VARCHAR(255),
-                created_by VARCHAR(255) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at TIMESTAMPTZ NOT NULL,
-                used_by VARCHAR(255),
-                used_at TIMESTAMPTZ
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _account_row(row: Any) -> dict:

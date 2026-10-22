@@ -98,7 +98,7 @@ def test_usage_signal():
 
 
 @pytest.mark.asyncio
-async def test_admins_get_no_knowledge_or_entity_pages(monkeypatch):
+async def test_admins_get_no_knowledge_or_entity_pages(monkeypatch, labs_on):
     admin = Viewer(username="dk", name="dk", email=None, source="account", role="admin")
     monkeypatch.setattr("src.access.viewer_from_request", lambda request, settings: admin)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -181,7 +181,7 @@ def test_document_passages_keep_offsets_and_relocate():
 
 
 @pytest.mark.asyncio
-async def test_admins_get_no_content_features(monkeypatch):
+async def test_admins_get_no_content_features(monkeypatch, labs_on):
     admin = Viewer(username="dk", name="dk", email=None, source="account", role="admin")
     monkeypatch.setattr("src.access.viewer_from_request", lambda request, settings: admin)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
@@ -195,3 +195,51 @@ async def test_admins_get_no_content_features(monkeypatch):
         ]:
             resp = await getattr(client, method)(path, **({"json": {"query": "x"}} if method == "post" else {}))
             assert resp.status_code == 403, path
+
+
+def test_every_ui_table_has_a_migration():
+    """Tables are created by Alembic only; any new memoryhub_ui_* table needs a revision."""
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    used = set()
+    for path in (root / "src").glob("*.py"):
+        used |= set(re.findall(r"memoryhub_ui_[a-z_]+", path.read_text()))
+    used -= {"memoryhub_ui_session", "memoryhub_ui_view_as"}  # cookies, not tables
+    migrated = set()
+    for path in (root / "migrations" / "versions").glob("*.py"):
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        migrated |= set(getattr(mod, "TABLES", []))
+    assert not (used - migrated), f"tables without a migration: {sorted(used - migrated)}"
+    for path in (root / "src").glob("*.py"):
+        assert "CREATE TABLE" not in path.read_text(), f"{path.name} creates a table outside Alembic"
+
+
+@pytest.mark.asyncio
+async def test_labs_features_are_off_by_default(monkeypatch):
+    user = Viewer(username="ar", name="ar", email=None, source="account", role="user")
+    monkeypatch.setattr("src.access.viewer_from_request", lambda request, settings: user)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        for path in [
+            "/api/knowledge",
+            "/api/context-packs",
+            "/api/documents",
+            "/api/checks",
+            "/api/dreams",
+            "/api/search/health",
+        ]:
+            resp = await client.get(path)
+            assert resp.status_code == 404 and "Labs" in resp.json()["detail"], path
+
+
+@pytest.mark.asyncio
+async def test_users_cannot_edit_curation_rules(monkeypatch):
+    user = Viewer(username="ar", name="ar", email=None, source="account", role="user")
+    monkeypatch.setattr("src.routes.viewer_from_request", lambda request, settings: user)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post("/api/rules", json={"name": "x", "tier": "embedding", "action": "flag", "config": {}})
+        assert resp.status_code == 403 and "Preferences" in resp.json()["detail"]

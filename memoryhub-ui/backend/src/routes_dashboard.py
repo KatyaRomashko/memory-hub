@@ -121,6 +121,7 @@ async def me(request: Request, settings: SettingsDep):
         "real_username": viewer.real_username,
         "real_role": viewer.real_role,
         "test_mode": settings.ui_test_mode,
+        "labs": settings.ui_labs,
         "tenant_id": settings.ui_tenant_id,
     }
 
@@ -1519,18 +1520,23 @@ async def _writable(db: AsyncSession, settings: Settings, viewer, node: MemoryNo
 
 
 async def _writable_scope(db: AsyncSession, settings: Settings, viewer, scope: str, scope_id: str | None) -> None:
+    """New memories follow the MCP server's write rules (``src.authz.authorize_write``)."""
+    from src.authz import person_can_write
+
     if viewer.redacts_content:
         raise HTTPException(status_code=403, detail="Platform admins cannot write memories")
     if not viewer.restricted:
         return
     if scope in ("organizational", "enterprise"):
         raise HTTPException(status_code=403, detail="Write it to your own scope and propose a promotion instead")
-    if scope == "user":
-        return
     grants = (await access_for(db, settings, viewer)).grants
-    allowed = {"project": grants.projects, "role": grants.roles, "campaign": grants.campaigns}.get(scope, set())
-    if not scope_id or scope_id not in allowed:
-        raise HTTPException(status_code=403, detail=f"You are not a member of that {scope}")
+    owner = viewer.username if scope == "user" else (scope_id or "")
+    if not person_can_write(grants, settings.ui_tenant_id, scope, owner, scope_id):
+        detail = {
+            "role": "Role memories are written by service agents, not people",
+            "campaign": "Your project is not enrolled in that campaign",
+        }.get(scope, f"You are not a member of that {scope}")
+        raise HTTPException(status_code=403, detail=detail)
 
 
 @router.post("/api/memories", status_code=201)
@@ -1803,6 +1809,7 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
     tenant_id = settings.ui_tenant_id
     done: list[str] = []
     errors: list[dict] = []
+    forgotten: list[dict] = []
     for raw_id in body.ids:
         try:
             node = await _load_memory(db, tenant_id, raw_id)
@@ -1838,9 +1845,9 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
                 )
                 done.append(str(updated.id))
             elif body.action == "delete":
-                from src.routes import delete_memory as delete_route
+                from src.routes import forget_memory
 
-                await delete_route(raw_id, db, settings, viewer)
+                forgotten.append(await forget_memory(raw_id, db, settings, viewer))
                 await audit(
                     db,
                     tenant_id=tenant_id,
@@ -1863,7 +1870,7 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
         except HTTPException as exc:
             errors.append({"id": raw_id, "detail": exc.detail})
     await db.commit()
-    return {"done": done, "errors": errors}
+    return {"done": done, "errors": errors, "forgotten": forgotten}
 
 
 @router.post("/api/memory/{memory_id}/promote", status_code=201)

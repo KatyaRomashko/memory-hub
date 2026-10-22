@@ -27,7 +27,7 @@ from memoryhub_core.models.campaign import CampaignMembership
 from memoryhub_core.models.memory import MemoryNode
 from memoryhub_core.models.project import ProjectMembership
 from memoryhub_core.models.role import RoleAssignment
-from sqlalchemy import and_, false, or_, select
+from sqlalchemy import false, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings, get_settings
@@ -40,6 +40,17 @@ OPEN_SCOPES_DEFAULT = tuple(DEFAULT_TENANT_SETTINGS["privacy"]["admin_readable_s
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
+
+
+def require_labs(settings: Annotated[Settings, Depends(get_settings)]) -> None:
+    """Gate for MemoryHub Labs features (MEMORYHUB_UI_LABS)."""
+    if not settings.ui_labs:
+        raise HTTPException(
+            status_code=404, detail="This is a MemoryHub Labs feature; set MEMORYHUB_UI_LABS=true to enable it"
+        )
+
+
+LabsDep = Depends(require_labs)
 
 
 def current_viewer(request: Request, settings: Annotated[Settings, Depends(get_settings)]) -> Viewer:
@@ -94,6 +105,7 @@ class Grants:
     campaigns: set[str] = field(default_factory=set)
     # The person's own agents (see ownership.py): their memories are the person's too.
     agents: set[str] = field(default_factory=set)
+    tenant_id: str = "default"
 
     @property
     def identities(self) -> set[str]:
@@ -133,41 +145,33 @@ async def load_grants(db: AsyncSession, tenant_id: str, identity: str) -> Grants
             .scalars()
             .all()
         }
-    return Grants(identity=identity, projects=projects, roles=roles, campaigns=campaigns, agents=agents)
+    return Grants(
+        identity=identity, projects=projects, roles=roles, campaigns=campaigns, agents=agents, tenant_id=tenant_id
+    )
 
 
 def readable_clause(grants: Grants, node=MemoryNode):
-    """SQL version of the agent read RBAC for one identity."""
-    sid = node.scope_id
-    clauses = [
-        node.scope.in_(("organizational", "enterprise")),
-        and_(node.scope == "user", node.owner_id.in_(grants.identities)),
-    ]
-    if grants.projects:
-        clauses.append(and_(node.scope == "project", or_(sid.in_(grants.projects), node.owner_id.in_(grants.projects))))
-    if grants.roles:
-        clauses.append(and_(node.scope == "role", or_(sid.in_(grants.roles), node.owner_id.in_(grants.roles))))
-    if grants.campaigns:
-        clauses.append(
-            and_(node.scope == "campaign", or_(sid.in_(grants.campaigns), node.owner_id.in_(grants.campaigns)))
-        )
-    return or_(*clauses)
+    """SQL read predicate for a person — the MCP server's rules (see ``src.authz``)."""
+    from src.authz import read_clause
+
+    return read_clause(grants, grants.tenant_id, node)
+
+
+class _WithTenant:
+    """Duck-typed memory for rows that do not carry ``tenant_id`` (already tenant-filtered)."""
+
+    def __init__(self, n: Any, tenant_id: str):
+        self.scope = n.scope
+        self.scope_id = getattr(n, "scope_id", None)
+        self.owner_id = n.owner_id
+        self.tenant_id = getattr(n, "tenant_id", None) or tenant_id
 
 
 def readable_python(grants: Grants):
+    from src.authz import person_can_read
+
     def visible(n: Any) -> bool:
-        if n.scope in ("organizational", "enterprise"):
-            return True
-        key = n.scope_id or n.owner_id
-        if n.scope == "user":
-            return n.owner_id in grants.identities
-        if n.scope == "project":
-            return key in grants.projects
-        if n.scope == "role":
-            return key in grants.roles
-        if n.scope == "campaign":
-            return key in grants.campaigns
-        return False
+        return person_can_read(grants, grants.tenant_id, _WithTenant(n, grants.tenant_id))
 
     return visible
 

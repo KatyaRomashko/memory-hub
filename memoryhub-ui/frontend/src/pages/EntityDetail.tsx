@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import { PageHeader } from '@/components/Shell';
+import { PageHeader, useApp } from '@/components/Shell';
 import { Empty, ErrorState, Modal, ScopeLabel, SkLines, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
@@ -21,6 +21,7 @@ const typeOf = (t: string) => TYPES.find((x) => x.value === t) ?? { value: t, la
 const EntityDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
   const id = route.path.split('/')[2] ?? '';
   const toast = useToast();
+  const { me } = useApp();
   const { data, error, loading, reload } = useApi<EntityDetailT>(() => api.entity(id), [id]);
   const [modal, setModal] = useState<null | 'edit' | 'merge'>(null);
 
@@ -73,12 +74,16 @@ const EntityDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
         actions={
           e && (
             <>
-              <button type="button" className="btn bg" onClick={() => setModal('edit')}>
-                Rename · aliases
-              </button>
-              <button type="button" className="btn bs" onClick={() => setModal('merge')}>
-                Merge into…
-              </button>
+              {me?.labs && (
+                <>
+                  <button type="button" className="btn bg" onClick={() => setModal('edit')}>
+                    Rename · aliases
+                  </button>
+                  <button type="button" className="btn bs" onClick={() => setModal('merge')}>
+                    Merge into…
+                  </button>
+                </>
+              )}
               <a className="btn bp" href={buildHash('/memories', filter)}>
                 Open in Memory browser
               </a>

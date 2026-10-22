@@ -9,10 +9,14 @@ import { errorMessage, fmtInt, fmtRelative, fmtWeight, shortId } from '@/utils/f
 import { WriteMemoryModal } from './common';
 
 /**
- * Dreaming — while you are away, MemoryHub reviews your memories the way sleep
- * consolidates the day: it spots duplicates, missing links, memories nobody
- * uses any more, contradictions and themes worth one consolidated memory.
- * Nothing changes without your OK, except the safe kinds you let run alone.
+ * Memory hygiene (MemoryHub Labs) — the dashboard reviews the memories you can
+ * read and spots duplicates, missing links, memories nobody uses any more,
+ * contradictions and themes worth one consolidated memory. Nothing changes
+ * without your OK, except the safe kinds you let run alone.
+ *
+ * Not to be confused with MemoryHub's Dreaming, the LLM extraction pipeline in
+ * the MCP server (memories tagged source: dreaming). Its candidates get their
+ * own review screen once the backend exposes them (R1-020 / R1-023).
  */
 
 const KIND: Record<DreamKind, { label: string; verb: string; cls: string; icon: string; blurb: string }> = {
@@ -48,7 +52,7 @@ const localToUtc = (hhmm: string): string => {
 
 /** When the server scheduler runs the next dream (same rule as src/scheduler.py). */
 const nextRun = (s: DreamSettings, lastRun?: string | null): string => {
-  if (s.schedule === 'off') return 'Off — dream only when you ask';
+  if (s.schedule === 'off') return 'Off — run only when you ask';
   const [h, m] = s.window.split(':').map(Number);
   const next = new Date();
   next.setUTCHours(h, m, 0, 0);
@@ -77,7 +81,7 @@ const Dreaming: React.FC = () => {
     setBusy(true);
     try {
       const res = await api.dreamNow(trigger);
-      toast(`Dream finished: ${fmtInt(res.reviewed)} memories reviewed, ${res.insights.length} insights.`);
+      toast(`Hygiene run finished: ${fmtInt(res.reviewed)} memories reviewed, ${res.insights.length} insights.`);
       reload();
     } catch (e) {
       toast(errorMessage(e), 'err');
@@ -120,12 +124,12 @@ const Dreaming: React.FC = () => {
   return (
     <>
       <PageHeader
-        title="Dreaming"
-        description="While you are away, MemoryHub reviews your memories the way sleep consolidates a day: duplicates, missing links, memories nobody uses, contradictions and themes. Nothing changes without your OK."
+        title="Memory hygiene"
+        description="Housekeeping for the memories you can read: duplicates, missing links, memories nobody uses, contradictions and themes. Nothing changes without your OK. Separate from MemoryHub Dreaming, which extracts memories from conversations."
         actions={
           <button type="button" className="btn bp" disabled={busy || !data} onClick={() => dreamNow()}>
             <MoonIcon />
-            {busy ? 'Dreaming…' : 'Dream now'}
+            {busy ? 'Running…' : 'Run now'}
           </button>
         }
         tabs={
@@ -161,7 +165,7 @@ const Dreaming: React.FC = () => {
                 <div className="dream-hero-in">
                   <div>
                     <div className="sm" style={{ color: '#c7c7c7' }}>
-                      Next dream
+                      Next run
                     </div>
                     <div className="num-lg" style={{ color: '#fff' }}>
                       {data ? nextRun(data.settings, data.last?.started_at) : "—"}
@@ -169,7 +173,7 @@ const Dreaming: React.FC = () => {
                   </div>
                   <div>
                     <div className="sm" style={{ color: '#c7c7c7' }}>
-                      Last dream
+                      Last run
                     </div>
                     <div className="num-lg" style={{ color: '#fff' }}>
                       {report ? fmtRelative(report.started_at) : 'Never'}
@@ -194,14 +198,14 @@ const Dreaming: React.FC = () => {
               {!report ? (
                 <section className="card">
                   <Empty
-                    title="No dreams yet"
+                    title="No hygiene runs yet"
                     action={
                       <button type="button" className="btn bp" disabled={busy} onClick={() => dreamNow()}>
-                        Dream now
+                        Run now
                       </button>
                     }
                   >
-                    Your first dream reviews the memories you can read and proposes housekeeping. It takes a few seconds and changes nothing on its own.
+                    Your first run reviews the memories you can read and proposes housekeeping. It takes a few seconds and changes nothing on its own.
                   </Empty>
                 </section>
               ) : shown.length === 0 ? (
@@ -219,7 +223,7 @@ const Dreaming: React.FC = () => {
               {data && (
                 <section className="card">
                   <h3>Schedule</h3>
-                  <div className="seg full" role="group" aria-label="Dream schedule" style={{ marginTop: 14 }}>
+                  <div className="seg full" role="group" aria-label="Hygiene schedule" style={{ marginTop: 14 }}>
                     {(['nightly', 'weekly', 'off'] as const).map((s) => (
                       <button key={s} type="button" className={data.settings.schedule === s ? 'on' : ''} aria-pressed={data.settings.schedule === s} onClick={() => saveSettings({ schedule: s })}>
                         {s === 'nightly' ? 'Nightly' : s === 'weekly' ? 'Weekly' : 'Off'}
@@ -228,7 +232,7 @@ const Dreaming: React.FC = () => {
                   </div>
                   {data.settings.schedule !== 'off' && (
                     <div className="f" style={{ marginTop: 14 }}>
-                      <label htmlFor="dw">Dream at (your time)</label>
+                      <label htmlFor="dw">Run at (your time)</label>
                       <input id="dw" className="in auto" type="time" value={utcToLocal(data.settings.window)} onChange={(e) => e.target.value && saveSettings({ window: localToUtc(e.target.value) })} />
                       <span className="hint">
                         Runs on the server at this time even when the dashboard is closed, and refreshes your knowledge pages. Next: {nextRun(data.settings, data.last?.started_at)}.
@@ -254,7 +258,7 @@ const Dreaming: React.FC = () => {
                   </div>
 
                   <hr className="sep" style={{ margin: '18px 0' }} />
-                  <p className="fh">Let dreams act on their own</p>
+                  <p className="fh">Let runs act on their own</p>
                   <p className="hint" style={{ margin: '-4px 0 10px' }}>
                     Only reversible changes. Merges, reviews and summaries always wait for you.
                   </p>
@@ -269,7 +273,7 @@ const Dreaming: React.FC = () => {
 
               {data && data.history.length > 0 && (
                 <section className="card">
-                  <h3>Dream journal</h3>
+                  <h3>Run history</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', marginTop: 10 }}>
                     {data.history.map((h) => (
                       <div key={h.id} className="hrow">

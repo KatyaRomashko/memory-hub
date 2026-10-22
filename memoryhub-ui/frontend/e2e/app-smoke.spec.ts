@@ -285,7 +285,7 @@ test.describe('quality, packs, documents, operations', () => {
     await page.getByRole('link', { name: /Local dev pack/ }).click();
     await expect(page).toHaveURL(/#\/knowledge\/packs\/p1/);
     await expect(page.getByRole('link', { name: 'Context packs' }).first()).toHaveAttribute('href', '#/knowledge/packs');
-    await expect(page.getByText('12 of 2,000 tokens · 1 memories')).toBeVisible();
+    await expect(page.getByText('≈12 of 2,000 tokens')).toBeVisible();
     await expect(page.getByText(/get_context_pack/)).toBeVisible();
   });
 
@@ -316,5 +316,83 @@ test.describe('quality, packs, documents, operations', () => {
     await page.goto('/#/operations');
     await expect(page.getByText('database timeout')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+  });
+});
+
+test.describe('Release 1 surface', () => {
+  test('Labs features are hidden when Labs is off', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { labs: false });
+    await page.goto('/#/overview');
+    const nav = page.getByRole('navigation');
+    await expect(nav.getByRole('link', { name: 'Memory browser', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Knowledge', exact: true })).toHaveCount(0);
+    await expect(nav.getByRole('link', { name: 'Memory hygiene', exact: true })).toHaveCount(0);
+    await page.goto('/#/knowledge');
+    await expect(page.getByText('A MemoryHub Labs feature')).toBeVisible();
+  });
+
+  test('old dreaming links open Memory hygiene', async ({ page }) => {
+    await page.goto('/#/dreaming');
+    await expect(page).toHaveURL(/#\/hygiene$/);
+    await expect(page.getByRole('heading', { name: 'Memory hygiene', exact: true })).toBeVisible();
+  });
+
+  test('users do not get the curation rules editor', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'user' });
+    await page.goto('/#/overview');
+    const nav = page.getByRole('navigation');
+    await expect(nav.getByRole('link', { name: 'Connection check', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Curation rules', exact: true })).toHaveCount(0);
+  });
+
+  test('connection check runs and explains each failure', async ({ page }) => {
+    await page.goto('/#/verify');
+    await expect(page.getByText('No check has run yet')).toBeVisible();
+    await page.getByRole('button', { name: 'Run check' }).first().click();
+    await expect(page.getByText('Something is broken')).toBeVisible();
+    const checks = page.getByRole('list', { name: 'Checks' });
+    await expect(checks.getByText('Service unavailable')).toBeVisible();
+    await expect(checks.getByText('round_trip.embeddings_unavailable')).toBeVisible();
+    await expect(checks.getByText('Next: Join a project in Projects & teams.')).toBeVisible();
+    await expect(checks.getByText('agent host').first()).toBeVisible();
+  });
+
+  test('host results can be pasted in', async ({ page }) => {
+    await page.goto('/#/verify');
+    await page.getByRole('button', { name: 'Add host result' }).click();
+    await page.getByLabel('Result JSON').fill('not json');
+    await page.getByRole('button', { name: 'Add result' }).click();
+    await expect(page.getByText('That is not valid JSON.')).toBeVisible();
+    await page.getByLabel('Result JSON').fill('{"schema":"memoryhub.verify/v1","checks":[{"id":"endpoint","status":"pass"}]}');
+    await page.getByRole('button', { name: 'Add result' }).click();
+    await expect(page.getByText('Host · claude-code')).toBeVisible();
+  });
+
+  test('connect page shows host support and the setup commands', async ({ page }) => {
+    await page.goto('/#/connect');
+    await expect(page.getByRole('cell', { name: /OpenCode/ })).toBeVisible();
+    await page.getByLabel('Project').selectOption('memoryhub-ui');
+    await expect(page.getByText('memoryhub config init --project memoryhub-ui --format claude-code')).toBeVisible();
+    await page.getByLabel('Host').selectOption('goose');
+    await expect(page.getByText('There is no Goose integration yet.', { exact: false })).toBeVisible();
+  });
+
+  test('memory-behavior profile is saved with a new revision', async ({ page }) => {
+    await page.goto('/#/preferences');
+    await expect(page.getByText('Agent hosts do not read it yet', { exact: false })).toBeVisible();
+    await page.getByRole('radio', { name: /Conservative/ }).check();
+    await expect(page.getByLabel('When to look for memories')).toHaveValue('explicit');
+    const put = page.waitForRequest((r) => r.url().endsWith('/api/me/prefs') && r.method() === 'PUT');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    const body = (await put).postDataJSON();
+    expect(body.behavior.template).toBe('conservative');
+    await expect(page.getByText('Profile revision 2', { exact: false })).toBeVisible();
+  });
+
+  test('token counts are labelled as estimates', async ({ page }) => {
+    await page.goto('/#/knowledge/packs/p1');
+    await expect(page.getByText('≈12 of 2,000 tokens')).toHaveAttribute('title', /Estimated/);
   });
 });

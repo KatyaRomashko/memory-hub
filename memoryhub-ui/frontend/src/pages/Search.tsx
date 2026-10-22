@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, Tabs, useApp } from '@/components/Shell';
-import { copyText, Dropdown, Empty, ErrorState, Icon, Modal, ScopeLabel, Seg, SkLines, Standby, useToast } from '@/components/ui';
+import { copyText, Dropdown, Empty, ErrorState, Icon, Modal, ScopeLabel, Seg, SkLines, Standby, Tokens, useToast } from '@/components/ui';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { DroppedMemory, ExplainResult, FunnelKey, SavedQuery, SearchRequest, SearchResponse } from '@/types';
-import { errorMessage, fmtInt, shortId, truncate } from '@/utils/format';
+import { errorMessage, shortId, truncate } from '@/utils/format';
 import { MemoryPicker, memoryHref } from './common';
 
 const ENTITY_ICON: Record<string, { color: string; d: string; label: string }> = {
@@ -505,7 +505,7 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
                     <div className="ch">
                       <h3>Pipeline · {Math.round(result.total_ms)} ms</h3>
                       <span className="sm muted">
-                        {result.returned} returned · {result.full_count} full · {result.stub_count} stubs · {fmtInt(result.tokens)} tokens ·{' '}
+                        {result.returned} returned · {result.full_count} full · {result.stub_count} stubs · <Tokens n={result.tokens} /> ·{' '}
                         {result.omitted_count} filtered by RBAC
                       </span>
                     </div>
@@ -539,7 +539,7 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
                             · retrieval check with {loaded.expected.length} expected{' '}
                             {loaded.expected.length === 1 ? 'memory' : 'memories'} ({results.filter((r) => loaded.expected.includes(r.id)).length} came back).
                           </>
-                        ) : loaded.mine ? (
+                        ) : loaded.mine && me?.labs ? (
                           ' · mark the memories it should return (☆) to turn it into a retrieval check.'
                         ) : (
                           '.'
@@ -612,9 +612,11 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
                             Compare settings
                           </button>
                         )}
-                        <button type="button" className="btn bl sm" onClick={saveAsPack} disabled={!results.length}>
-                          Save as context pack
-                        </button>
+                        {me?.labs && (
+                          <button type="button" className="btn bl sm" onClick={saveAsPack} disabled={!results.length}>
+                            Save as context pack
+                          </button>
+                        )}
                       </span>
                     </div>
                     {tab === 'dropped' && <DroppedList result={result} stage={dropStage} setStage={setDropStage} />}
@@ -636,7 +638,7 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
                                   <span className="lbl g">{expanded ? 'full' : r.delivery}</span>
                                   <span className="sm muted">{r.scope === 'campaign' ? `campaign:${r.scope_id ?? r.owner_id}` : r.scope_id ?? r.owner_id}</span>
                                   {r.downgraded && <span className="lbl ylw">stub · budget</span>}
-                                  {loaded?.mine && (
+                                  {loaded?.mine && me?.labs && (
                                     <button
                                       type="button"
                                       className={`star ${loaded.expected.includes(r.id) ? 'on' : ''}`}
@@ -680,7 +682,7 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
                                     weight <b>{r.scores.weight.toFixed(2)}</b>
                                   </span>
                                   <span>
-                                    tokens <b>{r.tokens}</b>
+                                    <b><Tokens n={r.tokens} /></b>
                                   </span>
                                 </div>
                               </div>
@@ -727,7 +729,7 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
             setTab('ranked');
             void loadSaved();
             refreshCounts();
-            toast('Saved. Mark the memories it should return (☆) to make it a retrieval check.');
+            toast(me?.labs ? 'Saved. Mark the memories it should return (☆) to make it a retrieval check.' : 'Query saved.');
           }}
         />
       )}
@@ -925,7 +927,7 @@ const CompareCard: React.FC<{
   const Col: React.FC<{ res: SearchResponse; other: Record<string, number>; side: 'A' | 'B' }> = ({ res, other, side }) => (
     <div style={{ flex: '1 1 260px', minWidth: 0 }}>
       <div className="sm b6" style={{ marginBottom: 6 }}>
-        {side} · {res.returned} returned · {Math.round(res.total_ms)} ms · {fmtInt(res.tokens)} tokens
+        {side} · {res.returned} returned · {Math.round(res.total_ms)} ms · <Tokens n={res.tokens} />
       </div>
       {res.results.map((r) => {
         const o = other[r.id];

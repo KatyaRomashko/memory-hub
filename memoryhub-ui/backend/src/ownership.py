@@ -28,30 +28,12 @@ from src.config import Settings
 logger = logging.getLogger(__name__)
 
 OWNERS = "memoryhub_ui_agent_owners"
-_ready = False
 
 
 async def ensure_table(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {OWNERS} (
-                tenant_id VARCHAR(255) NOT NULL,
-                client_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                assigned_by VARCHAR(255) NOT NULL,
-                how VARCHAR(32) NOT NULL,
-                assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (tenant_id, client_id)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 async def explicit_owners(db: AsyncSession, tenant_id: str) -> dict[str, str]:

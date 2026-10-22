@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, AUTH_REQUIRED_EVENT } from '@/api/client';
-import { AppProvider, canSee, NAV, Shell, useApp } from '@/components/Shell';
+import { AppProvider, canSee, isLabsPath, NAV, Shell, useApp } from '@/components/Shell';
 import { Empty } from '@/components/ui';
 import { ToastProvider } from '@/components/ui';
 import { navigate, useHashRoute, type HashRoute } from '@/hooks/useHashRoute';
@@ -26,6 +26,8 @@ import Projects from '@/pages/Projects';
 import Review from '@/pages/Review';
 import Search from '@/pages/Search';
 import Settings from '@/pages/Settings';
+import Connect from '@/pages/Connect';
+import Verify from '@/pages/Verify';
 
 interface Screen {
   nav: string;
@@ -46,7 +48,7 @@ const SCREENS: Record<string, Screen> = {
   '/operations': { nav: '/operations', title: 'Operations', render: () => <Operations /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <Projects route={r} /> },
-  '/dreaming': { nav: '/dreaming', title: 'Dreaming', render: () => <Dreaming /> },
+  '/hygiene': { nav: '/hygiene', title: 'Memory hygiene', render: () => <Dreaming /> },
   '/reads': { nav: '/reads', title: 'Who read my memories', render: (r) => <WhoRead route={r} /> },
   '/preferences': { nav: '/preferences', title: 'Preferences & privacy', render: () => <Preferences /> },
   '/review': { nav: '/review', title: 'Review queue', render: (r) => <Review route={r} /> },
@@ -54,6 +56,8 @@ const SCREENS: Record<string, Screen> = {
   '/audit': { nav: '/audit', title: 'Audit & forensics', render: (r) => <Audit route={r} /> },
   '/identities': { nav: '/identities', title: 'Users & agents', render: (r) => <Identities route={r} /> },
   '/clients': { nav: '/clients', title: 'OAuth clients & keys', render: (r) => <Clients route={r} /> },
+  '/connect': { nav: '/connect', title: 'Connect an agent', render: () => <Connect /> },
+  '/verify': { nav: '/verify', title: 'Connection check', render: () => <Verify /> },
   '/settings': { nav: '/settings', title: 'Settings', render: () => <Settings /> },
 };
 
@@ -65,6 +69,7 @@ const LEGACY: Record<string, { path: string; params?: Record<string, string> }> 
   '/rules': { path: '/curation' },
   '/documents': { path: '/knowledge/documents' },
   '/packs': { path: '/knowledge/packs' },
+  '/dreaming': { path: '/hygiene' },
   '/users': { path: '/identities' },
 };
 
@@ -74,6 +79,17 @@ const AUTH_PATHS = ['/login', '/register', '/setup'];
 const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, children }) => {
   const { me, role } = useApp();
   const listed = NAV.some((s) => s.items.some((i) => i.path === nav));
+  if (me && isLabsPath(nav) && !me.labs) {
+    return (
+      <div className="body">
+        <div className="card">
+          <Empty title="A MemoryHub Labs feature">
+            This screen goes beyond the Release 1 scope and is switched off on this deployment. An operator can turn Labs on with MEMORYHUB_UI_LABS=true.
+          </Empty>
+        </div>
+      </div>
+    );
+  }
   if (!me || !listed || canSee(nav, role)) return <>{children}</>;
   return (
     <div className="body">

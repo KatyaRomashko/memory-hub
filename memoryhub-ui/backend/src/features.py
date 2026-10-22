@@ -47,7 +47,7 @@ async def nav_features(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
             db, "SELECT count(*) FROM memoryhub_ui_search_runs WHERE tenant_id = :t", {"t": t}
         )
         out["jobs"] = await _count(db, "SELECT count(*) FROM memoryhub_ui_jobs WHERE tenant_id = :t", {"t": t})
-        return out
+        return _without_labs(settings, out)
 
     acc = await access_for(db, settings, viewer)
     knowledge = 0
@@ -83,4 +83,14 @@ async def nav_features(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
         db, "SELECT count(*) FROM memoryhub_ui_search_runs WHERE tenant_id = :t AND viewer = :o", mine
     )
     out["jobs"] = await _count(db, "SELECT count(*) FROM memoryhub_ui_jobs WHERE tenant_id = :t AND owner = :o", mine)
-    return out
+    return _without_labs(settings, out)
+
+
+LABS_FEATURES = ("knowledge", "documents", "packs", "checks", "check_runs", "search_runs")
+
+
+def _without_labs(settings: Settings, out: dict) -> dict:
+    """While MemoryHub Labs is off, Labs tabs never appear in the menu."""
+    if not settings.ui_labs:
+        out.update({k: 0 for k in LABS_FEATURES if k in out})
+    return {**out, "labs": int(settings.ui_labs)}

@@ -33,6 +33,10 @@ RUN pip install --no-cache-dir ./memoryhub_core/
 # Copy backend application code
 COPY --chown=1001:0 backend/src/ ./src/
 
+# UI schema migrations (Alembic, run on startup: MEMORYHUB_UI_MIGRATE_ON_START)
+COPY --chown=1001:0 backend/migrations/ ./migrations/
+COPY --chown=1001:0 backend/alembic.ini ./alembic.ini
+
 # Copy built frontend from stage 1 (vite outputs to dist/ relative to project root)
 COPY --from=frontend-build /opt/app-root/src/dist ./frontend/dist
 

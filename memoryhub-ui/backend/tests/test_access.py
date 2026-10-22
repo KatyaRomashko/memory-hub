@@ -196,7 +196,7 @@ async def test_switch_endpoint_is_hidden_outside_test_mode():
 
 
 @pytest.mark.asyncio
-async def test_admins_cannot_dream_over_content(monkeypatch):
+async def test_admins_cannot_dream_over_content(monkeypatch, labs_on):
     admin = Viewer(username="dk", name="dk", email=None, source="account", role="admin")
     monkeypatch.setattr("src.access.viewer_from_request", lambda request, settings: admin)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

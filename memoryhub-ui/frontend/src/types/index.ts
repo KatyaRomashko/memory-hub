@@ -19,6 +19,8 @@ export interface Me {
   real_username?: string | null;
   real_role?: Role | null;
   test_mode?: boolean;
+  /** MemoryHub Labs features beyond Release 1 are on (MEMORYHUB_UI_LABS). */
+  labs?: boolean;
   tenant_id: string;
 }
 
@@ -488,15 +490,38 @@ export interface ProjectDetail extends ProjectRow {
   loading_policy: string;
 }
 
+export interface BehaviorProfile {
+  schema: string;
+  revision: number;
+  template: 'balanced' | 'conservative' | 'proactive' | 'custom';
+  include: string[];
+  exclude: string[];
+  custom_exclude: string[];
+  confirmation: 'always' | 'sensitive' | 'never';
+  cadence: 'every_turn' | 'session_end' | 'explicit';
+  update: 'supersede' | 'branch' | 'ask';
+  updated_at: string | null;
+}
+
 export interface MyPrefs {
   write: { default_scope: string; default_weight: number };
   privacy: { allow_promotion_by_others: boolean; show_in_team_directory: boolean };
   dreaming_fade_days: number;
   onboarding_dismissed?: boolean;
+  behavior: BehaviorProfile;
+  behavior_history?: BehaviorProfile[];
 }
 
 export interface MyPrefsResponse {
   prefs: MyPrefs;
+  profile: {
+    schema: string;
+    templates: Record<string, BehaviorProfile>;
+    categories: string[];
+    excludes: string[];
+    choices: Record<'confirmation' | 'cadence' | 'update', string[]>;
+    applied_by: string[];
+  };
   account: {
     username: string;
     name: string;
@@ -1247,4 +1272,40 @@ export interface NavFeatures {
   check_runs?: number;
   search_runs?: number;
   jobs?: number;
+}
+
+export type VerifyStatus = 'pass' | 'warn' | 'fail' | 'not_run';
+
+export interface VerifyCheck {
+  id: string;
+  title: string;
+  status: VerifyStatus;
+  category: string | null;
+  category_label: string | null;
+  code: string | null;
+  explanation: string;
+  next_action: string | null;
+  source: 'dashboard' | 'host';
+  duration_ms: number | null;
+}
+
+export interface VerifyResult {
+  id: string;
+  created_at: string;
+  schema: string;
+  source: 'dashboard' | 'host';
+  produced_by: Record<string, string | null>;
+  started_at: string | null;
+  finished_at: string | null;
+  context: Record<string, unknown>;
+  checks: VerifyCheck[];
+  summary: { pass: number; warn: number; fail: number; not_run: number; state: 'pass' | 'warn' | 'fail' | 'partial' };
+}
+
+export interface VerifyList {
+  schema: string;
+  checks: { id: string; title: string }[];
+  categories: { id: string; label: string }[];
+  host_command: string | null;
+  results: VerifyResult[];
 }

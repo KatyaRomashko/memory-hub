@@ -512,8 +512,14 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
           danger
           onClose={() => setModal(null)}
           onConfirm={async () => {
-            await api.deleteMemory(id);
-            toast('Memory deleted.');
+            const res = await api.bulk({ action: 'delete', ids: [id] });
+            if (res.errors.length) throw new Error(res.errors[0].detail);
+            const f = res.forgotten?.[0];
+            toast(
+              f
+                ? `Forgot it — ${f.versions} ${f.versions === 1 ? 'version' : 'versions'}${f.branches ? ` and ${f.branches} branches` : ''} in ${f.scope} · ${f.scope_id ?? f.owner_id}. Restore from the Deleted tab.`
+                : 'Memory deleted.',
+            );
             refreshCounts();
             navigate('/memories');
           }}

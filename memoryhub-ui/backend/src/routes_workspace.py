@@ -27,7 +27,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from src.access import ContentDep, ViewerDep, access_for
+from src.access import ContentDep, LabsDep, ViewerDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import audit, clean_stub, live_filters, now_utc, parse_uuid, viewer_from_request
@@ -386,7 +386,7 @@ async def _ensure_entity_access(db, tenant_id, acc, node) -> None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
 
-@router.patch("/api/entities/{entity_id}")
+@router.patch("/api/entities/{entity_id}", dependencies=[LabsDep])
 async def update_entity(entity_id: str, body: EntityUpdate, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     tenant_id = settings.ui_tenant_id
     acc = await access_for(db, settings, viewer)
@@ -422,7 +422,7 @@ class MergeRequest(BaseModel):
     dry_run: bool = True
 
 
-@router.post("/api/entities/{entity_id}/merge")
+@router.post("/api/entities/{entity_id}/merge", dependencies=[LabsDep])
 async def merge_entity(entity_id: str, body: MergeRequest, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     """Move this entity's mentions onto another entity.
 

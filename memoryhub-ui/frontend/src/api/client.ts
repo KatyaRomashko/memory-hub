@@ -23,6 +23,8 @@ import type {
   UsageSummary,
   MyPrefs,
   MyPrefsResponse,
+  VerifyList,
+  VerifyResult,
   MyReads,
   DreamInsight,
   DreamReport,
@@ -193,7 +195,12 @@ export const api = {
     target_scope_id?: string;
     relationship_type?: string;
     target_id?: string;
-  }) => post<{ done: string[]; errors: { id: string; detail: string }[] }>('/memories/bulk', body),
+  }) =>
+    post<{
+      done: string[];
+      errors: { id: string; detail: string }[];
+      forgotten?: { id: string; scope: string; scope_id: string | null; owner_id: string; versions: number; branches: number; rows: number }[];
+    }>('/memories/bulk', body),
   promote: (id: string, target_scope: string) =>
     post<{ id: string }>(`/memory/${enc(id)}/promote${qs({ target_scope })}`),
 
@@ -293,6 +300,11 @@ export const api = {
   notifications: () => get<NotificationsResponse>('/notifications'),
   markNotificationsSeen: () => post<{ ok: boolean }>('/notifications/seen'),
   onboarding: () => get<Onboarding>('/me/onboarding'),
+  // Connection check (R1-024)
+  verifyResults: () => get<VerifyList>('/verify'),
+  connectInfo: () => get<{ mcp_url: string; auth_url: string; tenant: string; agents: string[]; projects: string[] }>('/connect'),
+  runVerify: () => post<VerifyResult>('/verify/run'),
+  uploadVerify: (result: unknown) => post<VerifyResult>('/verify/results', { result }),
   search: (body: SearchRequest) => post<SearchResponse>('/search', body),
 
   // Projects & campaigns

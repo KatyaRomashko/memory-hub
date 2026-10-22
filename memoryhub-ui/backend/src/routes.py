@@ -643,6 +643,10 @@ async def get_memory_history(memory_id: str, db: DbDep, settings: SettingsDep):
 
 @router.delete("/api/memory/{memory_id}", status_code=204)
 async def delete_memory(memory_id: str, db: DbDep, settings: SettingsDep, viewer: Viewer = Depends(current_viewer)):
+    await forget_memory(memory_id, db, settings, viewer)
+
+
+async def forget_memory(memory_id: str, db: AsyncSession, settings: Settings, viewer: Viewer) -> dict:
     """Soft-delete a memory and its entire version chain.
 
     Phase 6 (#46): every SELECT and the final bulk UPDATE filter by
@@ -731,6 +735,17 @@ async def delete_memory(memory_id: str, db: DbDep, settings: SettingsDep, viewer
         .values(deleted_at=now, is_current=False)
     )
     await db.commit()
+    # What was actually forgotten — the UI reports exactly this (R1-022).
+    return {
+        "id": str(parsed_id),
+        "scope": node.scope,
+        "scope_id": node.scope_id,
+        "owner_id": node.owner_id,
+        "versions": len(version_ids),
+        "branches": len(child_ids),
+        "rows": len(all_ids),
+        "deleted_at": now.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -946,22 +961,19 @@ def _rule_to_response(rule: CuratorRule) -> CurationRuleResponse:
     )
 
 
-async def _own_rule_guard(rule_id: str, request: Request, db: DbDep, settings: SettingsDep) -> None:
-    """Users may change only their own user-layer rules; admins any rule."""
+async def _own_rule_guard(request: Request, settings: SettingsDep) -> None:
+    """Curation rules are the operator guardrail layer (R1: no second rule editor).
+
+    People choose what gets remembered through their memory-behavior profile
+    (Preferences); the profile maps onto these rules and cannot weaken them.
+    Users may read the rules that apply to them, never change them.
+    """
     viewer = viewer_from_request(request, settings)
-    if viewer.can_admin:
-        return
-    try:
-        parsed = uuid.UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid UUID: {rule_id!r}") from None
-    rule = (
-        await db.execute(
-            select(CuratorRule).where(CuratorRule.id == parsed, CuratorRule.tenant_id == settings.ui_tenant_id)
+    if not viewer.can_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Curation rules are managed by platform operators. Choose what gets remembered in Preferences.",
         )
-    ).scalar_one_or_none()
-    if rule is None or rule.layer != "user" or rule.owner_id != viewer.username:
-        raise HTTPException(status_code=403, detail="You can change only your own personal rules")
 
 
 @router.get("/api/rules", response_model=list[CurationRuleResponse])
@@ -1000,7 +1012,9 @@ async def list_rules(
     return [_rule_to_response(r) for r in rules]
 
 
-@router.post("/api/rules", response_model=CurationRuleResponse, status_code=201)
+@router.post(
+    "/api/rules", response_model=CurationRuleResponse, status_code=201, dependencies=[Depends(_own_rule_guard)]
+)
 async def create_rule(body: CreateRuleRequest, request: Request, db: DbDep, settings: SettingsDep):
     """Create a new curation rule.
 

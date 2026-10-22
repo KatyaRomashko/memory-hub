@@ -310,14 +310,14 @@ const Page: React.FC<{ kind: 'me' | 'project'; id: string }> = ({ kind, id }) =>
                     <section className="card">
                       <h3>Going stale</h3>
                       <p className="hint" style={{ margin: '4px 0 8px' }}>
-                        Not changed for a while. Dreaming can suggest fading them.
+                        Not changed for a while. Memory hygiene can suggest fading them.
                       </p>
                       <ul className="kfacts">
                         {k.stale.slice(0, 5).map((f) => (
                           <Fact key={f.memory_id} f={f} compact />
                         ))}
                       </ul>
-                      <a className="sm" href={buildHash('/dreaming')}>
+                      <a className="sm" href={buildHash('/hygiene')}>
                         Open Dreaming
                       </a>
                     </section>

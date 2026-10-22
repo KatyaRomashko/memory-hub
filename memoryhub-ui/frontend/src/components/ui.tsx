@@ -407,3 +407,13 @@ export const copyText = async (text: string): Promise<boolean> => {
     return false;
   }
 };
+
+/** R1-025: memory-context token counts are estimates, never provider usage. */
+export const TOKEN_ESTIMATE_NOTE =
+  'Estimated at about 4 characters per token. Real model usage and cost on the agent host are not visible to MemoryHub; reads, writes and search do not call an LLM.';
+
+export const Tokens: React.FC<{ n: number | null | undefined; short?: boolean }> = ({ n, short }) => (
+  <abbr className="est" title={TOKEN_ESTIMATE_NOTE}>
+    ≈{n === null || n === undefined ? '—' : n.toLocaleString('en-US')} {short ? 'tok' : 'tokens'}
+  </abbr>
+);

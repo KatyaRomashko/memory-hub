@@ -153,7 +153,53 @@ const respond = async (route: Route, body: unknown, status = 200) =>
  * Deterministic API fixture for UI smoke tests. It deliberately exercises the
  * real React screens while keeping tests independent from tenant data and auth.
  */
-export async function mockDashboardApi(page: Page) {
+const verifyResult = {
+  id: 'v1',
+  created_at: now,
+  schema: 'memoryhub.verify/v1',
+  source: 'dashboard',
+  produced_by: { tool: 'memoryhub-ui', check: 'dashboard', profile_version: null },
+  started_at: now,
+  finished_at: now,
+  context: { endpoint: 'https://mcp.test/mcp/', tenant: 'demo-tenant', identity: 'admin', projects: [] },
+  checks: [
+    { id: 'endpoint', title: 'MCP endpoint', status: 'pass', category: null, category_label: null, code: 'endpoint.ok', explanation: 'The MCP server answers (12 ms).', next_action: null, source: 'dashboard', duration_ms: 12 },
+    { id: 'tool_discovery', title: 'Tool discovery', status: 'not_run', category: null, category_label: null, code: null, explanation: 'Only on the agent host.', next_action: 'Run the connection check on the agent host.', source: 'host', duration_ms: null },
+    { id: 'project', title: 'Project', status: 'warn', category: 'wrong_project', category_label: 'Wrong project', code: 'project.none', explanation: 'You are not a member of any project.', next_action: 'Join a project in Projects & teams.', source: 'dashboard', duration_ms: null },
+    { id: 'round_trip', title: 'Write and read back', status: 'fail', category: 'service_unavailable', category_label: 'Service unavailable', code: 'round_trip.embeddings_unavailable', explanation: 'Writing a test memory failed.', next_action: 'Tell your platform operator.', source: 'dashboard', duration_ms: 30 },
+  ],
+  summary: { pass: 1, warn: 1, fail: 1, not_run: 1, state: 'fail' },
+};
+
+const behavior = (template: string, extra: Record<string, unknown> = {}) => ({
+  schema: 'memoryhub.profile/v1', revision: 1, template, include: ['preferences', 'project_decisions', 'procedures', 'facts'], exclude: ['credentials', 'personal_data'],
+  custom_exclude: [], confirmation: 'sensitive', cadence: 'session_end', update: 'supersede', updated_at: null, ...extra,
+});
+
+const prefs = {
+  prefs: { write: { default_scope: 'user', default_weight: 0.7 }, privacy: { allow_promotion_by_others: false, show_in_team_directory: true }, dreaming_fade_days: 60, behavior: behavior('balanced'), behavior_history: [] },
+  profile: {
+    schema: 'memoryhub.profile/v1',
+    templates: {
+      balanced: behavior('balanced'),
+      conservative: behavior('conservative', { include: ['preferences', 'project_decisions'], exclude: ['credentials', 'personal_data', 'health', 'customer_data'], confirmation: 'always', cadence: 'explicit', update: 'ask' }),
+      proactive: behavior('proactive', { exclude: ['credentials'], confirmation: 'never', cadence: 'every_turn' }),
+    },
+    categories: ['preferences', 'project_decisions', 'procedures', 'facts'],
+    excludes: ['credentials', 'personal_data', 'health', 'customer_data'],
+    choices: { confirmation: ['always', 'sensitive', 'never'], cadence: ['every_turn', 'session_end', 'explicit'], update: ['supersede', 'branch', 'ask'] },
+    applied_by: [],
+  },
+  account: { username: 'admin', name: 'Admin User', email: null, role: 'operator', source: 'api-key', agents: [], projects: ['memoryhub-ui'], roles: [], own_memories: 1 },
+};
+
+export interface MockOptions {
+  labs?: boolean;
+  role?: 'operator' | 'user' | 'admin';
+}
+
+export async function mockDashboardApi(page: Page, opts: MockOptions = {}) {
+  const { labs = true, role } = opts;
   await page.route('**/*', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -161,7 +207,16 @@ export async function mockDashboardApi(page: Page) {
     const path = url.pathname.replace(/^\/api/, '');
 
     if (path === '/auth/status') return respond(route, { mode: 'api-key', authenticated: true, api_key_login: true, user: 'admin', cluster_domain: 'cluster.test' });
-    if (path === '/me') return respond(route, { username: 'admin', name: 'Admin User', email: 'admin@example.test', initials: 'AU', source: 'api-key', tenant_id: 'demo-tenant' });
+    if (path === '/me') return respond(route, { username: 'admin', name: 'Admin User', email: 'admin@example.test', initials: 'AU', source: 'api-key', tenant_id: 'demo-tenant', labs, ...(role ? { role } : {}) });
+    if (path === '/me/prefs' && request.method() === 'GET') return respond(route, prefs);
+    if (path === '/me/prefs' && request.method() === 'PUT') {
+      const body = JSON.parse(request.postData() || '{}');
+      return respond(route, { prefs: { ...prefs.prefs, ...body, behavior: { ...prefs.prefs.behavior, ...(body.behavior ?? {}), revision: 2 } } });
+    }
+    if (path === '/verify') return respond(route, { schema: 'memoryhub.verify/v1', checks: [], categories: [{ id: 'wrong_project', label: 'Wrong project' }, { id: 'service_unavailable', label: 'Service unavailable' }], host_command: null, results: [] });
+    if (path === '/verify/run') return respond(route, verifyResult, 201);
+    if (path === '/verify/results') return respond(route, { ...verifyResult, id: 'v2', source: 'host', produced_by: { tool: 'memoryhub', version: '0.9', host: 'claude-code' } }, 201);
+    if (path === '/connect') return respond(route, { mcp_url: 'https://mcp.test/mcp/', auth_url: 'https://auth.test', tenant: 'demo-tenant', agents: [], projects: ['memoryhub-ui'] });
     if (path === '/nav-counts') return respond(route, { review_queue: 0, memories: 1 });
     if (path === '/overview') {
       const range = url.searchParams.get('range') ?? '7d';

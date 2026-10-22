@@ -112,6 +112,8 @@ export interface NavItem {
    * menu never offers empty pages. Direct links keep working.
    */
   feature?: Partial<Record<Role, (keyof NavFeatures)[]>>;
+  /** Beyond Release 1: shown only with MemoryHub Labs on (MEMORYHUB_UI_LABS). */
+  labs?: boolean;
 }
 
 const ADMIN: Role[] = ['admin', 'operator'];
@@ -132,11 +134,12 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
         path: '/knowledge',
         label: 'Knowledge',
         roles: USER,
+        labs: true,
         feature: { user: ['knowledge', 'documents', 'packs'], operator: ['knowledge', 'documents', 'packs'] },
       },
       { path: '/entities', label: 'Entities', roles: USER },
       { path: '/search', label: 'Search playground', roles: USER },
-      { path: '/dreaming', label: 'Dreaming', roles: USER },
+      { path: '/hygiene', label: 'Memory hygiene', roles: USER, labs: true },
       { path: '/projects', label: 'Projects & teams' },
     ],
   },
@@ -145,11 +148,12 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     groupFor: { user: 'My governance' },
     items: [
       { path: '/review', label: 'Review queue', badge: 'review', labelFor: { user: 'Review requests' } },
-      { path: '/curation', label: 'Curation rules', labelFor: { user: 'My curation rules' } },
+      { path: '/curation', label: 'Curation rules', roles: ADMIN },
       {
         path: '/quality',
         label: 'Retrieval quality',
         labelFor: { user: 'Retrieval checks', admin: 'Retrieval health' },
+        labs: true,
         feature: { user: ['checks', 'check_runs'], operator: ['checks', 'check_runs', 'search_runs'], admin: ['search_runs'] },
       },
       { path: '/reads', label: 'Who read my memories', roles: USER },
@@ -161,6 +165,8 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     groupFor: { user: 'Agents' },
     items: [
       { path: '/accounts', label: 'Accounts & sign-up', roles: ADMIN },
+      { path: '/connect', label: 'Connect an agent', roles: USER },
+      { path: '/verify', label: 'Connection check', roles: USER },
       { path: '/identities', label: 'Users & agents', labelFor: { user: 'My agents' } },
       { path: '/clients', label: 'OAuth clients & keys', labelFor: { user: 'Agent credentials' } },
     ],
@@ -185,11 +191,14 @@ const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => 
   return !!features && keys.some((k) => (features[k] ?? 0) > 0);
 };
 
-export const navFor = (role: Role, features: NavFeatures | null = null) =>
+export const isLabsPath = (path: string) => NAV.some((s) => s.items.some((i) => i.path === path && i.labs));
+
+export const navFor = (role: Role, features: NavFeatures | null = null, labs = false) =>
   NAV.map((s) => ({
     group: s.groupFor?.[role] ?? s.group,
     items: s.items
       .filter((i) => !i.roles || i.roles.includes(role))
+      .filter((i) => labs || !i.labs)
       .filter((i) => hasContent(i, role, features))
       .map((i) => ({ ...i, label: i.labelFor?.[role] ?? i.label })),
   })).filter((s) => s.items.length > 0);
@@ -445,7 +454,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
       )}
       <div className={`shell ${open ? 'nav-open' : 'nav-closed'}`}>
         <nav className="nav" aria-label="Primary">
-          {navFor(role, features).map((section, i) => (
+          {navFor(role, features, !!me?.labs).map((section, i) => (
             <React.Fragment key={section.group ?? i}>
               {section.group && <div className="ng">{section.group}</div>}
               {section.items.map((item) => (

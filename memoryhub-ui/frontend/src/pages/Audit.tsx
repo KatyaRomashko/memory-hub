@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, Tabs, useApp } from '@/components/Shell';
-import { Empty, ErrorState, Pager, ScopeLabel, SelectMenu, SkLines, SkTable, Standby, useToast } from '@/components/ui';
+import { Empty, ErrorState, Pager, ScopeLabel, SelectMenu, SkLines, SkTable, Standby, Tokens, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { AuditEvent, AuditResponse, ForensicsResponse } from '@/types';
@@ -191,7 +191,7 @@ const Forensics: React.FC<{ route: HashRoute }> = ({ route }) => {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20 }}>
             <div style={{ flex: '2 1 420px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div className="sm muted">
-                {result.context.length} memories in context · {fmtInt(result.tokens)} tokens
+                {result.context.length} memories in context · <Tokens n={result.tokens} />
                 {result.last_search_at ? ` · served by search at ${fmtTime(result.last_search_at)}` : ''}
               </div>
               {result.context.map((c, i) => (

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, useApp } from '@/components/Shell';
-import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby, Status } from '@/components/ui';
+import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby, Status, TOKEN_ESTIMATE_NOTE } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash } from '@/hooks/useHashRoute';
 import type { Onboarding, UsageSummary, Overview as OverviewData, OverviewRange } from '@/types';
@@ -406,7 +406,7 @@ const Overview: React.FC = () => {
                       </div>
                     </div>
                     <div>
-                      <div className="sm muted">Avg tokens / injection</div>
+                      <div className="sm muted" title={TOKEN_ESTIMATE_NOTE}>Avg tokens / injection (est.)</div>
                       <div className="kpi" style={{ fontSize: 26 }}>
                         {fmtInt(data!.context_assembly.avg_tokens)}
                       </div>

@@ -40,46 +40,18 @@ TABLE = "memoryhub_ui_jobs"
 RETRYABLE = {"dream", "knowledge.rebuild", "eval.run", "document.reprocess"}
 KIND_LABEL = {
     "scheduler.tick": "Scheduler tick",
-    "dream": "Dream",
+    "dream": "Memory hygiene run",
     "knowledge.rebuild": "Knowledge page rebuild",
     "eval.run": "Retrieval check run",
     "document.reprocess": "Document reprocess",
     "document.extract": "Memories from a document",
 }
-_ready = False
 
 
 async def ensure_table(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TABLE} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                kind VARCHAR(64) NOT NULL,
-                status VARCHAR(16) NOT NULL,
-                trigger VARCHAR(16) NOT NULL DEFAULT 'manual',
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                finished_at TIMESTAMPTZ,
-                duration_ms INTEGER,
-                attempts INTEGER NOT NULL DEFAULT 1,
-                correlation_id UUID NOT NULL,
-                retry_of UUID,
-                detail JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                error TEXT
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(f"CREATE INDEX IF NOT EXISTS ix_{TABLE}_tenant_started ON {TABLE} (tenant_id, started_at DESC)")
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 async def _write(settings: Settings, sql: str, params: dict) -> None:

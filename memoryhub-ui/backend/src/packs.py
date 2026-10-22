@@ -24,49 +24,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import ContentDep, access_for
+from src.access import ContentDep, LabsDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import Viewer, audit, clean_stub, now_utc
 
-router = APIRouter()
+router = APIRouter(dependencies=[LabsDep])
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 TABLE = "memoryhub_ui_context_packs"
-_ready = False
 
 
 async def ensure_table(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TABLE} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                pinned JSONB NOT NULL DEFAULT '[]'::jsonb,
-                queries JSONB NOT NULL DEFAULT '[]'::jsonb,
-                token_budget INTEGER NOT NULL DEFAULT 2000,
-                visibility VARCHAR(16) NOT NULL DEFAULT 'private',
-                project VARCHAR(255),
-                read_only BOOLEAN NOT NULL DEFAULT true,
-                agents JSONB NOT NULL DEFAULT '[]'::jsonb,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_render JSONB
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _load(v: Any) -> Any:

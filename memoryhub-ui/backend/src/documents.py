@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import ContentDep, ViewerDep, access_for
+from src.access import ContentDep, LabsDep, ViewerDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import Viewer, audit, now_utc, parse_uuid
@@ -37,50 +37,12 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 DOCS = "memoryhub_ui_documents"
 LINKS = "memoryhub_ui_document_links"
 MAX_CHARS = 2_000_000
-_ready = False
 
 
 async def ensure_tables(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DOCS} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                title VARCHAR(512) NOT NULL,
-                mime VARCHAR(128) NOT NULL DEFAULT 'text/plain',
-                body TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                project VARCHAR(255),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {LINKS} (
-                memory_id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                document_id UUID NOT NULL,
-                start_at INTEGER NOT NULL,
-                end_at INTEGER NOT NULL,
-                snippet TEXT NOT NULL,
-                status VARCHAR(16) NOT NULL DEFAULT 'ok',
-                doc_version INTEGER NOT NULL DEFAULT 1,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def passages(body: str, target: int = 900) -> list[dict]:
@@ -187,7 +149,7 @@ class ExtractIn(BaseModel):
     domains: list[str] | None = None
 
 
-@router.get("/api/documents")
+@router.get("/api/documents", dependencies=[LabsDep])
 async def list_documents(db: DbDep, settings: SettingsDep, viewer: ContentDep):
     await ensure_tables(db)
     acc = await access_for(db, settings, viewer)
@@ -226,7 +188,7 @@ async def list_documents(db: DbDep, settings: SettingsDep, viewer: ContentDep):
     return {"items": items}
 
 
-@router.post("/api/documents", status_code=201)
+@router.post("/api/documents", status_code=201, dependencies=[LabsDep])
 async def create_document(body: DocumentIn, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     from src.quality import _check_share
 
@@ -262,7 +224,7 @@ async def create_document(body: DocumentIn, db: DbDep, settings: SettingsDep, vi
     return {"id": str(did)}
 
 
-@router.get("/api/documents/{doc_id}")
+@router.get("/api/documents/{doc_id}", dependencies=[LabsDep])
 async def get_document(doc_id: str, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     row = await _doc(db, settings, viewer, doc_id)
     links = (
@@ -345,7 +307,7 @@ async def reprocess(db: AsyncSession, settings: Settings, viewer: Viewer, doc_id
     return {"document_id": str(row[0]), "version": version, **counts}
 
 
-@router.put("/api/documents/{doc_id}")
+@router.put("/api/documents/{doc_id}", dependencies=[LabsDep])
 async def update_document(doc_id: str, body: DocumentUpdate, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     from src.jobs import run_job
 
@@ -375,7 +337,7 @@ async def update_document(doc_id: str, body: DocumentUpdate, db: DbDep, settings
     return result
 
 
-@router.delete("/api/documents/{doc_id}", status_code=204)
+@router.delete("/api/documents/{doc_id}", status_code=204, dependencies=[LabsDep])
 async def delete_document(doc_id: str, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     row = await _doc(db, settings, viewer, doc_id)
     if row[1] != viewer.username:
@@ -385,7 +347,7 @@ async def delete_document(doc_id: str, db: DbDep, settings: SettingsDep, viewer:
     await db.commit()
 
 
-@router.post("/api/documents/{doc_id}/memories", status_code=201)
+@router.post("/api/documents/{doc_id}/memories", status_code=201, dependencies=[LabsDep])
 async def memories_from_document(doc_id: str, body: ExtractIn, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     """Write one memory per selected span; each remembers where it came from."""
     from src.jobs import run_job

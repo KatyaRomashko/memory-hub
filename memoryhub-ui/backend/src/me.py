@@ -32,29 +32,61 @@ DEFAULT_PREFS = {
     "privacy": {"allow_promotion_by_others": False, "show_in_team_directory": True},
     "dreaming_fade_days": 60,
     "onboarding_dismissed": False,
+    "behavior": None,  # filled from BEHAVIOR_TEMPLATES["balanced"] by _merge
+    "behavior_history": [],
 }
-_ready = False
+
+# Memory-behavior profile (R1-018/019): what agents should identify and store
+# for this person. Stored and versioned here; agent hosts do not apply it yet,
+# so the UI says so. Curation rules stay operator-owned guardrails (R1-021).
+PROFILE_SCHEMA = "memoryhub.profile/v1"
+BEHAVIOR_CATEGORIES = ("preferences", "project_decisions", "procedures", "facts")
+BEHAVIOR_EXCLUDES = ("credentials", "personal_data", "health", "customer_data")
+BEHAVIOR_TEMPLATES = {
+    "balanced": {
+        "include": ["preferences", "project_decisions", "procedures", "facts"],
+        "exclude": ["credentials", "personal_data"],
+        "confirmation": "sensitive",
+        "cadence": "session_end",
+        "update": "supersede",
+    },
+    "conservative": {
+        "include": ["preferences", "project_decisions"],
+        "exclude": ["credentials", "personal_data", "health", "customer_data"],
+        "confirmation": "always",
+        "cadence": "explicit",
+        "update": "ask",
+    },
+    "proactive": {
+        "include": ["preferences", "project_decisions", "procedures", "facts"],
+        "exclude": ["credentials"],
+        "confirmation": "never",
+        "cadence": "every_turn",
+        "update": "supersede",
+    },
+}
+BEHAVIOR_CHOICES = {
+    "confirmation": ("always", "sensitive", "never"),
+    "cadence": ("every_turn", "session_end", "explicit"),
+    "update": ("supersede", "branch", "ask"),
+}
+
+
+def behavior_from_template(name: str, revision: int = 1) -> dict:
+    return {
+        "schema": PROFILE_SCHEMA,
+        "revision": revision,
+        "template": name,
+        **json.loads(json.dumps(BEHAVIOR_TEMPLATES[name])),
+        "custom_exclude": [],
+        "updated_at": None,
+    }
 
 
 async def _ensure(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {PREFS} (
-                tenant_id VARCHAR(255) NOT NULL,
-                username VARCHAR(255) NOT NULL,
-                prefs JSONB NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (tenant_id, username)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _merge(stored: dict) -> dict:
@@ -64,6 +96,10 @@ def _merge(stored: dict) -> dict:
             merged[key].update({k: v for k, v in value.items() if k in merged[key]})
         elif key in merged:
             merged[key] = value
+    if not isinstance(merged.get("behavior"), dict):
+        merged["behavior"] = behavior_from_template("balanced")
+    else:
+        merged["behavior"] = {**behavior_from_template("balanced"), **merged["behavior"]}
     return merged
 
 
@@ -93,7 +129,28 @@ def _validate(p: dict) -> list[str]:
         errors.append("Default weight must be between 0 and 1")
     if not (14 <= int(p["dreaming_fade_days"]) <= 365):
         errors.append("Fade after must be between 14 and 365 days")
+    b = p["behavior"]
+    if b.get("template") not in (*BEHAVIOR_TEMPLATES, "custom"):
+        errors.append("Profile template must be balanced, conservative, proactive or custom")
+    if not isinstance(b.get("include"), list) or any(c not in BEHAVIOR_CATEGORIES for c in b["include"]):
+        errors.append(f"Profile categories must be among {', '.join(BEHAVIOR_CATEGORIES)}")
+    if not isinstance(b.get("exclude"), list) or any(c not in BEHAVIOR_EXCLUDES for c in b["exclude"]):
+        errors.append(f"Built-in exclusions must be among {', '.join(BEHAVIOR_EXCLUDES)}")
+    custom = b.get("custom_exclude")
+    if (
+        not isinstance(custom, list)
+        or len(custom) > 20
+        or any(not isinstance(c, str) or not c.strip() or len(c) > 200 for c in custom)
+    ):
+        errors.append("Up to 20 custom exclusions of at most 200 characters")
+    for field, allowed in BEHAVIOR_CHOICES.items():
+        if b.get(field) not in allowed:
+            errors.append(f"Profile {field} must be one of {', '.join(allowed)}")
     return errors
+
+
+def _profile_body(b: dict) -> dict:
+    return {k: v for k, v in b.items() if k not in ("revision", "updated_at", "schema")}
 
 
 @router.get("/api/me/prefs")
@@ -116,6 +173,14 @@ async def get_prefs(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
     ).scalar_one()
     return {
         "prefs": await load_prefs(db, settings.ui_tenant_id, viewer.username),
+        "profile": {
+            "schema": PROFILE_SCHEMA,
+            "templates": {k: behavior_from_template(k) for k in BEHAVIOR_TEMPLATES},
+            "categories": list(BEHAVIOR_CATEGORIES),
+            "excludes": list(BEHAVIOR_EXCLUDES),
+            "choices": {k: list(v) for k, v in BEHAVIOR_CHOICES.items()},
+            "applied_by": [],  # no host applies the profile yet (R1-018/019)
+        },
         "account": {
             "username": viewer.username,
             "name": viewer.name,
@@ -135,6 +200,7 @@ class PrefsUpdate(BaseModel):
     privacy: dict | None = None
     dreaming_fade_days: int | None = Field(default=None, ge=14, le=365)
     onboarding_dismissed: bool | None = None
+    behavior: dict | None = None
 
 
 @router.put("/api/me/prefs")
@@ -142,11 +208,18 @@ async def put_prefs(body: PrefsUpdate, db: DbDep, settings: SettingsDep, viewer:
     if viewer.source == "anonymous" and viewer.role == "operator":
         raise HTTPException(status_code=403, detail="Sign in to save preferences")
     prefs = await load_prefs(db, settings.ui_tenant_id, viewer.username)
+    before = json.loads(json.dumps(prefs["behavior"]))
     for key, value in body.model_dump(exclude_none=True).items():
         if isinstance(value, dict):
-            prefs[key].update({k: v for k, v in value.items() if k in prefs[key]})
+            prefs[key].update(
+                {k: v for k, v in value.items() if k in prefs[key] and k not in ("schema", "revision", "updated_at")}
+            )
         else:
             prefs[key] = value
+    if body.behavior is not None and _profile_body(prefs["behavior"]) != _profile_body(before):
+        prefs["behavior_history"] = ([before] + list(prefs.get("behavior_history") or []))[:5]
+        prefs["behavior"]["revision"] = int(before.get("revision") or 1) + 1
+        prefs["behavior"]["updated_at"] = now_utc().isoformat()
     errors = _validate(prefs)
     if errors:
         raise HTTPException(status_code=422, detail="; ".join(errors))
@@ -168,7 +241,14 @@ async def put_prefs(body: PrefsUpdate, db: DbDep, settings: SettingsDep, viewer:
         scope="user",
         owner_id=viewer.username,
         memory_id=None,
-        metadata={"privacy": prefs["privacy"]},
+        metadata={
+            "privacy": prefs["privacy"],
+            "behavior_profile": {
+                "schema": PROFILE_SCHEMA,
+                "revision": prefs["behavior"]["revision"],
+                "template": prefs["behavior"]["template"],
+            },
+        },
     )
     await db.commit()
     return {"prefs": prefs}
@@ -305,6 +385,13 @@ async def onboarding(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
             "done": bool(agents) or not viewer.restricted,
         },
         {
+            "id": "verify",
+            "title": "Check the connection",
+            "body": "Run the connection check: endpoint, sign-in, identity, project and a write-and-read round-trip.",
+            "href": "/verify",
+            "done": await has_row("memoryhub_ui_verify_results", "owner"),
+        },
+        {
             "id": "memory",
             "title": "Get your first memory",
             "body": "Let an agent call write_memory, or write one yourself in the Memory browser.",
@@ -325,21 +412,24 @@ async def onboarding(db: DbDep, settings: SettingsDep, viewer: ViewerDep):
             "href": "/preferences",
             "done": await has_row(PREFS, "username"),
         },
-        {
-            "id": "knowledge",
-            "title": "Open your knowledge page",
-            "body": "A summary of what memory knows about you, citing every memory it uses.",
-            "href": "/knowledge",
-            "done": await has_row("memoryhub_ui_knowledge", "owner"),
-        },
-        {
-            "id": "dream",
-            "title": "Run your first dream",
-            "body": "Dreaming finds duplicates, missing links, stale memories and contradictions.",
-            "href": "/dreaming",
-            "done": await has_row("memoryhub_ui_dreams", "owner"),
-        },
     ]
+    if settings.ui_labs:
+        steps += [
+            {
+                "id": "knowledge",
+                "title": "Open your knowledge page",
+                "body": "A summary of what memory knows about you, citing every memory it uses.",
+                "href": "/knowledge",
+                "done": await has_row("memoryhub_ui_knowledge", "owner"),
+            },
+            {
+                "id": "dream",
+                "title": "Run memory hygiene",
+                "body": "Finds duplicates, missing links, stale memories and contradictions in what you can read.",
+                "href": "/hygiene",
+                "done": await has_row("memoryhub_ui_dreams", "owner"),
+            },
+        ]
     return {
         "steps": steps,
         "done": sum(1 for s in steps if s["done"]),

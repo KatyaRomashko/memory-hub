@@ -42,57 +42,12 @@ TEAMS = "memoryhub_ui_teams"
 MEMBERS = "memoryhub_ui_team_members"
 LINKS = "memoryhub_ui_team_projects"
 TEAM_PREFIX = "team:"
-_ready = False
 
 
 async def ensure_tables(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TEAMS} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                name VARCHAR(120) NOT NULL,
-                description TEXT,
-                created_by VARCHAR(255) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (tenant_id, name)
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {MEMBERS} (
-                team_id UUID NOT NULL REFERENCES {TEAMS}(id) ON DELETE CASCADE,
-                user_id VARCHAR(255) NOT NULL,
-                role VARCHAR(16) NOT NULL DEFAULT 'member',
-                added_by VARCHAR(255) NOT NULL,
-                added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (team_id, user_id)
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {LINKS} (
-                team_id UUID NOT NULL REFERENCES {TEAMS}(id) ON DELETE CASCADE,
-                project_id VARCHAR(255) NOT NULL,
-                added_by VARCHAR(255) NOT NULL,
-                added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (team_id, project_id)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import { PageHeader, Tabs, useApp } from '@/components/Shell';
 import { Dropdown, Empty, ErrorState, Icon, Modal, Pager, ScopeLabel, SelectMenu, SkTable, SkLines, Standby, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
-import type { BrowseParams, BrowseResponse, MemoryRow } from '@/types';
+import type { BrowseParams, BrowseResponse, MemoryRow, MyPrefsResponse } from '@/types';
 import { errorMessage, fmtCompact, fmtInt, fmtRelative, fmtWeight, SCOPE_ORDER, scopeMeta, shortId } from '@/utils/format';
 import { ConfirmModal, memoryHref, RelationshipModal, WriteMemoryModal } from './common';
 import MemoryGraph, { LockIcon } from './MemoryGraph';
@@ -29,7 +29,7 @@ const readCols = (): Column[] => {
 
 const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
-  const { standby, refreshCounts, role } = useApp();
+  const { standby, refreshCounts, role, me } = useApp();
   const isAdmin = role === 'admin';
   const p = route.params;
   const view: 'table' | 'graph' | 'timeline' = p.get('view') === 'graph' ? 'graph' : p.get('view') === 'timeline' ? 'timeline' : 'table';
@@ -140,7 +140,8 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const runBulk = async (body: Parameters<typeof api.bulk>[0], done: string) => {
     const res = await api.bulk(body);
     if (res.errors.length) toast(`${res.errors.length} failed: ${res.errors[0].detail}`, 'err');
-    if (res.done.length) toast(done);
+    if (res.forgotten?.length) toast(forgetReport(res.forgotten));
+    else if (res.done.length) toast(done);
     setSelected(new Set());
     reload();
     refreshCounts();
@@ -181,7 +182,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 {isAdmin ? 'Export metadata' : 'Export JSONL'}
               </a>
             )}
-            {!isAdmin && (
+            {!isAdmin && me?.labs && (
               <button type="button" className="btn bg" onClick={() => setDocOpen(true)}>
                 Add document
               </button>
@@ -249,6 +250,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
             </div>
           </div>
         )}
+        {role === 'user' && <ScopeBar project={state.project} onProject={(v) => setParams({ project: v })} tenant={me?.tenant_id ?? ''} />}
         {view !== 'table' && (chips.length > 0 || state.q) && (
           <div className="carried" role="note">
             <span className="sm muted">Filters from the table:</span>
@@ -921,3 +923,52 @@ const WeightFilter: React.FC<{ value: number; disabled?: boolean; onCommit: (v: 
 };
 
 export default Memories;
+
+/** What a delete actually did, in the scope it did it (R1-022: forget reports the real result). */
+const forgetReport = (rows: { scope: string; scope_id: string | null; owner_id: string; versions: number; branches: number }[]) => {
+  const versions = rows.reduce((a, r) => a + r.versions, 0);
+  const branches = rows.reduce((a, r) => a + r.branches, 0);
+  const scopes = [...new Set(rows.map((r) => `${scopeMeta(r.scope).label.toLowerCase()} · ${r.scope_id ?? r.owner_id}`))];
+  return `Forgot ${rows.length} ${rows.length === 1 ? 'memory' : 'memories'} — ${versions} ${versions === 1 ? 'version' : 'versions'}${
+    branches ? ` and ${branches} ${branches === 1 ? 'branch' : 'branches'}` : ''
+  } in ${scopes.join(', ')}. Agents no longer receive ${rows.length === 1 ? 'it' : 'them'}; restore from the Deleted tab.`;
+};
+
+/** Who you are browsing as and which project — R1-022: the active scope is always visible. */
+const ScopeBar: React.FC<{ project: string; onProject: (v: string) => void; tenant: string }> = ({ project, onProject, tenant }) => {
+  const { data } = useApi<MyPrefsResponse>(() => api.myPrefs(), []);
+  const a = data?.account;
+  if (!a) return null;
+  return (
+    <div className="scopebar" role="region" aria-label="Active scope">
+      <span>
+        <span className="hint">Signed in as</span> <b className="mono">{a.username}</b>
+        {a.agents.length > 0 && (
+          <span className="hint">
+            {' '}
+            + {a.agents.length === 1 ? 'agent' : 'agents'} <span className="mono">{a.agents.join(', ')}</span>
+          </span>
+        )}
+      </span>
+      <span>
+        <span className="hint">Tenant</span> <b className="mono">{tenant || '—'}</b>
+      </span>
+      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <label className="hint" htmlFor="scope-project">
+          Project
+        </label>
+        <select id="scope-project" className="in auto" value={project} onChange={(e) => onProject(e.target.value)}>
+          <option value="">All my projects ({a.projects.length})</option>
+          {a.projects.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+      </span>
+      <span className="hint" style={{ marginLeft: 'auto' }}>
+        You see your own memories, your agents’ and what your projects, roles and organization share — the same rules the MCP server applies to agents.
+      </span>
+    </div>
+  );
+};

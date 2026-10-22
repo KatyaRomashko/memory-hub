@@ -34,27 +34,12 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 SEEN = "memoryhub_ui_notifications_seen"
 WINDOW_DAYS = 14
-_ready = False
 
 
 async def _ensure(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {SEEN} (
-                tenant_id VARCHAR(255) NOT NULL,
-                username VARCHAR(255) NOT NULL,
-                seen_at TIMESTAMPTZ NOT NULL,
-                PRIMARY KEY (tenant_id, username)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 async def _user_items(db: AsyncSession, settings: Settings, viewer, mine: list[str]) -> list[dict]:
@@ -144,8 +129,12 @@ async def _user_items(db: AsyncSession, settings: Settings, viewer, mine: list[s
             }
         )
 
-    # Dreaming suggestions still waiting.
+    # Memory hygiene suggestions still waiting (MemoryHub Labs).
+    from src.config import get_settings
     from src.dreaming import DREAMS, ensure_tables
+
+    if not get_settings().ui_labs:
+        return items
 
     await ensure_tables(db)
     row = (
@@ -166,7 +155,7 @@ async def _user_items(db: AsyncSession, settings: Settings, viewer, mine: list[s
                     "id": f"dr:{row[0]}",
                     "kind": "dream",
                     "severity": "info",
-                    "title": f"Dreaming has {waiting} suggestion{'s' if waiting != 1 else ''} for you",
+                    "title": f"Memory hygiene has {waiting} suggestion{'s' if waiting != 1 else ''} for you",
                     "body": "Scheduled run" if row[2] == "scheduled" else "From your last run",
                     "at": row[1],
                     "href": "/dreaming",

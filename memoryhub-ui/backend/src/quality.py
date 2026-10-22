@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import ContentDep, access_for
+from src.access import ContentDep, LabsDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import Viewer, audit, now_utc
@@ -44,50 +44,12 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 QUERIES = "memoryhub_ui_saved_queries"
 RUNS = "memoryhub_ui_eval_runs"
-_ready = False
 
 
 async def ensure_tables(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {QUERIES} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                request JSONB NOT NULL,
-                expected JSONB NOT NULL DEFAULT '[]'::jsonb,
-                visibility VARCHAR(16) NOT NULL DEFAULT 'private',
-                project VARCHAR(255),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_result JSONB
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {RUNS} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                duration_ms INTEGER NOT NULL,
-                trigger VARCHAR(16) NOT NULL,
-                summary JSONB NOT NULL,
-                results JSONB NOT NULL
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _load(v: Any) -> Any:
@@ -370,7 +332,7 @@ def _run_row(r: Any, full: bool) -> dict:
     return out
 
 
-@router.get("/api/checks")
+@router.get("/api/checks", dependencies=[LabsDep])
 async def checks_overview(db: DbDep, settings: SettingsDep, viewer: ContentDep):
     await ensure_tables(db)
     items = await visible_queries(db, settings, viewer)
@@ -391,7 +353,7 @@ async def checks_overview(db: DbDep, settings: SettingsDep, viewer: ContentDep):
     }
 
 
-@router.get("/api/checks/runs/{run_id}")
+@router.get("/api/checks/runs/{run_id}", dependencies=[LabsDep])
 async def check_run(run_id: str, db: DbDep, settings: SettingsDep, viewer: ContentDep):
     await ensure_tables(db)
     try:
@@ -411,7 +373,7 @@ async def check_run(run_id: str, db: DbDep, settings: SettingsDep, viewer: Conte
     return _run_row(row, True)
 
 
-@router.post("/api/checks/run", status_code=201)
+@router.post("/api/checks/run", status_code=201, dependencies=[LabsDep])
 async def run_checks_route(
     db: DbDep, settings: SettingsDep, viewer: ContentDep, ids: list[str] | None = Query(default=None)
 ):

@@ -170,7 +170,8 @@ async def _loop(interval: int) -> None:
 
 def start(settings: Settings) -> None:
     global _task
-    if not settings.ui_scheduler_enabled or _task is not None:
+    # Everything the scheduler runs (memory hygiene, knowledge pages, checks) is Labs.
+    if not settings.ui_scheduler_enabled or not settings.ui_labs or _task is not None:
         return
     _task = asyncio.create_task(_loop(max(60, settings.ui_scheduler_interval_s)))
     logger.info("Background scheduler started (every %ss)", settings.ui_scheduler_interval_s)

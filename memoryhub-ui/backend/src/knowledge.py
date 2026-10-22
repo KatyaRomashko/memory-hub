@@ -31,13 +31,13 @@ from memoryhub_core.models.memory import MemoryNode
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import Access, ContentDep, access_for
+from src.access import Access, ContentDep, LabsDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import Viewer, clean_stub, live_filters, now_utc, preview
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[LabsDep])
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -47,30 +47,12 @@ MAX_SOURCES = 400
 SAME_FACT = 0.92
 RECENT_DAYS = 14
 GENERAL = "General"
-_ready = False
 
 
 async def _ensure(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TABLE} (
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                subject VARCHAR(512) NOT NULL,
-                generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_hash VARCHAR(64) NOT NULL,
-                page JSONB NOT NULL,
-                PRIMARY KEY (tenant_id, owner, subject)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 # ---------------------------------------------------------------------------

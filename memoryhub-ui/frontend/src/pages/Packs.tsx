@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, useApp } from '@/components/Shell';
-import { copyText, Empty, ErrorState, Modal, ScopeLabel, SkLines, Switch, useToast } from '@/components/ui';
+import { copyText, Empty, ErrorState, Modal, ScopeLabel, SkLines, Switch, Tokens, TOKEN_ESTIMATE_NOTE, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate } from '@/hooks/useHashRoute';
 import type { ContextPack, ContextPackDetail, PackQuery } from '@/types';
@@ -74,7 +74,7 @@ const PackList: React.FC = () => {
                 {p.agents.length > 0 && <p className="hint" style={{ margin: '8px 0 0' }}>For {p.agents.join(', ')}</p>}
                 {p.last_render && (
                   <p className="hint" style={{ margin: '8px 0 0' }}>
-                    {p.last_render.items} memories, {fmtInt(p.last_render.tokens)} tokens · {fmtRelative(p.last_render.at).toLowerCase()}
+                    {p.last_render.items} memories, <Tokens n={p.last_render.tokens} /> · {fmtRelative(p.last_render.at).toLowerCase()}
                   </p>
                 )}
                 {!p.mine && <p className="hint">by {p.owner}</p>}
@@ -208,7 +208,7 @@ const PackPage: React.FC<{ id: string }> = ({ id }) => {
                       <a href={memoryHref(mid)} className="ellipsis" style={{ flex: 1, minWidth: 0 }}>
                         {pinnedById[mid]?.stub ?? mid}
                       </a>
-                      {pinnedById[mid] && <span className="hint">{pinnedById[mid].tokens} tok</span>}
+                      {pinnedById[mid] && <span className="hint"><Tokens n={pinnedById[mid].tokens} short /></span>}
                       {edit && (
                         <span style={{ display: 'flex', gap: 2 }}>
                           <button type="button" className="btn bl sm" aria-label="Move up" disabled={i === 0} onClick={() => set('pinned', move(draft.pinned, i, -1))}>
@@ -324,7 +324,7 @@ const PackPage: React.FC<{ id: string }> = ({ id }) => {
                 <span style={{ width: `${Math.min(100, (r.tokens / r.budget) * 100)}%` }} />
               </div>
               <div className="hint">
-                {fmtInt(r.tokens)} of {fmtInt(r.budget)} tokens · {r.items.length} memories
+                <abbr className="est" title={TOKEN_ESTIMATE_NOTE}>≈{fmtInt(r.tokens)} of {fmtInt(r.budget)} tokens</abbr> · {r.items.length} memories
                 {r.over_budget.length ? ` · ${r.over_budget.length} did not fit` : ''}
                 {r.hidden ? ` · ${r.hidden} pinned you cannot read` : ''}
                 {r.missing ? ` · ${r.missing} pinned deleted` : ''}
@@ -336,7 +336,7 @@ const PackPage: React.FC<{ id: string }> = ({ id }) => {
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       <ScopeLabel scope={it.scope} />
                       <span className="lbl g">{it.source === 'pinned' ? 'pinned' : `search ${Number(it.source.split(':')[1]) + 1}`}</span>
-                      <span className="hint">{it.tokens} tok</span>
+                      <span className="hint"><Tokens n={it.tokens} short /></span>
                     </div>
                     <a href={memoryHref(it.id)} className="sm" style={{ color: 'inherit', textDecoration: 'none' }}>
                       {truncate(it.text, 220)}

@@ -36,13 +36,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import ContentDep, access_for
+from src.access import ContentDep, LabsDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import audit, clean_stub, live_filters, now_utc
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[LabsDep])
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -58,42 +58,12 @@ DEFAULT_SETTINGS = {
     "auto": {"connections": False, "fading": False},
     "kinds": {"duplicates": True, "connections": True, "fading": True, "contradictions": True, "themes": True},
 }
-_ready = False
 
 
 async def ensure_tables(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DREAMS} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                duration_ms INTEGER NOT NULL DEFAULT 0,
-                trigger VARCHAR(16) NOT NULL DEFAULT 'manual',
-                report JSONB NOT NULL
-            )
-            """
-        )
-    )
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {SETTINGS} (
-                tenant_id VARCHAR(255) NOT NULL,
-                owner VARCHAR(255) NOT NULL,
-                settings JSONB NOT NULL,
-                PRIMARY KEY (tenant_id, owner)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _brief(n: MemoryNode) -> dict:

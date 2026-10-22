@@ -31,7 +31,7 @@ from memoryhub_core.models.memory import MemoryNode
 from sqlalchemy import func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.access import ViewerDep, access_for
+from src.access import LabsDep, ViewerDep, access_for
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.ui_common import clean_stub, cosine, embed, load_tenant_settings, now_utc, parse_uuid, rerank
@@ -44,7 +44,6 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 RUNS = "memoryhub_ui_search_runs"
 TOP_K = 50
-_ready = False
 
 STAGE_LABEL = {
     "filters": "Version, branch and status filters",
@@ -56,30 +55,9 @@ STAGE_LABEL = {
 
 
 async def _ensure(db: AsyncSession) -> None:
-    global _ready
-    if _ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {RUNS} (
-                id UUID PRIMARY KEY,
-                tenant_id VARCHAR(255) NOT NULL,
-                viewer VARCHAR(255) NOT NULL,
-                at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source VARCHAR(16) NOT NULL,
-                query_hash VARCHAR(16) NOT NULL,
-                retrieval VARCHAR(8) NOT NULL,
-                rerank VARCHAR(16) NOT NULL,
-                total_ms REAL NOT NULL,
-                counts JSONB NOT NULL,
-                stage_ms JSONB NOT NULL
-            )
-            """
-        )
-    )
-    await db.commit()
-    _ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _relaxed_reason(n: MemoryNode, body) -> tuple[str, str] | None:
@@ -535,7 +513,7 @@ def summarise_runs(rows: list[tuple]) -> dict:
     }
 
 
-@router.get("/api/search/health")
+@router.get("/api/search/health", dependencies=[LabsDep])
 async def search_health(db: DbDep, settings: SettingsDep, viewer: ViewerDep, days: int = Query(default=7, ge=1, le=90)):
     """Retrieval health from recorded runs: counts and timings only, never queries or content.
 

@@ -28,6 +28,7 @@ from src.routes_dashboard import router as dashboard_router
 from src.routes_workspace import router as workspace_router
 from src.teams import router as teams_router
 from src.ui_common import auth_enabled, read_session_cookie
+from src.verify import router as verify_router
 
 # Reachable without a session when development API-key login is enabled.
 _PUBLIC_API = ("/api/auth/", "/api/public-config")
@@ -46,9 +47,15 @@ FRONTEND_DIST = _default_dist if _default_dist.is_dir() else _local_dist
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Start the background scheduler (dreams, knowledge pages) with the app."""
-    from src import scheduler
+    from src import scheduler, schema
 
-    scheduler.start(get_settings())
+    settings = get_settings()
+    if settings.ui_migrate_on_start:
+        try:
+            await schema.upgrade()
+        except Exception as exc:  # database not reachable yet: tables are migrated on first use
+            logger.warning("UI schema migration did not run at startup: %s", exc)
+    scheduler.start(settings)
     yield
     await scheduler.stop()
 
@@ -105,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(features_router)
     app.include_router(jobs_router)
     app.include_router(packs_router)
+    app.include_router(verify_router)
     app.include_router(quality_router)
     app.include_router(retrieval_router)
     app.include_router(notifications_router)

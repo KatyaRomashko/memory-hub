@@ -406,27 +406,12 @@ DEFAULT_TENANT_SETTINGS: dict[str, Any] = {
 }
 
 _SETTINGS_TABLE = "memoryhub_ui_settings"
-_settings_table_ready = False
 
 
 async def _ensure_settings_table(db: AsyncSession) -> None:
-    global _settings_table_ready
-    if _settings_table_ready:
-        return
-    await db.execute(
-        text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {_SETTINGS_TABLE} (
-                tenant_id VARCHAR(255) PRIMARY KEY,
-                settings JSONB NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_by VARCHAR(255)
-            )
-            """
-        )
-    )
-    await db.commit()
-    _settings_table_ready = True
+    from src.schema import require
+
+    await require(db)
 
 
 def _merge(defaults: dict, stored: dict) -> dict:
