@@ -305,7 +305,7 @@ const Search: React.FC<{ route: HashRoute }> = ({ route }) => {
         token_budget: Math.min(form.max_response_tokens, 4000),
       });
       refreshCounts();
-      navigate(`/packs/${res.id}`);
+      navigate(`/knowledge/packs/${res.id}`);
     } catch (e) {
       toast(errorMessage(e), 'err');
     }

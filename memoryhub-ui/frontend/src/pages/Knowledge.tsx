@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { api } from '@/api/client';
 import { PageHeader, Tabs } from '@/components/Shell';
 import { DocumentsSection } from './Documents';
+import { PacksSection } from './Packs';
 import { Empty, ErrorState, ScopeLabel, SkLines, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
@@ -16,19 +17,21 @@ import { memoryHref } from './common';
 const Knowledge: React.FC<{ route: HashRoute }> = ({ route }) => {
   const [, , kind, id] = route.path.split('/');
   if (kind === 'documents') return <DocumentsSection id={id} />;
+  if (kind === 'packs') return <PacksSection id={id} />;
   if (kind === 'me' || (kind === 'project' && id)) return <Page kind={kind} id={kind === 'me' ? 'me' : decodeURIComponent(id)} />;
   return <Index />;
 };
 
-/** Knowledge has two parts: the living pages and the documents memories are written from. */
-export const KnowledgeTabs: React.FC<{ value: 'pages' | 'documents' }> = ({ value }) => (
+/** Knowledge: the living pages, the documents memories are written from, and context packs. */
+export const KnowledgeTabs: React.FC<{ value: 'pages' | 'documents' | 'packs' }> = ({ value }) => (
   <Tabs
     label="Knowledge"
     value={value}
-    onChange={(v) => navigate(v === 'documents' ? '/knowledge/documents' : '/knowledge')}
+    onChange={(v) => navigate(v === 'pages' ? '/knowledge' : `/knowledge/${v}`)}
     tabs={[
       { value: 'pages', label: 'Pages' },
       { value: 'documents', label: 'Documents' },
+      { value: 'packs', label: 'Context packs' },
     ]}
   />
 );

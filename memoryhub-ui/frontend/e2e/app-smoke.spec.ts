@@ -255,9 +255,9 @@ test.describe('quality, packs, documents, operations', () => {
     await page.goto('/#/overview');
     const nav = page.getByRole('navigation');
     await expect(nav.getByRole('link', { name: 'Knowledge', exact: true })).toBeVisible();
-    // Documents live inside Knowledge, not in the menu.
+    // Documents and context packs live inside Knowledge, not in the menu.
     await expect(nav.getByRole('link', { name: 'Documents', exact: true })).toHaveCount(0);
-    await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Operations', exact: true })).toBeVisible();
   });
 
@@ -267,7 +267,6 @@ test.describe('quality, packs, documents, operations', () => {
     const nav = page.getByRole('navigation');
     await expect(nav.getByRole('link', { name: 'Memory browser', exact: true })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Knowledge', exact: true })).toHaveCount(0);
-    await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Operations', exact: true })).toHaveCount(0);
   });
 
@@ -280,9 +279,12 @@ test.describe('quality, packs, documents, operations', () => {
   });
 
   test('context pack renders a preview within its budget', async ({ page }) => {
-    await page.goto('/#/packs');
+    await page.goto('/#/knowledge');
+    await page.getByRole('tab', { name: 'Context packs' }).click();
+    await expect(page).toHaveURL(/#\/knowledge\/packs$/);
     await page.getByRole('link', { name: /Local dev pack/ }).click();
-    await expect(page).toHaveURL(/#\/packs\/p1/);
+    await expect(page).toHaveURL(/#\/knowledge\/packs\/p1/);
+    await expect(page.getByRole('link', { name: 'Context packs' }).first()).toHaveAttribute('href', '#/knowledge/packs');
     await expect(page.getByText('12 of 2,000 tokens · 1 memories')).toBeVisible();
     await expect(page.getByText(/get_context_pack/)).toBeVisible();
   });
@@ -296,9 +298,11 @@ test.describe('quality, packs, documents, operations', () => {
     await expect(page.getByRole('link', { name: 'Documents' }).first()).toHaveAttribute('href', '#/knowledge/documents');
   });
 
-  test('old document links redirect into Knowledge', async ({ page }) => {
+  test('old document and pack links redirect into Knowledge', async ({ page }) => {
     await page.goto('/#/documents/d1');
     await expect(page).toHaveURL(/#\/knowledge\/documents\/d1$/);
+    await page.goto('/#/packs/p1');
+    await expect(page).toHaveURL(/#\/knowledge\/packs\/p1$/);
   });
 
   test('document passages show their memories and can be selected', async ({ page }) => {

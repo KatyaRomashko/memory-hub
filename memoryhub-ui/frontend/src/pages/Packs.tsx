@@ -3,20 +3,24 @@ import { api } from '@/api/client';
 import { PageHeader, useApp } from '@/components/Shell';
 import { copyText, Empty, ErrorState, Modal, ScopeLabel, SkLines, Switch, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
-import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
+import { buildHash, navigate } from '@/hooks/useHashRoute';
 import type { ContextPack, ContextPackDetail, PackQuery } from '@/types';
 import { errorMessage, fmtInt, fmtRelative, truncate } from '@/utils/format';
 import { ConfirmModal, MemoryPicker, memoryHref } from './common';
+import { KnowledgeTabs } from './Knowledge';
 
 /**
  * Context packs: named, reusable context for an agent or a project — pinned
  * memories plus searches, within a token budget, rendered under the viewer's
  * own access every time.
  */
-const Packs: React.FC<{ route: HashRoute }> = ({ route }) => {
-  const id = route.path.split('/')[2];
-  return id ? <PackPage id={id} /> : <PackList />;
-};
+const CRUMBS = [
+  { label: 'Knowledge', href: buildHash('/knowledge') },
+  { label: 'Context packs', href: buildHash('/knowledge/packs') },
+];
+
+/** Lives inside Knowledge: /knowledge/packs[/<id>]. */
+export const PacksSection: React.FC<{ id?: string }> = ({ id }) => (id ? <PackPage id={id} /> : <PackList />);
 
 const PackList: React.FC = () => {
   const toast = useToast();
@@ -26,7 +30,7 @@ const PackList: React.FC = () => {
     try {
       const { id } = await api.createPack({ name: 'New context pack' });
       refreshCounts();
-      navigate(`/packs/${id}`);
+      navigate(`/knowledge/packs/${id}`);
     } catch (e) {
       toast(errorMessage(e), 'err');
     }
@@ -34,7 +38,9 @@ const PackList: React.FC = () => {
   return (
     <>
       <PageHeader
-        title="Context packs"
+        title="Knowledge"
+        crumbs={[{ label: 'Knowledge', href: buildHash('/knowledge') }, { label: 'Context packs' }]}
+        tabs={<KnowledgeTabs value="packs" />}
         description="Named context for an agent or a project: memories you pin plus searches that fill the rest, within a token budget. Each person gets the pack rendered with their own access."
         actions={
           <button type="button" className="btn bp" onClick={create}>
@@ -56,7 +62,7 @@ const PackList: React.FC = () => {
         ) : (
           <div className="kgrid">
             {data.items.map((p) => (
-              <a key={p.id} className="card kcard link-plain" href={buildHash(`/packs/${p.id}`)}>
+              <a key={p.id} className="card kcard link-plain" href={buildHash(`/knowledge/packs/${p.id}`)}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                   <span className={`lbl ${p.visibility === 'project' ? 's-project' : 's-user'}`}>{p.visibility === 'project' ? `Project ${p.project}` : 'Only you'}</span>
                   {p.read_only && !p.mine && <span className="lbl g">read-only</span>}
@@ -103,7 +109,7 @@ const PackPage: React.FC<{ id: string }> = ({ id }) => {
   if (error && !data)
     return (
       <>
-        <PageHeader title="Context pack" crumbs={[{ label: 'Context packs', href: buildHash('/packs') }, { label: 'Not found' }]} />
+        <PageHeader title="Context pack" crumbs={[...CRUMBS, { label: 'Not found' }]} />
         <div className="body">
           <ErrorState error={error} onRetry={reload} />
         </div>
@@ -143,7 +149,7 @@ const PackPage: React.FC<{ id: string }> = ({ id }) => {
   return (
     <>
       <PageHeader
-        crumbs={[{ label: 'Context packs', href: buildHash('/packs') }, { label: data.name }]}
+        crumbs={[...CRUMBS, { label: data.name }]}
         title={data.name}
         description={data.description || 'Pinned memories first, then the searches below, until the token budget is used.'}
         actions={
@@ -364,7 +370,7 @@ const PackPage: React.FC<{ id: string }> = ({ id }) => {
           onConfirm={async () => {
             await api.deletePack(id);
             refreshCounts();
-            navigate('/packs');
+            navigate('/knowledge/packs');
           }}
         >
           The pack is removed for everyone it is shared with. Memories are not touched.
@@ -393,4 +399,3 @@ const move = <T,>(arr: T[], i: number, d: number) => {
   return next;
 };
 
-export default Packs;

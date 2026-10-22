@@ -15,7 +15,6 @@ import Entities from '@/pages/Entities';
 import EntityDetail from '@/pages/EntityDetail';
 import Knowledge from '@/pages/Knowledge';
 import Operations from '@/pages/Operations';
-import Packs from '@/pages/Packs';
 import Quality from '@/pages/Quality';
 import Graph from '@/pages/Graph';
 import Identities from '@/pages/Identities';
@@ -43,7 +42,6 @@ const SCREENS: Record<string, Screen> = {
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
   '/entity': { nav: '/entities', title: 'Entity', render: (r) => <EntityDetail route={r} /> },
   '/knowledge': { nav: '/knowledge', title: 'Knowledge', render: (r) => <Knowledge route={r} /> },
-  '/packs': { nav: '/packs', title: 'Context packs', render: (r) => <Packs route={r} /> },
   '/quality': { nav: '/quality', title: 'Retrieval quality', render: (r) => <Quality route={r} /> },
   '/operations': { nav: '/operations', title: 'Operations', render: () => <Operations /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
@@ -66,6 +64,7 @@ const LEGACY: Record<string, { path: string; params?: Record<string, string> }> 
   '/curation-rules': { path: '/curation' },
   '/rules': { path: '/curation' },
   '/documents': { path: '/knowledge/documents' },
+  '/packs': { path: '/knowledge/packs' },
   '/users': { path: '/identities' },
 };
 
@@ -93,7 +92,6 @@ const screenKey = (path: string) => {
   if (path.startsWith('/memory/')) return '/memory';
   if (path.startsWith('/entity/')) return '/entity';
   if (path.startsWith('/knowledge/')) return '/knowledge';
-  if (path.startsWith('/packs/')) return '/packs';
   return path;
 };
 
@@ -114,7 +112,7 @@ const Routed: React.FC = () => {
   useEffect(() => {
     const legacy = LEGACY[route.path];
     if (legacy) navigate(legacy.path, legacy.params, { replace: true });
-    else if (route.path.startsWith('/documents/')) navigate(`/knowledge${route.path}`, undefined, { replace: true });
+    else if (route.path.startsWith('/documents/') || route.path.startsWith('/packs/')) navigate(`/knowledge${route.path}`, undefined, { replace: true });
     else if (route.path === '/' || (!SCREENS[screenKey(route.path)] && !AUTH_PATHS.includes(route.path))) {
       navigate('/overview', undefined, { replace: true });
     }

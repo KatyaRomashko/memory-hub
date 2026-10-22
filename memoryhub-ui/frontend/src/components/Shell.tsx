@@ -128,8 +128,12 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     groupFor: { admin: 'Memory · metadata only', user: 'My memory' },
     items: [
       { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Memory analytics' } },
-      { path: '/knowledge', label: 'Knowledge', roles: USER, feature: { user: ['knowledge', 'documents'], operator: ['knowledge', 'documents'] } },
-      { path: '/packs', label: 'Context packs', roles: USER, feature: { user: ['packs'], operator: ['packs'] } },
+      {
+        path: '/knowledge',
+        label: 'Knowledge',
+        roles: USER,
+        feature: { user: ['knowledge', 'documents', 'packs'], operator: ['knowledge', 'documents', 'packs'] },
+      },
       { path: '/entities', label: 'Entities', roles: USER },
       { path: '/search', label: 'Search playground', roles: USER },
       { path: '/dreaming', label: 'Dreaming', roles: USER },
