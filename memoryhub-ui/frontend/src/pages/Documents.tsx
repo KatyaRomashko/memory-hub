@@ -3,19 +3,26 @@ import { api } from '@/api/client';
 import { PageHeader, useApp } from '@/components/Shell';
 import { Empty, ErrorState, Modal, SkLines, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
-import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
+import { buildHash, navigate } from '@/hooks/useHashRoute';
 import type { DocumentDetail, DocumentRow } from '@/types';
 import { errorMessage, fmtInt, fmtRelative, SCOPE_ORDER, scopeMeta, truncate } from '@/utils/format';
 import { ConfirmModal, memoryHref } from './common';
+import { KnowledgeTabs } from './Knowledge';
 
 const ACCEPT = '.txt,.md,.markdown,.csv,.json,.html,.htm,.log,.yaml,.yml,text/*';
 const MAX_BYTES = 2_000_000;
 
-/** Documents memories are written from, with every memory linked to its passage. */
-const Documents: React.FC<{ route: HashRoute }> = ({ route }) => {
-  const id = route.path.split('/')[2];
-  return id ? <DocumentPage id={id} /> : <DocumentList />;
-};
+/**
+ * Documents memories are written from, with every memory linked to its
+ * passage. Lives inside Knowledge: /knowledge/documents[/<id>].
+ */
+export const docHref = (id?: string) => buildHash(id ? `/knowledge/documents/${id}` : '/knowledge/documents');
+const CRUMBS = [
+  { label: 'Knowledge', href: buildHash('/knowledge') },
+  { label: 'Documents', href: buildHash('/knowledge/documents') },
+];
+
+export const DocumentsSection: React.FC<{ id?: string }> = ({ id }) => (id ? <DocumentPage id={id} /> : <DocumentList />);
 
 export const UploadDocumentModal: React.FC<{ onClose: () => void; onDone?: (id: string) => void }> = ({ onClose, onDone }) => {
   const toast = useToast();
@@ -53,7 +60,7 @@ export const UploadDocumentModal: React.FC<{ onClose: () => void; onDone?: (id: 
       refreshCounts();
       onClose();
       if (onDone) onDone(id);
-      else navigate(`/documents/${id}`);
+      else navigate(`/knowledge/documents/${id}`);
     } catch (e) {
       toast(errorMessage(e), 'err');
     } finally {
@@ -113,7 +120,9 @@ const DocumentList: React.FC = () => {
   return (
     <>
       <PageHeader
-        title="Documents"
+        title="Knowledge"
+        crumbs={[{ label: 'Knowledge', href: buildHash('/knowledge') }, { label: 'Documents' }]}
+        tabs={<KnowledgeTabs value="documents" />}
         description="Source text memories are written from. Pick passages to turn into memories; each memory shows the passage it came from, and a new version of the document flags memories whose source changed."
         actions={
           <button type="button" className="btn bp" onClick={() => setUpload(true)}>
@@ -148,7 +157,7 @@ const DocumentList: React.FC = () => {
                 {data.items.map((d) => (
                   <tr key={d.id}>
                     <td>
-                      <a href={buildHash(`/documents/${d.id}`)} className="b6" style={{ textDecoration: 'none' }}>
+                      <a href={docHref(d.id)} className="b6" style={{ textDecoration: 'none' }}>
                         {d.title}
                       </a>
                       <div className="hint">
@@ -189,7 +198,7 @@ const DocumentPage: React.FC<{ id: string }> = ({ id }) => {
   if (error && !data)
     return (
       <>
-        <PageHeader title="Document" crumbs={[{ label: 'Documents', href: buildHash('/documents') }, { label: 'Not found' }]} />
+        <PageHeader title="Document" crumbs={[...CRUMBS, { label: 'Not found' }]} />
         <div className="body">
           <ErrorState error={error} onRetry={reload} />
         </div>
@@ -228,7 +237,7 @@ const DocumentPage: React.FC<{ id: string }> = ({ id }) => {
   return (
     <>
       <PageHeader
-        crumbs={[{ label: 'Documents', href: buildHash('/documents') }, { label: truncate(data.title, 40) }]}
+        crumbs={[...CRUMBS, { label: truncate(data.title, 40) }]}
         title={data.title}
         description={`v${data.version} · ${fmtInt(data.body.length)} characters · ${data.passages.length} passages · ${data.links.length} memories written from it${data.mine ? '' : ` · by ${data.owner}`}`}
         actions={
@@ -367,7 +376,7 @@ const DocumentPage: React.FC<{ id: string }> = ({ id }) => {
           onConfirm={async () => {
             await api.deleteDocument(id);
             refreshCounts();
-            navigate('/documents');
+            navigate('/knowledge/documents');
           }}
         >
           The document and its passage links are removed. Memories written from it are not deleted.
@@ -523,4 +532,3 @@ const NewVersionModal: React.FC<{ doc: DocumentDetail; onClose: () => void; onDo
   );
 };
 
-export default Documents;

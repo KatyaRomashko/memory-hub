@@ -254,7 +254,9 @@ test.describe('quality, packs, documents, operations', () => {
   test('content tabs appear in the menu once they have content', async ({ page }) => {
     await page.goto('/#/overview');
     const nav = page.getByRole('navigation');
-    await expect(nav.getByRole('link', { name: 'Documents', exact: true })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Knowledge', exact: true })).toBeVisible();
+    // Documents live inside Knowledge, not in the menu.
+    await expect(nav.getByRole('link', { name: 'Documents', exact: true })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Operations', exact: true })).toBeVisible();
   });
@@ -264,7 +266,7 @@ test.describe('quality, packs, documents, operations', () => {
     await page.goto('/#/overview');
     const nav = page.getByRole('navigation');
     await expect(nav.getByRole('link', { name: 'Memory browser', exact: true })).toBeVisible();
-    await expect(nav.getByRole('link', { name: 'Documents', exact: true })).toHaveCount(0);
+    await expect(nav.getByRole('link', { name: 'Knowledge', exact: true })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Context packs', exact: true })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Operations', exact: true })).toHaveCount(0);
   });
@@ -285,8 +287,22 @@ test.describe('quality, packs, documents, operations', () => {
     await expect(page.getByText(/get_context_pack/)).toBeVisible();
   });
 
-  test('document passages show their memories and can be selected', async ({ page }) => {
+  test('documents are a tab of Knowledge', async ({ page }) => {
+    await page.goto('/#/knowledge');
+    await page.getByRole('tab', { name: 'Documents' }).click();
+    await expect(page).toHaveURL(/#\/knowledge\/documents$/);
+    await page.getByRole('link', { name: 'Dev handbook' }).click();
+    await expect(page).toHaveURL(/#\/knowledge\/documents\/d1$/);
+    await expect(page.getByRole('link', { name: 'Documents' }).first()).toHaveAttribute('href', '#/knowledge/documents');
+  });
+
+  test('old document links redirect into Knowledge', async ({ page }) => {
     await page.goto('/#/documents/d1');
+    await expect(page).toHaveURL(/#\/knowledge\/documents\/d1$/);
+  });
+
+  test('document passages show their memories and can be selected', async ({ page }) => {
+    await page.goto('/#/knowledge/documents/d1');
     await expect(page.getByRole('heading', { name: 'Dev handbook' })).toBeVisible();
     await page.getByRole('checkbox', { name: 'Passage 2' }).check();
     await expect(page.getByRole('button', { name: 'Write 1 memory' })).toBeEnabled();

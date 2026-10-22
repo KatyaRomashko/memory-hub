@@ -823,7 +823,7 @@ const SourceCard: React.FC<{ id: string }> = ({ id }) => {
       ) : (
         <>
           <div className="sm b6" style={{ marginBottom: 6 }}>
-            {data.document_id ? <a href={buildHash(`/documents/${data.document_id}`)}>{data.title}</a> : data.title} · v{data.version}
+            {data.document_id ? <a href={buildHash(`/knowledge/documents/${data.document_id}`)}>{data.title}</a> : data.title} · v{data.version}
           </div>
           <blockquote className="srcq">
             <span className="muted">{data.before ? `…${data.before.slice(-140)}` : ''}</span>

@@ -199,7 +199,7 @@ const link = (j: JobRow) => {
   const d = j.detail as Record<string, string>;
   if (j.kind === 'dream') return <a className="btn bl sm" href={buildHash('/dreaming')}>Open</a>;
   if (j.kind === 'eval.run') return <a className="btn bl sm" href={buildHash('/quality', { tab: 'runs' })}>Open</a>;
-  if (j.kind.startsWith('document') && d.document_id) return <a className="btn bl sm" href={buildHash(`/documents/${d.document_id}`)}>Open</a>;
+  if (j.kind.startsWith('document') && d.document_id) return <a className="btn bl sm" href={buildHash(`/knowledge/documents/${d.document_id}`)}>Open</a>;
   if (j.kind === 'knowledge.rebuild') return <a className="btn bl sm" href={buildHash(d.subject_kind === 'project' ? `/knowledge/project/${d.subject_id}` : '/knowledge/me')}>Open</a>;
   return null;
 };

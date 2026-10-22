@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { api } from '@/api/client';
-import { PageHeader } from '@/components/Shell';
+import { PageHeader, Tabs } from '@/components/Shell';
+import { DocumentsSection } from './Documents';
 import { Empty, ErrorState, ScopeLabel, SkLines, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
-import { buildHash, type HashRoute } from '@/hooks/useHashRoute';
+import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { KnowledgeFact, KnowledgeIndexItem, KnowledgePage } from '@/types';
 import { errorMessage, fmtInt, fmtRelative } from '@/utils/format';
 import { memoryHref } from './common';
@@ -14,9 +15,23 @@ import { memoryHref } from './common';
  */
 const Knowledge: React.FC<{ route: HashRoute }> = ({ route }) => {
   const [, , kind, id] = route.path.split('/');
+  if (kind === 'documents') return <DocumentsSection id={id} />;
   if (kind === 'me' || (kind === 'project' && id)) return <Page kind={kind} id={kind === 'me' ? 'me' : decodeURIComponent(id)} />;
   return <Index />;
 };
+
+/** Knowledge has two parts: the living pages and the documents memories are written from. */
+export const KnowledgeTabs: React.FC<{ value: 'pages' | 'documents' }> = ({ value }) => (
+  <Tabs
+    label="Knowledge"
+    value={value}
+    onChange={(v) => navigate(v === 'documents' ? '/knowledge/documents' : '/knowledge')}
+    tabs={[
+      { value: 'pages', label: 'Pages' },
+      { value: 'documents', label: 'Documents' },
+    ]}
+  />
+);
 
 const pageHref = (kind: string, id: string) => buildHash(kind === 'me' ? '/knowledge/me' : `/knowledge/project/${encodeURIComponent(id)}`);
 
@@ -26,6 +41,7 @@ const Index: React.FC = () => {
     <>
       <PageHeader
         title="Knowledge"
+        tabs={<KnowledgeTabs value="pages" />}
         description="A living page for you and for each of your projects: what memory knows, grouped by topic, with the people and things involved and the open questions. Every line links to the memories it came from, and each page rebuilds itself when they change."
       />
       <div className="body">
