@@ -188,11 +188,15 @@ async def load_trajectory(
     session: AsyncSession,
     *,
     thread_id: uuid.UUID,
+    tenant_id: str,
     s3_adapter: Any | None = None,
     turn_range: tuple[int, int] | None = None,
 ) -> list[TrajectoryEvent]:
     """Load the session's messages as events, hydrating S3-backed content."""
-    stmt = select(ConversationMessage).where(ConversationMessage.thread_id == thread_id)
+    stmt = select(ConversationMessage).where(
+        ConversationMessage.thread_id == thread_id,
+        ConversationMessage.tenant_id == tenant_id,
+    )
     if turn_range is not None:
         stmt = stmt.where(
             ConversationMessage.sequence_number >= turn_range[0],
@@ -542,14 +546,22 @@ def _parse_proposal(content: str, finish_reason: str | None) -> ProceduralPropos
         raise ProposalFormatError("response was truncated (finish_reason=length)")
     try:
         data = _parse_json(content)
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ProposalFormatError(f"response is not valid JSON: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ProposalFormatError(f"response is not valid JSON ({exc.msg} at char {exc.pos})") from exc
+    except ValueError as exc:
+        raise ProposalFormatError("response is not valid JSON") from exc
     if not isinstance(data, dict):
         raise ProposalFormatError("response is not a JSON object")
     try:
         return ProceduralProposal.model_validate(data)
     except ValidationError as exc:
-        raise ProposalFormatError(f"response does not match the schema: {exc}") from exc
+        # Locations and messages only: the default text embeds input values,
+        # which can carry tool output that has not been through curation.
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
+            for err in exc.errors(include_url=False, include_input=False, include_context=False)[:10]
+        )
+        raise ProposalFormatError(f"response does not match the schema: {problems}") from exc
 
 
 async def detect_procedure(llm: Any, transcript: str) -> ProceduralProposal:
@@ -1393,7 +1405,12 @@ def _empty_report(mode: str, run_id: str, cursor: int) -> dict[str, Any]:
 
 
 async def _overlapping_facts(
-    session: AsyncSession, embedding_service: Any, description: str, fact_ids: list[uuid.UUID],
+    session: AsyncSession,
+    embedding_service: Any,
+    description: str,
+    fact_ids: list[uuid.UUID],
+    *,
+    tenant_id: str,
 ) -> list[dict[str, Any]]:
     """D8: fact memories from the same run that restate the procedure."""
     if not fact_ids:
@@ -1401,7 +1418,9 @@ async def _overlapping_facts(
     from memoryhub_core.services.procedure_evolution import _cosine
 
     embedding = await embedding_service.embed(description)
-    rows = (await session.execute(select(MemoryNode).where(MemoryNode.id.in_(fact_ids)))).scalars().all()
+    rows = (await session.execute(
+        select(MemoryNode).where(MemoryNode.id.in_(fact_ids), MemoryNode.tenant_id == tenant_id)
+    )).scalars().all()
     out = []
     for node in rows:
         score = _cosine(embedding, node.embedding)
@@ -1485,7 +1504,9 @@ async def extract_procedures_from_thread(
             await session.commit()
         return report
 
-    events = await load_trajectory(session, thread_id=info.id, s3_adapter=s3_adapter, turn_range=turn_range)
+    events = await load_trajectory(
+        session, thread_id=info.id, tenant_id=info.tenant_id, s3_adapter=s3_adapter, turn_range=turn_range,
+    )
     max_seq = max((e.seq for e in events), default=0)
     if turn_range is None and max_seq <= cursor:
         report["skipped"] = "no_new_messages"
@@ -1606,7 +1627,7 @@ async def extract_procedures_from_thread(
             report["procedure_ids"] = [str(root_id)]
             await _trigger_entity_extraction(ctx, info, embedding_service)
             report["overlapping_facts"] = await _overlapping_facts(
-                session, embedding_service, validated.description, fact_memory_ids or [],
+                session, embedding_service, validated.description, fact_memory_ids or [], tenant_id=info.tenant_id,
             )
             return report
 
@@ -1679,7 +1700,7 @@ async def extract_procedures_from_thread(
         await finish(advance=True)
         await _trigger_entity_extraction(ctx, info, embedding_service)
         report["overlapping_facts"] = await _overlapping_facts(
-            session, embedding_service, validated.description, fact_memory_ids or [],
+            session, embedding_service, validated.description, fact_memory_ids or [], tenant_id=info.tenant_id,
         )
         return report
     finally:

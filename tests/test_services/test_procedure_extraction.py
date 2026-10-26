@@ -203,10 +203,10 @@ async def make_thread(session, messages, *, owner=OWNER, tenant=TENANT, scope="u
 
 
 async def append(session, thread, messages):
-    start = (await session.execute(
-        select(func.coalesce(func.max(ConversationMessage.sequence_number), 0))
-        .where(ConversationMessage.thread_id == thread.id)
-    )).scalar_one()
+    seqs = (await session.execute(
+        select(ConversationMessage.sequence_number).where(ConversationMessage.thread_id == thread.id)
+    )).scalars().all()
+    start = max(seqs, default=0)
     for offset, (role, content, call_id, metadata) in enumerate(messages, start=1):
         session.add(ConversationMessage(
             id=uuid.uuid4(), thread_id=thread.id, sequence_number=start + offset, role=role,
@@ -563,6 +563,45 @@ async def test_rejections_are_logged_with_proposal_reason_and_run(async_session,
     body = json.loads(row.candidate_content)
     assert row.reason == "below_confidence" and row.extraction_run_id == report["run_id"]
     assert body["thread_id"] == str(thread.id) and body["source_messages"] and body["proposal"]["goal"] == GOAL
+
+
+@pytest.mark.asyncio
+async def test_schema_errors_never_echo_input_values(async_session, embedding_service):
+    leaky = success_proposal()
+    leaky["steps"][0]["status"] = "token=ghp_" + "a" * 36  # invalid enum carrying a secret
+    thread = await make_thread(async_session, SUCCESS)
+    await run(async_session, embedding_service, thread, FakeLLM(leaky, leaky))
+    [row] = await decisions(async_session, pe.PROC_REJECT)
+    assert row.reason == "invalid_proposal" and "ghp_" not in row.candidate_content
+    assert "steps.0.status" in row.candidate_content
+
+
+@pytest.mark.asyncio
+async def test_structural_invariant_failure_keeps_evidence_and_safe_edits(async_session, embedding_service):
+    from memoryhub_core.services import procedure_evolution as evo
+
+    _, root_id = await _seed(async_session, embedding_service)
+    t1 = await make_thread(async_session, VARIANT)
+    await run(async_session, embedding_service, t1, FakeLLM(variant_proposal()))
+    real = evo.check_invariants
+    calls = {"n": 0}
+
+    async def failing_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise evo.ProceduralInvariantError("injected: orphan step")
+        return await real(*args, **kwargs)
+
+    t2 = await make_thread(async_session, VARIANT)
+    with patch.object(evo, "check_invariants", side_effect=failing_once):
+        report = await run(async_session, embedding_service, t2, FakeLLM(variant_proposal()))
+    assert "injected" in report["structural_rollback"]
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT)
+    assert len(graph.steps) == 4  # the add_step was rolled back
+    assert len(ledger_of(graph.root)["sessions"]) == 3  # but this session's evidence landed
+    rows = await decisions(async_session, pe.PROC_REJECT)
+    assert any(r.reason == "breaks_entry" for r in rows)
+    assert await resolve_procedure_entry(root_id, async_session, tenant_id=TENANT)
 
 
 @pytest.mark.asyncio
@@ -942,10 +981,11 @@ async def test_s3_hydration_does_not_dirty_rows(async_session, embedding_service
         async def get_content(self, ref):
             return "Successfully tagged api:1.2 (from s3)"
 
-    events = await pe.load_trajectory(async_session, thread_id=thread.id, s3_adapter=S3())
+    events = await pe.load_trajectory(async_session, thread_id=thread.id, tenant_id=TENANT, s3_adapter=S3())
     assert events[2].content.endswith("(from s3)") and events[2].available
     assert msg.content is None and msg not in async_session.dirty
-    no_adapter = await pe.load_trajectory(async_session, thread_id=thread.id)
+    no_adapter = await pe.load_trajectory(async_session, thread_id=thread.id, tenant_id=TENANT)
+    assert await pe.load_trajectory(async_session, thread_id=thread.id, tenant_id="other") == []
     assert not no_adapter[2].available
 
 
