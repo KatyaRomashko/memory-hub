@@ -376,7 +376,7 @@ failed session whose `failure.class == "procedure"` names this item with observe
 | `add_condition` (edge) / `add_precondition` (step) | no | observed condition separating success from failure, or a `precondition_unmet` failure with an observed precondition | Apply after curation pre-flight. |
 | `add_step` | yes | an unaligned observed step on the path of strong **successful** sessions | ≥ `procedural_min_supporting_sessions` (2) distinct sessions. Inserted with `precedes` edges from its aligned predecessor and to its aligned successor; the existing direct edge is kept (removing it needs failure evidence). |
 | step seen only in **failed** sessions | — | — | Never a main-path step. Becomes a pitfall on the step where the run diverged; if a strong successful session later reaches success through it, it is re-evaluated as an alternative. |
-| `add_edge` (`precedes` / `alternative_to`) | yes | a transition between aligned steps, or a path that bypasses existing steps, in strong successful sessions | ≥ 2 distinct sessions confirming that path (counted per path, D6a.4). Bypass paths are `alternative_to`. |
+| `add_edge` (`precedes` / `alternative_to`) | yes | a transition between aligned steps, or a path that bypasses existing steps, in strong successful sessions | ≥ 2 distinct sessions confirming that transition (counted per path, D6a.4). Added as `precedes`; a new step that takes the place of an existing one (same predecessor and successor) also gets an `alternative_to` edge to it (see `add_step`). |
 | `deprecate_edge` | yes | attributable failures on a main-path edge | ≥ `procedural_deprecation_min_failures` (2) distinct sessions **and** no strong success through that edge. Implemented with `invalidate_relationship` (temporal, never a hard delete). Below the threshold the edge gets a pitfall instead. |
 | `deprecate_step` | yes | attributable failures on a step | Same thresholds as `deprecate_edge`. Implemented as soft delete of the step (`deleted_at`) plus invalidation of its active procedural edges, so `_procedure_steps` and `resolve_procedure_entry` stop seeing it; reversible by rollback. Rejected (`breaks_entry`) if it is the entry and no `update_entry` is valid in the same batch. |
 | `update_entry` | yes | strong successful sessions consistently starting at another aligned step | ≥ 2 distinct sessions; new entry must have no incoming `precedes`. In-place change to the root's `entry_step_id`. |
@@ -692,3 +692,66 @@ separately and not fixed on this branch.
    `alternative_to` stay manually creatable). This design keeps them manual: hand-authored
    procedures stay first-class and are protected from automatic structural change. The doc is
    closed in PR 2.
+
+## Implementation record (2026-10-26)
+
+Implemented on `feat/procedural-graph-extraction-554`. Modules:
+`src/memoryhub_core/services/procedure_extraction.py` (mode resolution, trajectory, prompt and
+transport, proposal schema and validation, decision log, curation pre-flight, creation writer,
+orchestration) and `src/memoryhub_core/services/procedure_evolution.py` (matching, alignment,
+ledger, edit derivation and gates, application, invariants, rollback). Wiring:
+`dreaming.extract_from_thread` (`procedures`, `procedure_mode`), MCP `thread(action="extract")`
+options, `rollback_extraction_run` (`proc_*` rows). No migration, no new table, no new tool.
+
+Where the build refined the design:
+
+- **D5 matching** loads the owner's procedural roots in scope (at most 200, tenant / owner /
+  scope / `scope_id` filtered in SQL) and computes cosine in Python, rather than a pgvector
+  `ORDER BY`. Same thresholds. This keeps the path portable, so SQLite unit tests exercise real
+  matching decisions instead of an injected matcher. If an owner ever accumulates hundreds of
+  procedures in one scope, switch the ranking to pgvector.
+- **D6 `alternative_to`.** A transition between existing steps that the graph lacks is added as
+  `precedes`. `alternative_to` is used when a new step sits between the same predecessor and
+  successor as an existing step: the new step gets `precedes` edges to both anchors and an
+  `alternative_to` edge to the step it substitutes for. This matches the #552/#553 reading
+  ("the source is another way to do the target").
+- **Creation** never happens from a failed session (`failure` or `partial`, strong or weak): a
+  failed run would encode the failing path as the main path. It is logged as
+  `insufficient_evidence` (`failed_session`). Sessions with unknown or weak outcomes may create
+  candidates.
+- **Failure-only novel steps** become a pitfall on their predecessor, worded "A failed session
+  diverged here to: <action>". The text is derived from the observed action, not generated.
+- **`pending_edits`** is recomputed from the ledger on every run (replaced, not appended), so it
+  always shows the current set of unapplied edits and stays bounded (50).
+- **Rollback unit.** Each refinement run writes one `proc_match` row whose payload carries a
+  snapshot of everything the run changed: root ledger, step and edge metadata before and after,
+  created nodes, edges and provenance rows, deprecated steps and invalidated edges.
+  `proc_create` rollback soft-deletes the root and its steps. Restores apply only where the
+  current value still equals the recorded `after`; otherwise the item counts as a post-run
+  modification and is skipped.
+- **Eviction** folds per-item verdicts of evicted sessions into `evidence.evicted`. Their novel-step
+  and transition observations are dropped, so `add_step` / `add_edge` support counts only the
+  last `procedural_evidence_session_limit` sessions.
+- **Dry run** skips the curation pre-flight, because the pre-flight can seed tenant rules, which is
+  a write. The report says `"curation": "not_run_in_dry_run"`; the proposal text is returned only
+  to the caller, who can already read the thread.
+- **Concurrency.** Outside dry run, the pass locks the thread row (`SELECT … FOR UPDATE`, a no-op
+  on SQLite) before reading its procedural cursor, so two concurrent extracts of one thread
+  cannot both create a root.
+- **Fact pass with no new messages.** The procedural pass still runs, because its cursor is
+  independent.
+- **`invariants`** run in the same transaction after flush: entry names a current step with no
+  incoming `precedes`, no orphan step, step cap, then `resolve_procedure_entry` and
+  `build_localized_subgraph`. If structural edits break them, the run is rolled back and re-run
+  with structural edits recorded as `breaks_entry`; evidence and non-structural edits still
+  land.
+
+### Test record
+
+- Unit (SQLite): `pytest tests/test_services/test_procedure_extraction.py` covers every item of
+  the test plan above, including failure injection, idempotent re-runs, `tool_error` vs
+  `procedure` failures, conflicts, inferred-only gates, propose and apply, hand-authored
+  protection, the circuit breaker, rollback of creates and edits, and `off` mode.
+- Integration (PostgreSQL + pgvector): `tests/integration/test_procedure_extraction.py`. Covers
+  dreaming end-to-end to `resolve_procedure_entry` and `localized_guidance`, matching and
+  refinement plus rollback, and failure injection on real transactions.
