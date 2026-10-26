@@ -71,6 +71,7 @@ async def create_memory(
     skip_curation: bool = False,
     force: bool = False,
     s3_adapter: S3StorageAdapter | None = None,
+    commit: bool = True,
 ) -> tuple[MemoryNodeRead | None, dict]:
     """Create a new memory node.
 
@@ -104,12 +105,36 @@ async def create_memory(
 
     Storage is independent: content exceeding ``s3_threshold_bytes`` goes to
     S3 (if configured), otherwise stays inline in PostgreSQL.
+
+    ``commit=False`` lets a caller write several nodes in one transaction
+    (#554, procedural graph extraction). The node is added and flushed, the
+    caller's transaction is left open, and the post-commit work -- chunk
+    children and the entity-extraction trigger -- is skipped; the caller
+    owns the commit and must fire ``trigger_extraction`` itself afterwards.
+    Content that would need chunking or an S3 upload is refused with
+    ``ValueError`` on this path, because both have side effects that cannot
+    be rolled back with the transaction. ``skip_curation=True`` is also
+    required: the curation pipeline may commit the session when it seeds a
+    tenant's default rules, so a ``commit=False`` caller runs curation as
+    a pre-flight before its first write.
     """
     app_settings = AppSettings()
     content_bytes = len(data.content.encode("utf-8"))
     embedding_max_chars = embedding_service.max_tokens * 4
     needs_chunking = len(data.content) > embedding_max_chars
     use_s3 = content_bytes > app_settings.s3_threshold_bytes and s3_adapter is not None
+
+    if not commit:
+        if not skip_curation:
+            raise ValueError(
+                "create_memory(commit=False) requires skip_curation=True; run the "
+                "curation pipeline as a pre-flight before the transaction's first write"
+            )
+        if needs_chunking or content_bytes > app_settings.s3_threshold_bytes:
+            raise ValueError(
+                "create_memory(commit=False) cannot write content that needs chunking "
+                "or S3 storage; shorten the content or use the committing path"
+            )
 
     embed_text = data.content[:embedding_max_chars] if needs_chunking else data.content
     embedding = await embedding_service.embed(embed_text)
@@ -207,6 +232,11 @@ async def create_memory(
         node.relevant_until = classify_temporal(data.content, now)
 
     session.add(node)
+    if not commit:
+        await session.flush()
+        await session.refresh(node)
+        return node_to_read(node, has_children=False, has_rationale=False), curation_result
+
     await session.commit()
     await session.refresh(node)
 
