@@ -103,6 +103,13 @@ class AppSettings(BaseSettings):
     procedural_evidence_session_limit: int = 50
     procedural_max_transcript_chars: int = 60000
     procedural_step_match_threshold: float = 0.85
+    # Serve localized guidance (#553) for extracted procedures that are still
+    # "candidate" (one session of evidence). Off: such guidance is refused
+    # until the procedure is "established".
+    procedural_serve_candidates: bool = False
+    # CA bundle for the procedural extraction LLM endpoint when it uses a
+    # private CA (TLS verification stays on; see #604).
+    procedural_llm_ca_bundle: str = ""
 
     # Phase 2 entity extraction (#170)
     entity_extraction_enabled: bool = False
