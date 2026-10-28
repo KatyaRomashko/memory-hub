@@ -679,14 +679,21 @@ async def update_memory(
     old_children = children_result.scalars().all()
 
     copied_count = 0
+    copied_ids: dict[uuid.UUID, uuid.UUID] = {}
     for child in old_children:
+        if child.deleted_at is not None:
+            # A soft-deleted branch stays deleted on the old parent; copying it
+            # would resurrect it as a current child of the new version.
+            continue
         if child.branch_type == "chunk" and content_changed:
             # Retire old chunk — new chunks will be created below
             child.is_current = False
             child.expires_at = now + timedelta(days=app_settings.version_retention_days)
             continue
 
-        # Deep copy non-chunk branch to new parent
+        # Deep copy non-chunk branch to new parent. Every field that defines
+        # the child is carried over: dropping content_type or scope_id turned
+        # procedure steps into experiential, unscoped nodes (#554 review).
         copied_id = uuid.uuid4()
         copied_child = MemoryNode(
             id=copied_id,
@@ -694,14 +701,20 @@ async def update_memory(
             content=child.content,
             stub=child.stub,
             scope=child.scope,
+            scope_id=child.scope_id,
             weight=child.weight,
             owner_id=child.owner_id,
+            actor_id=child.actor_id,
+            driver_id=child.driver_id,
             tenant_id=child.tenant_id,
             parent_id=new_node.id,
             branch_type=child.branch_type,
             metadata_=child.metadata_,
             domains=child.domains,
+            content_type=child.content_type,
+            source=child.source,
             upstream_trust_level=child.upstream_trust_level,
+            relevant_until=child.relevant_until,
             embedding=list(child.embedding) if child.embedding is not None else None,
             is_current=True,
             version=child.version,
@@ -712,11 +725,44 @@ async def update_memory(
             updated_at=now,
         )
         session.add(copied_child)
+        copied_ids[child.id] = copied_id
         copied_count += 1
 
         # Retire old branch — deep copy is the canonical version now
         child.is_current = False
         child.expires_at = now + timedelta(days=app_settings.version_retention_days)
+
+    if copied_ids:
+        # The copies are the canonical children now, so active edges that
+        # touched the retired rows move with them, exactly as the root's own
+        # edges were re-pointed above (#472). Without this a procedure's
+        # precedes/requires/alternative_to edges stayed on retired steps and
+        # resolve_procedure_entry failed on the new root (#554 review).
+        await session.flush()
+        for old_id, copy_id in copied_ids.items():
+            await session.execute(
+                update(MemoryRelationship)
+                .where(MemoryRelationship.source_id == old_id, MemoryRelationship.valid_until.is_(None))
+                .values(source_id=copy_id)
+            )
+            await session.execute(
+                update(MemoryRelationship)
+                .where(MemoryRelationship.target_id == old_id, MemoryRelationship.valid_until.is_(None))
+                .values(target_id=copy_id)
+            )
+        # A procedure root names its entry step by id; follow it to the copy.
+        if isinstance(new_node.metadata_, dict):
+            procedure = new_node.metadata_.get("procedure")
+            if isinstance(procedure, dict) and procedure.get("entry_step_id"):
+                try:
+                    old_entry = uuid.UUID(str(procedure["entry_step_id"]))
+                except ValueError:
+                    old_entry = None
+                if old_entry in copied_ids:
+                    new_node.metadata_ = {
+                        **new_node.metadata_,
+                        "procedure": {**procedure, "entry_step_id": str(copied_ids[old_entry])},
+                    }
 
     await session.commit()
 
