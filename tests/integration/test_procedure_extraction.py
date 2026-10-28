@@ -195,3 +195,41 @@ async def test_concurrent_creation_makes_one_root(async_session, second_session,
     assert sorted([r1["matched"], r2["matched"]]) == [0, 1]
     async_session.expire_all()
     assert len(await roots(async_session)) == 1
+
+
+@pytest.mark.asyncio
+async def test_project_members_share_candidates_on_postgres(async_session, embedding_service):
+    """pgvector candidate query: same project across owners, never across projects or tenants."""
+    alice = await make_thread(async_session, SUCCESS, owner="alice", scope="project", scope_id="proj-pg")
+    created = await run(async_session, embedding_service, alice, FakeLLM(success_proposal()))
+    root_id = created["procedure_ids"][0]
+
+    bob = await make_thread(async_session, VARIANT, owner="bob", scope="project", scope_id="proj-pg")
+    report = await run(async_session, embedding_service, bob, FakeLLM(variant_proposal()))
+    assert report["matched"] == 1 and report["foreign"] is True
+    assert report["procedure_ids"] == [root_id]
+
+    other_tenant = await make_thread(async_session, SUCCESS, owner="bob", scope="project",
+                                     scope_id="proj-pg", tenant="tenant-b")
+    report = await run(async_session, embedding_service, other_tenant, FakeLLM(success_proposal()))
+    assert report["created"] == 1  # alice's procedure is invisible to another tenant
+    assert len(await roots(async_session)) == 1
+    assert len(await roots(async_session, tenant="tenant-b")) == 1
+
+
+@pytest.mark.asyncio
+async def test_validation_gate_on_postgres(async_session, embedding_service):
+    from tests.test_services.test_procedure_extraction import FakeValidator
+
+    validator = FakeValidator(async_session, answer="reject")
+    seed = await make_thread(async_session, SUCCESS)
+    first = await run(async_session, embedding_service, seed, FakeLLM(success_proposal()))
+    root_id = uuid.UUID(first["procedure_ids"][0])
+    for _ in range(2):
+        t = await make_thread(async_session, VARIANT)
+        await run(async_session, embedding_service, t, FakeLLM(variant_proposal()), validator=validator)
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT)
+    assert len(graph.steps) == 4
+    assert validator.in_transaction == [False]
+    assert any(p["reason"] == "validation_rejected"
+               for p in graph.root.metadata_["procedure"]["pending_edits"])

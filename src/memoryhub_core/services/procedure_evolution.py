@@ -50,6 +50,7 @@ _MAX_TIEBREAK_CANDIDATES = 3
 _MAX_PENDING_EDITS = 50
 _ATTR_PER_FIELD_MAX = 5
 _SESSIONS_SHOWN = 10
+_FINGERPRINT_IGNORED = frozenset({"extraction_status", "extraction_error", "extracted_entities"})
 
 _STEP_LIST_FIELDS = ("pitfalls", "preconditions", "postconditions")
 _EDGE_LIST_FIELDS = ("pitfalls",)
@@ -224,6 +225,9 @@ class MatchResult:
     verdict: str | None = None
     alignment: dict[str, uuid.UUID] = field(default_factory=dict)
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: The matched root belongs to another member of the same project:
+    #: proposal-only, nothing is written to it.
+    foreign: bool = False
 
     def verdicts(self) -> dict[str, str]:
         return {c["id"]: c["tiebreaker"] for c in self.candidates if c.get("tiebreaker") and c.get("id")}
@@ -236,20 +240,36 @@ class MatchResult:
             "overlap": self.overlap,
             "verdict": self.verdict,
             "alignment": {k: _sid(v) for k, v in self.alignment.items()},
+            "foreign": self.foreign,
             "candidates": self.candidates,
         }
 
 
+def shares_procedures_across_members(thread: Any) -> bool:
+    """Project threads match every member's procedures in that project."""
+    return thread.scope == "project" and thread.scope_id is not None
+
+
 async def candidate_roots(session: AsyncSession, thread: Any) -> list[MemoryNode]:
-    """Procedural roots the thread owner can match: same tenant, owner, scope, scope_id."""
+    """Procedural roots the thread can match: same tenant, scope and ``scope_id``.
+
+    In user scope only the owner's own procedures. In a project, also other
+    members' procedures in the same project (#554 review), so two members
+    following one runbook do not each build a copy. Those matches are
+    proposal-only (``MatchResult.foreign``). Own procedures sort first.
+    """
     scope_filter = (
         MemoryNode.scope_id.is_(None) if thread.scope_id is None else MemoryNode.scope_id == thread.scope_id
+    )
+    owner_filter = (
+        MemoryNode.owner_id.isnot(None) if shares_procedures_across_members(thread)
+        else MemoryNode.owner_id == thread.owner_id
     )
     stmt = (
         select(MemoryNode)
         .where(
             MemoryNode.tenant_id == thread.tenant_id,
-            MemoryNode.owner_id == thread.owner_id,
+            owner_filter,
             MemoryNode.scope == thread.scope,
             scope_filter,
             MemoryNode.content_type == "procedural",
@@ -325,8 +345,9 @@ async def find_matching_procedure(
     embedding = await embedding_service.embed(vp.description)
     scored = sorted(
         ((root, _cosine(embedding, root.embedding)) for root in roots),
-        key=lambda pair: (-pair[1], str(pair[0].id)),
+        key=lambda pair: (-round(pair[1], 4), pair[0].owner_id != thread.owner_id, str(pair[0].id)),
     )
+    owners = {root.id: root.owner_id for root in roots}
     close = [(root, score) for root, score in scored if score >= TIEBREAKER_THRESHOLD][:_MAX_TIEBREAK_CANDIDATES]
     if not close:
         top = scored[0]
@@ -387,7 +408,7 @@ async def find_matching_procedure(
             return MatchResult(
                 kind="match", root_id=item["root_id"], score=round(item["score"], 4),
                 overlap=item["overlap"], verdict=verdict, alignment=item["alignment"],
-                candidates=candidates,
+                candidates=candidates, foreign=owners[item["root_id"]] != thread.owner_id,
             )
     if ambiguous:
         return MatchResult(kind="ambiguous", score=round(close[0][1], 4), candidates=candidates)
@@ -575,6 +596,14 @@ def _jsonable(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+def _comparable(value: Any) -> Any:
+    """Metadata without the keys async entity extraction rewrites after commit."""
+    data = _jsonable(value)
+    if isinstance(data, dict):
+        return {k: v for k, v in data.items() if k not in _FINGERPRINT_IGNORED}
+    return data
+
+
 @dataclass
 class SnapshotLog:
     node_meta: dict[str, Any] = field(default_factory=dict)
@@ -646,6 +675,7 @@ async def refresh_derived_evidence(
     tenant_id: str,
     settings: AppSettings,
     snaps: SnapshotLog | None = None,
+    promote: bool = True,
 ) -> GraphState:
     """Write counters derived from the root ledger onto extracted steps and edges.
 
@@ -674,7 +704,11 @@ async def refresh_derived_evidence(
         strong_successes = sum(1 for e in ledger["sessions"].values() if _strong_success(e))
         root_meta = copy.deepcopy(graph.root.metadata_) or {}
         procedure = root_meta.setdefault("procedure", {})
-        if procedure.get("status") == "candidate" and strong_successes >= settings.procedural_min_supporting_sessions:
+        # candidate -> established is a structural decision (it makes the procedure
+        # eligible for guidance), so it happens only in apply mode. It is sticky:
+        # failures later deprecate steps and edges, they do not demote the root.
+        if promote and procedure.get("status") == "candidate" \
+                and strong_successes >= settings.procedural_min_supporting_sessions:
             procedure["status"] = "established"
             set_node_metadata(graph.root, root_meta, snaps)
     return graph
@@ -1166,11 +1200,18 @@ async def evolve_procedure(
     dry_run: bool = False,
     structural_allowed: bool = True,
     lock: bool = False,
+    structural_verdicts: dict[str, str] | None = None,
 ) -> EvolutionResult:
     """Account this session's evidence and derive, gate and (maybe) apply edits.
 
     No commit. In ``dry_run`` nothing is written to the session.
+
+    ``structural_verdicts`` (from the optional validation gate, see
+    ``procedure_validation``): when given, a structural edit is applied only
+    if its key was accepted; otherwise it stays pending with the gate's reason.
     """
+    from memoryhub_core.services.procedure_validation import gate_reason
+
     assert match.root_id is not None
     settings: AppSettings = ctx.settings
     # With lock=True the root is held FOR UPDATE and re-read, so the ledger
@@ -1211,6 +1252,11 @@ async def evolve_procedure(
             continue
         if ctx.mode != "apply":
             pending.append({**record, "reason": "propose_mode"})
+            continue
+        validation = gate_reason(structural_verdicts, edit)
+        if validation is not None:
+            pending.append({**record, "reason": validation})
+            result.rejected.append(Edit(**{**edit.__dict__, "gate": validation}))
             continue
         if edit.structural and not structural_allowed:
             pending.append({**record, "reason": "breaks_entry"})
@@ -1254,6 +1300,7 @@ async def evolve_procedure(
     await session.flush()
     await refresh_derived_evidence(
         session, root_id=graph.root.id, tenant_id=thread.tenant_id, settings=settings, snaps=snaps,
+        promote=ctx.mode == "apply",
     )
     if any(e.structural for e in applied):
         await check_invariants(session, root_id=graph.root.id, tenant_id=thread.tenant_id, settings=settings)
@@ -1272,6 +1319,24 @@ def _parse_ts(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value))
+
+
+async def graph_fingerprint(session: AsyncSession, *, root_id: uuid.UUID, tenant_id: str) -> dict[str, Any]:
+    """Root and step metadata plus the active edge ids, as plain JSON.
+
+    Recorded by ``proc_create`` and compared on rollback: if a later session
+    added evidence or edits (or a person changed the graph), the create is
+    not rolled back.
+    """
+    await session.flush()
+    graph = await load_graph(session, root_id=root_id, tenant_id=tenant_id)
+
+    # Entity extraction updates extraction_status asynchronously; that is not an edit.
+    return {
+        "root": _comparable(graph.root.metadata_),
+        "steps": {_sid(s.id): _comparable(s.metadata_) for s in graph.steps.values()},
+        "edges": sorted(_sid(e.id) for e in graph.edges),
+    }
 
 
 async def _get_node(session: AsyncSession, node_id: str | uuid.UUID, tenant_id: str) -> MemoryNode | None:
@@ -1317,6 +1382,13 @@ async def rollback_procedural_decision(
         root = await _get_node(session, memory_id, tenant_id)
         if root is None or root.deleted_at is not None:
             return "noop"
+        recorded = body.get("created_state")
+        if isinstance(recorded, dict):
+            current = await graph_fingerprint(session, root_id=memory_id, tenant_id=tenant_id)
+            if current != recorded:
+                # Later sessions added evidence or edits: undoing the create would
+                # destroy their work and break their own rollbacks.
+                return "skipped_modified"
         children = list((await session.execute(
             select(MemoryNode).where(
                 MemoryNode.parent_id == memory_id,
@@ -1351,13 +1423,13 @@ async def rollback_procedural_decision(
     node_meta = []
     for entry in snapshot.get("node_meta", []):
         node = await _get_node(session, entry["id"], tenant_id)
-        if node is None or _jsonable(node.metadata_) != entry["after"]:
+        if node is None or _comparable(node.metadata_) != _comparable(entry["after"]):
             return "skipped_modified"
         node_meta.append((node, entry["before"]))
     edge_meta = []
     for entry in snapshot.get("edge_meta", []):
         edge = await _get_edge(session, entry["id"], tenant_id)
-        if edge is None or _jsonable(edge.metadata_) != entry["after"]:
+        if edge is None or _comparable(edge.metadata_) != _comparable(entry["after"]):
             return "skipped_modified"
         edge_meta.append((edge, entry["before"]))
     deleted_nodes = []

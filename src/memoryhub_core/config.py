@@ -110,6 +110,13 @@ class AppSettings(BaseSettings):
     # CA bundle for the procedural extraction LLM endpoint when it uses a
     # private CA (TLS verification stays on; see #604).
     procedural_llm_ca_bundle: str = ""
+    # Optional validation gate for structural edits in apply mode (for
+    # example an EvalHub-backed service). Empty: off. Fails closed when set.
+    # See memoryhub_core.services.procedure_validation for the contract.
+    procedural_validation_url: str = ""
+    procedural_validation_api_key: str = ""
+    procedural_validation_timeout: float = 120
+    procedural_validation_ca_bundle: str = ""
 
     # Phase 2 entity extraction (#170)
     entity_extraction_enabled: bool = False

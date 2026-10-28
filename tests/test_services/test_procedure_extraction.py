@@ -1234,3 +1234,222 @@ def test_ca_bundle_builds_a_verifying_context():
     llm = pe.ProceduralLLM(model="m", url="http://llm.test", ca_bundle=certifi.where())
     ctx = llm._client._transport._pool._ssl_context
     assert ctx.verify_mode.name == "CERT_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_create_rollback_refuses_when_later_sessions_built_on_it(async_session, embedding_service):
+    seed = await make_thread(async_session, SUCCESS)
+    created = await run(async_session, embedding_service, seed, FakeLLM(success_proposal()))
+    root_id = uuid.UUID(created["procedure_ids"][0])
+    later = await make_thread(async_session, SUCCESS)
+    refined = await run(async_session, embedding_service, later, FakeLLM(success_proposal()))
+    assert refined["matched"] == 1
+
+    # Undoing the create first would erase the later session's evidence: refused.
+    result = await rollback_extraction_run(created["run_id"], async_session)
+    assert result["procedural"]["skipped_modified"] == 1
+    assert len(await roots(async_session)) == 1
+
+    # Undo in reverse order and both succeed.
+    assert (await rollback_extraction_run(refined["run_id"], async_session))["procedural"]["rolled_back"] == 1
+    assert (await rollback_extraction_run(created["run_id"], async_session))["procedural"]["rolled_back"] == 1
+    assert await roots(async_session) == []
+    assert (await async_session.get(MemoryNode, root_id)).deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_propose_mode_never_promotes_to_established(async_session, embedding_service):
+    seed = await make_thread(async_session, SUCCESS)
+    created = await run(async_session, embedding_service, seed, FakeLLM(success_proposal()), mode="propose")
+    root_id = uuid.UUID(created["procedure_ids"][0])
+    for _ in range(2):
+        t = await make_thread(async_session, SUCCESS)
+        await run(async_session, embedding_service, t, FakeLLM(success_proposal()), mode="propose")
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT)
+    assert len(ledger_of(graph.root)["sessions"]) == 3
+    assert graph.root.metadata_["procedure"]["status"] == "candidate"
+    t = await make_thread(async_session, SUCCESS)
+    await run(async_session, embedding_service, t, FakeLLM(success_proposal()), mode="apply")
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT)
+    assert graph.root.metadata_["procedure"]["status"] == "established"
+
+
+@pytest.mark.asyncio
+async def test_project_members_share_procedures_proposal_only(async_session, embedding_service):
+    alice = await make_thread(async_session, SUCCESS, owner="alice", scope="project", scope_id="proj-9")
+    created = await run(async_session, embedding_service, alice, FakeLLM(success_proposal()))
+    root_id = uuid.UUID(created["procedure_ids"][0])
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT)
+    before = (json.dumps(graph.root.metadata_, sort_keys=True),
+              {str(s.id): json.dumps(s.metadata_, sort_keys=True) for s in graph.steps.values()})
+
+    bob = await make_thread(async_session, VARIANT, owner="bob", scope="project", scope_id="proj-9")
+    report = await run(async_session, embedding_service, bob, FakeLLM(variant_proposal()))
+    assert report["matched"] == 1 and report["created"] == 0 and report["foreign"] is True
+    assert report["procedure_ids"] == [str(root_id)] and report["edits_proposed"] >= 1
+    assert len(await roots(async_session)) == 1  # no copy for bob
+
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT)
+    after = (json.dumps(graph.root.metadata_, sort_keys=True),
+             {str(s.id): json.dumps(s.metadata_, sort_keys=True) for s in graph.steps.values()})
+    assert after == before  # alice's procedure untouched
+    [row] = [r for r in await decisions(async_session, pe.PROC_PROPOSE) if r.reason == "foreign_owner"]
+    assert json.loads(row.candidate_content)["edits"]
+
+    # Another project, or user scope, does not see alice's procedure.
+    carol = await make_thread(async_session, SUCCESS, owner="carol", scope="project", scope_id="proj-other")
+    assert (await run(async_session, embedding_service, carol, FakeLLM(success_proposal())))["created"] == 1
+    dave = await make_thread(async_session, SUCCESS, owner="dave")
+    assert (await run(async_session, embedding_service, dave, FakeLLM(success_proposal())))["created"] == 1
+
+
+@pytest.mark.asyncio
+async def test_own_procedure_wins_over_a_members_copy(async_session, embedding_service):
+    alice = await make_thread(async_session, SUCCESS, owner="alice", scope="project", scope_id="proj-9")
+    await run(async_session, embedding_service, alice, FakeLLM(success_proposal()))
+    # bob already has his own copy from before cross-member matching existed
+    root, _ = await create_memory(
+        MemoryNodeCreate(content=f"{GOAL}: {SUMMARY}", scope="project", scope_id="proj-9", weight=0.6,
+                         owner_id="bob", content_type="procedural",
+                         metadata={"procedure": {"origin": "extracted", "status": "candidate"}}),
+        async_session, embedding_service, tenant_id=TENANT,
+    )
+    bob = await make_thread(async_session, SUCCESS, owner="bob", scope="project", scope_id="proj-9")
+    report = await run(async_session, embedding_service, bob, FakeLLM(success_proposal()))
+    assert report["procedure_ids"] == [str(root.id)] and not report.get("foreign")
+
+
+# ---------------------------------------------------------------------------
+# Optional validation gate for structural edits (procedure_validation)
+# ---------------------------------------------------------------------------
+
+
+class FakeValidator:
+    def __init__(self, session, answer="accept", error: Exception | None = None):
+        self.session = session
+        self.answer = answer
+        self.error = error
+        self.requests: list[dict] = []
+        self.in_transaction: list[bool] = []
+
+    async def validate(self, request):
+        self.requests.append(request)
+        self.in_transaction.append(self.session.in_transaction())
+        if self.error:
+            raise self.error
+        return {e["key"]: self.answer for e in request["edits"]}
+
+    async def aclose(self):
+        return None
+
+
+async def _two_variant_sessions(session, embedding_service, validator):
+    _, root_id = await _seed(session, embedding_service)
+    report = None
+    for _ in range(2):
+        t = await make_thread(session, VARIANT)
+        report = await run(session, embedding_service, t, FakeLLM(variant_proposal()), validator=validator)
+    graph = await load_graph(session, root_id=root_id, tenant_id=TENANT)
+    return report, graph
+
+
+@pytest.mark.asyncio
+async def test_validation_gate_accepts_structural_edit(async_session, embedding_service):
+    validator = FakeValidator(async_session)
+    report, graph = await _two_variant_sessions(async_session, embedding_service, validator)
+    assert len(graph.steps) == 5
+    assert report["validation"]["asked"] >= 1 and report["validation"]["accepted"] >= 1
+    [request] = validator.requests  # first session had nothing applicable to ask about
+    assert any(e["edit"] == "add_step" for e in request["edits"])
+    assert validator.in_transaction == [False]  # no transaction held during the call
+    body = json.dumps(request)
+    assert "0 critical vulnerabilities" not in body  # no transcript text leaves
+
+
+@pytest.mark.asyncio
+async def test_validation_gate_rejection_keeps_edit_pending(async_session, embedding_service):
+    validator = FakeValidator(async_session, answer="reject")
+    report, graph = await _two_variant_sessions(async_session, embedding_service, validator)
+    assert len(graph.steps) == 4
+    pending = graph.root.metadata_["procedure"]["pending_edits"]
+    assert any(p["edit"] == "add_step" and p["reason"] == "validation_rejected" for p in pending)
+    rejects = await decisions(async_session, pe.PROC_REJECT)
+    assert any(d.reason == "validation_rejected" for d in rejects)
+    assert report["validation"]["accepted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_validation_gate_fails_closed_when_unreachable(async_session, embedding_service):
+    validator = FakeValidator(async_session, error=RuntimeError("connection refused"))
+    report, graph = await _two_variant_sessions(async_session, embedding_service, validator)
+    assert len(graph.steps) == 4
+    pending = graph.root.metadata_["procedure"]["pending_edits"]
+    assert any(p["reason"] == "validation_unavailable" for p in pending)
+    assert "error" not in report
+
+
+@pytest.mark.asyncio
+async def test_validation_gate_is_not_consulted_in_propose_mode(async_session, embedding_service):
+    validator = FakeValidator(async_session)
+    _, root_id = await _seed(async_session, embedding_service)
+    for _ in range(2):
+        t = await make_thread(async_session, VARIANT)
+        await run(async_session, embedding_service, t, FakeLLM(variant_proposal()), mode="propose",
+                  validator=validator)
+    assert validator.requests == []
+
+
+def test_gate_reason_only_lets_accepted_structural_edits_through():
+    from memoryhub_core.services.procedure_evolution import Edit
+    from memoryhub_core.services.procedure_validation import gate_reason
+
+    structural = Edit("add_step", "root:x", {"action": "a"}, ["t"], structural=True)
+    attribute = Edit("add_pitfall", "step:x", {"field": "pitfalls", "text": "p"}, ["t"], structural=False)
+    assert gate_reason(None, structural) is None  # gate off
+    assert gate_reason({}, attribute) is None
+    assert gate_reason({}, structural) == "validation_unseen"
+    assert gate_reason({structural.key(): "accept"}, structural) is None
+    assert gate_reason({structural.key(): "validation_rejected"}, structural) == "validation_rejected"
+
+
+def test_validation_reasons_are_known_to_the_decision_log():
+    from memoryhub_core.services.procedure_validation import VALIDATION_REASONS
+
+    assert VALIDATION_REASONS <= pe.REASONS
+
+
+def test_build_validator_off_by_default():
+    from memoryhub_core.services.procedure_validation import build_validator
+
+    assert build_validator(AppSettings()) is None
+    validator = build_validator(AppSettings(procedural_validation_url="https://validator.test/score"))
+    assert validator is not None
+
+
+@pytest.mark.asyncio
+async def test_http_validator_contract():
+    import httpx
+
+    from memoryhub_core.services.procedure_validation import (
+        HttpProcedureValidator,
+        ProcedureValidationError,
+    )
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        if seen["body"]["run_id"] == "bad":
+            return httpx.Response(200, json={"nope": 1})
+        if seen["body"]["run_id"] == "down":
+            return httpx.Response(503)
+        return httpx.Response(200, json={"verdicts": {"k1": "accept", "k2": "reject"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    validator = HttpProcedureValidator(url="https://validator.test/score", client=client)
+    assert await validator.validate({"run_id": "ok", "edits": []}) == {"k1": "accept", "k2": "reject"}
+    with pytest.raises(ProcedureValidationError, match="no 'verdicts'"):
+        await validator.validate({"run_id": "bad"})
+    with pytest.raises(ProcedureValidationError, match="503"):
+        await validator.validate({"run_id": "down"})
+    await client.aclose()
