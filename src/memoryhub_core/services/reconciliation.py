@@ -329,6 +329,7 @@ async def rollback_extraction_run(
                 content=decision.candidate_content,
                 memory_id=decision.memory_id,
                 now=now,
+                tenant_id=decision.tenant_id,
             )
             procedural[status] += 1
             continue

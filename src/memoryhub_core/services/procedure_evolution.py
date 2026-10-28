@@ -158,16 +158,21 @@ class GraphState:
         )
 
 
-async def load_graph(session: AsyncSession, *, root_id: uuid.UUID, tenant_id: str) -> GraphState:
-    root = (
-        await session.execute(
-            select(MemoryNode).where(
-                MemoryNode.id == root_id,
-                MemoryNode.tenant_id == tenant_id,
-                MemoryNode.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one()
+async def load_graph(
+    session: AsyncSession, *, root_id: uuid.UUID, tenant_id: str, lock: bool = False,
+) -> GraphState:
+    """Load a procedure. ``lock=True`` takes ``FOR UPDATE`` on the root and re-reads
+    root, steps and edges from the database, so a writer always sees the ledger
+    as the previous writer committed it (review of #554, item 2)."""
+    root_stmt = select(MemoryNode).where(
+        MemoryNode.id == root_id,
+        MemoryNode.tenant_id == tenant_id,
+        MemoryNode.deleted_at.is_(None),
+    )
+    if lock:
+        root_stmt = root_stmt.with_for_update().execution_options(populate_existing=True)
+    root = (await session.execute(root_stmt)).scalar_one()
+    fresh = {"populate_existing": True} if lock else {}
     steps = list(
         (
             await session.execute(
@@ -177,7 +182,7 @@ async def load_graph(session: AsyncSession, *, root_id: uuid.UUID, tenant_id: st
                     MemoryNode.branch_type == "procedure_step",
                     MemoryNode.is_current.is_(True),
                     MemoryNode.deleted_at.is_(None),
-                )
+                ).execution_options(**fresh)
             )
         ).scalars().all()
     )
@@ -195,7 +200,7 @@ async def load_graph(session: AsyncSession, *, root_id: uuid.UUID, tenant_id: st
                         MemoryRelationship.tenant_id == tenant_id,
                         MemoryRelationship.relationship_type.in_(PROCEDURAL_RELATIONSHIP_TYPES),
                         MemoryRelationship.valid_until.is_(None),
-                    )
+                    ).execution_options(**fresh)
                 )
             ).scalars().all()
         )
@@ -219,6 +224,9 @@ class MatchResult:
     verdict: str | None = None
     alignment: dict[str, uuid.UUID] = field(default_factory=dict)
     candidates: list[dict[str, Any]] = field(default_factory=list)
+
+    def verdicts(self) -> dict[str, str]:
+        return {c["id"]: c["tiebreaker"] for c in self.candidates if c.get("tiebreaker") and c.get("id")}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -300,7 +308,17 @@ async def find_matching_procedure(
     embedding_service: Any,
     settings: AppSettings,
     tiebreaker: Tiebreaker | None = None,
+    before_tiebreak: Callable[[], Awaitable[None]] | None = None,
+    known_verdicts: dict[str, str] | None = None,
 ) -> MatchResult:
+    """Match ``vp`` against the owner's procedures (D5).
+
+    All database work happens first; ``before_tiebreak`` (used to end the
+    read transaction) runs once before the first model call, so no
+    transaction is open while the tiebreaker is in flight. ``known_verdicts``
+    ({root id: "same" | "different"}) reuses tiebreaker answers from an
+    earlier pass, so the re-match under the write lock needs no model call.
+    """
     roots = await candidate_roots(session, thread)
     if not roots:
         return MatchResult(kind="new")
@@ -318,8 +336,7 @@ async def find_matching_procedure(
         )
 
     step_embeddings = await embedding_service.embed_batch([s.action for s in vp.steps])
-    ambiguous = False
-    candidates: list[dict[str, Any]] = []
+    prepared: list[dict[str, Any]] = []
     for root, score in close:
         graph = await load_graph(session, root_id=root.id, tenant_id=thread.tenant_id)
         alignment = align_steps(
@@ -327,33 +344,50 @@ async def find_matching_procedure(
             settings.procedural_step_match_threshold,
         )
         denominator = max(len(vp.steps), len(graph.steps), 1)
-        overlap = round(len(alignment) / denominator, 4)
-        info = {"id": _sid(root.id), "score": round(score, 4), "overlap": overlap}
+        prepared.append({
+            "root_id": root.id,
+            "score": score,
+            "overlap": round(len(alignment) / denominator, 4),
+            "alignment": alignment,
+            "existing_text": f"{root.content}\nSteps: " + "; ".join(
+                (_proc(s).get("action") or s.content) for s in graph.steps.values()
+            ),
+        })
+
+    new_text = f"{vp.description}\nSteps: " + "; ".join(s.action for s in vp.steps)
+    ambiguous = False
+    released = False
+    candidates: list[dict[str, Any]] = []
+    for item in prepared:
+        info = {"id": _sid(item["root_id"]), "score": round(item["score"], 4), "overlap": item["overlap"]}
         candidates.append(info)
         verdict: str | None = None
-        if score >= SKIP_THRESHOLD or overlap >= _MATCH_SAME_OVERLAP:
+        if item["score"] >= SKIP_THRESHOLD or item["overlap"] >= _MATCH_SAME_OVERLAP:
             verdict = "same"
-        elif overlap <= _MATCH_DIFFERENT_OVERLAP:
+        elif item["overlap"] <= _MATCH_DIFFERENT_OVERLAP:
             verdict = "different"
+        elif known_verdicts and known_verdicts.get(info["id"]) in ("same", "different"):
+            verdict = known_verdicts[info["id"]]
+            info["tiebreaker"] = verdict
         elif tiebreaker is None:
             ambiguous = True
             continue
         else:
-            existing_text = f"{root.content}\nSteps: " + "; ".join(
-                (_proc(s).get("action") or s.content) for s in graph.steps.values()
-            )
-            new_text = f"{vp.description}\nSteps: " + "; ".join(s.action for s in vp.steps)
+            if before_tiebreak is not None and not released:
+                await before_tiebreak()
+                released = True
             try:
-                verdict = await tiebreaker(new_text, existing_text)
+                verdict = await tiebreaker(new_text, item["existing_text"])
             except Exception as exc:
-                logger.warning("Procedural match tiebreaker failed for %s: %s", root.id, exc)
+                logger.warning("Procedural match tiebreaker failed for %s: %s", item["root_id"], exc)
                 ambiguous = True
                 continue
             info["tiebreaker"] = verdict
         if verdict == "same":
             return MatchResult(
-                kind="match", root_id=root.id, score=round(score, 4), overlap=overlap,
-                verdict=verdict, alignment=alignment, candidates=candidates,
+                kind="match", root_id=item["root_id"], score=round(item["score"], 4),
+                overlap=item["overlap"], verdict=verdict, alignment=item["alignment"],
+                candidates=candidates,
             )
     if ambiguous:
         return MatchResult(kind="ambiguous", score=round(close[0][1], 4), candidates=candidates)
@@ -718,9 +752,10 @@ def derive_edits(graph: GraphState, ledger: dict[str, Any], settings: AppSetting
             if obs.get("evidence") != "observed" or not _item_exists(graph, obs["item"]):
                 continue
             key = (obs["item"], obs["field"], normalize_text(obs["text"]))
-            group = grouped.setdefault(key, {"text": obs["text"], "support": []})
+            group = grouped.setdefault(key, {"text": obs["text"], "support": [], "sources": {}})
             if thread_id not in group["support"]:
                 group["support"].append(thread_id)
+            group["sources"].setdefault(thread_id, sorted(set(obs.get("source_messages") or [])))
     planned_counts: dict[tuple[str, str], int] = {}
     for (item, field_name, norm), group in grouped.items():
         current = _current_values(graph, item, field_name)
@@ -730,7 +765,8 @@ def derive_edits(graph: GraphState, ledger: dict[str, Any], settings: AppSetting
             if planned_counts.get((item, field_name)):
                 continue
             planned_counts[(item, field_name)] = 1
-            edits.append(Edit(_FIELD_EDIT[field_name], item, {"field": field_name, "text": group["text"]},
+            edits.append(Edit(_FIELD_EDIT[field_name], item,
+                              {"field": field_name, "text": group["text"], "sources": group["sources"]},
                               group["support"], structural=False))
             continue
         values = current if isinstance(current, list) else []
@@ -740,7 +776,8 @@ def derive_edits(graph: GraphState, ledger: dict[str, Any], settings: AppSetting
         gate = "cap_reached" if len(values) + planned >= _ATTR_PER_FIELD_MAX else None
         if gate is None:
             planned_counts[(item, field_name)] = planned + 1
-        edits.append(Edit(_FIELD_EDIT[field_name], item, {"field": field_name, "text": group["text"]},
+        edits.append(Edit(_FIELD_EDIT[field_name], item,
+                          {"field": field_name, "text": group["text"], "sources": group["sources"]},
                           group["support"], structural=False, gate=gate))
 
     # 2. Novel steps: alternatives or new main-path steps, never from failures alone.
@@ -960,10 +997,17 @@ async def apply_edit(
                 container[field_name] = text
             else:
                 container[field_name] = [*(container.get(field_name) or []), text]
+            # Provenance per supporting thread: the messages each one cited.
+            sources = edit.payload.get("sources") or {}
             attr = container.setdefault("attribute_evidence", {})
-            attr.setdefault(field_name, []).append(
-                {"text": text, "evidence": "observed", "source_messages": [], "threads": edit.support}
-            )
+            attr.setdefault(field_name, []).append({
+                "text": text,
+                "evidence": "observed",
+                "source_messages": sorted({s for seqs in sources.values() for s in seqs}),
+                "sources": sources,
+                "threads": edit.support,
+                "run_id": ctx.run_id,
+            })
         if kind == "step":
             set_node_metadata(node, metadata, snaps)
         else:
@@ -1030,12 +1074,29 @@ async def apply_edit(
     if edit.kind == "deprecate_step":
         step_id = uuid.UUID(edit.target.split(":", 1)[1])
         node = graph.steps[step_id]
+        preds = [e.source_id for e in graph.edges
+                 if e.target_id == step_id and e.relationship_type == "precedes" and e.source_id != step_id]
+        succs = [e.target_id for e in graph.edges
+                 if e.source_id == step_id and e.relationship_type == "precedes" and e.target_id != step_id]
         node.deleted_at = now
         snaps.node_deleted.append(_sid(step_id))
         for edge in graph.edges:
             if edge.source_id == step_id or edge.target_id == step_id:
                 await invalidate_relationship(edge.id, session, valid_until=now)
                 snaps.edge_invalidated.append(_sid(edge.id))
+        # Stitch the path back together so removing a middle step does not orphan
+        # its neighbours (pred -> step -> succ becomes pred -> succ).
+        for pred in preds:
+            for succ in succs:
+                if pred == succ or graph.edge(pred, succ, "precedes") is not None:
+                    continue
+                eid = await create_procedural_edge(
+                    session, source_id=pred, target_id=succ, rel_type="precedes",
+                    metadata={"origin": "extracted", "condition": None, "guidance": None, "pitfalls": [],
+                              "added_by_run": ctx.run_id, "rewired_around": _sid(step_id),
+                              "support": edit.support},
+                )
+                snaps.created_edges.append(_sid(eid))
         return
 
     if edit.kind == "update_entry":
@@ -1104,6 +1165,7 @@ async def evolve_procedure(
     max_seq: int,
     dry_run: bool = False,
     structural_allowed: bool = True,
+    lock: bool = False,
 ) -> EvolutionResult:
     """Account this session's evidence and derive, gate and (maybe) apply edits.
 
@@ -1111,7 +1173,9 @@ async def evolve_procedure(
     """
     assert match.root_id is not None
     settings: AppSettings = ctx.settings
-    graph = await load_graph(session, root_id=match.root_id, tenant_id=thread.tenant_id)
+    # With lock=True the root is held FOR UPDATE and re-read, so the ledger
+    # below is the one the previous writer committed.
+    graph = await load_graph(session, root_id=match.root_id, tenant_id=thread.tenant_id, lock=lock and not dry_run)
     ledger = ledger_of(graph.root)
     thread_key = _sid(thread.id)
 
@@ -1121,8 +1185,10 @@ async def evolve_procedure(
     if thread_key in (ledger["evicted"].get("threads") or []):
         return EvolutionResult(status="evicted")
 
+    # A concurrent run may have retired an aligned step since phase A.
+    alignment = {key: step_id for key, step_id in match.alignment.items() if step_id in graph.steps}
     entry = build_session_entry(
-        vp=vp, alignment=match.alignment, active_edges=graph.active_edge_map(),
+        vp=vp, alignment=alignment, active_edges=graph.active_edge_map(),
         run_id=ctx.run_id, max_seq=max_seq, now=ctx.now,
     )
     ledger["sessions"][thread_key] = entry  # replaces this thread's earlier contribution
@@ -1208,15 +1274,39 @@ def _parse_ts(value: Any) -> datetime | None:
     return datetime.fromisoformat(str(value))
 
 
-async def rollback_procedural_decision(
-    session: AsyncSession, *, action: str, content: str, memory_id: uuid.UUID | None, now: datetime,
-) -> str:
-    """Undo one procedural decision row. Returns rolled_back | skipped_modified | noop.
+async def _get_node(session: AsyncSession, node_id: str | uuid.UUID, tenant_id: str) -> MemoryNode | None:
+    return (await session.execute(
+        select(MemoryNode).where(MemoryNode.id == uuid.UUID(str(node_id)), MemoryNode.tenant_id == tenant_id)
+    )).scalar_one_or_none()
 
-    ``proc_create`` soft-deletes the created root and its steps. Any row with a
-    ``snapshot`` restores in-place metadata (only where the current value still
-    equals the recorded ``after``), un-deletes deprecated steps, re-activates
-    invalidated edges, and retires nodes and edges the run added.
+
+async def _get_edge(session: AsyncSession, edge_id: str | uuid.UUID, tenant_id: str) -> MemoryRelationship | None:
+    return (await session.execute(
+        select(MemoryRelationship).where(
+            MemoryRelationship.id == uuid.UUID(str(edge_id)), MemoryRelationship.tenant_id == tenant_id,
+        )
+    )).scalar_one_or_none()
+
+
+async def rollback_procedural_decision(
+    session: AsyncSession,
+    *,
+    action: str,
+    content: str,
+    memory_id: uuid.UUID | None,
+    now: datetime,
+    tenant_id: str,
+) -> str:
+    """Undo one procedural decision row, all or nothing.
+
+    Returns ``rolled_back``, ``skipped_modified`` (something the run changed
+    was changed again afterwards, so nothing is touched) or ``noop``.
+
+    ``proc_create`` soft-deletes the root and its steps and closes their
+    active edges. A row with a ``snapshot`` restores in-place metadata,
+    reinstates deprecated steps and invalidated edges, and retires the
+    nodes, edges and provenance rows the run added. Every lookup is
+    tenant-scoped.
     """
     try:
         body = json.loads(content)
@@ -1224,61 +1314,99 @@ async def rollback_procedural_decision(
         return "noop"
 
     if action == "proc_create" and memory_id is not None:
-        root = await session.get(MemoryNode, memory_id)
+        root = await _get_node(session, memory_id, tenant_id)
         if root is None or root.deleted_at is not None:
             return "noop"
-        root.deleted_at = now
-        root.is_current = False
-        children = (await session.execute(
-            select(MemoryNode).where(MemoryNode.parent_id == memory_id, MemoryNode.deleted_at.is_(None))
-        )).scalars().all()
-        for child in children:
-            child.deleted_at = now
-            child.is_current = False
-        await session.execute(delete(ConversationExtraction).where(ConversationExtraction.memory_node_id == memory_id))
+        children = list((await session.execute(
+            select(MemoryNode).where(
+                MemoryNode.parent_id == memory_id,
+                MemoryNode.tenant_id == tenant_id,
+                MemoryNode.deleted_at.is_(None),
+            )
+        )).scalars().all())
+        node_ids = [root.id, *(c.id for c in children)]
+        edges = list((await session.execute(
+            select(MemoryRelationship).where(
+                or_(MemoryRelationship.source_id.in_(node_ids), MemoryRelationship.target_id.in_(node_ids)),
+                MemoryRelationship.tenant_id == tenant_id,
+                MemoryRelationship.valid_until.is_(None),
+            )
+        )).scalars().all())
+        for node in [root, *children]:
+            node.deleted_at = now
+            node.is_current = False
+        for edge in edges:
+            edge.valid_until = now
+        await session.execute(delete(ConversationExtraction).where(
+            ConversationExtraction.memory_node_id == memory_id,
+            ConversationExtraction.tenant_id == tenant_id,
+        ))
         return "rolled_back"
 
     snapshot = body.get("snapshot")
     if not isinstance(snapshot, dict):
         return "noop"
-    modified = False
+
+    # Phase 1: verify every recorded change is still in the state the run left.
+    node_meta = []
     for entry in snapshot.get("node_meta", []):
-        node = await session.get(MemoryNode, uuid.UUID(entry["id"]))
-        if node is None:
-            continue
-        if _jsonable(node.metadata_) == entry["after"]:
-            node.metadata_ = entry["before"]
-        else:
-            modified = True
+        node = await _get_node(session, entry["id"], tenant_id)
+        if node is None or _jsonable(node.metadata_) != entry["after"]:
+            return "skipped_modified"
+        node_meta.append((node, entry["before"]))
+    edge_meta = []
     for entry in snapshot.get("edge_meta", []):
-        edge = await session.get(MemoryRelationship, uuid.UUID(entry["id"]))
-        if edge is None:
-            continue
-        if _jsonable(edge.metadata_) == entry["after"]:
-            edge.metadata_ = entry["before"]
-        else:
-            modified = True
+        edge = await _get_edge(session, entry["id"], tenant_id)
+        if edge is None or _jsonable(edge.metadata_) != entry["after"]:
+            return "skipped_modified"
+        edge_meta.append((edge, entry["before"]))
+    deleted_nodes = []
     for node_id in snapshot.get("node_deleted", []):
-        node = await session.get(MemoryNode, uuid.UUID(node_id))
-        if node is not None:
-            node.deleted_at = None
-    for edge_id in snapshot.get("edge_invalidated", []):
-        edge = await session.get(MemoryRelationship, uuid.UUID(edge_id))
-        if edge is not None:
-            edge.valid_until = None
+        node = await _get_node(session, node_id, tenant_id)
+        if node is None or node.deleted_at is None:
+            return "skipped_modified"
+        deleted_nodes.append(node)
+    invalidated = []
+    for edge_id in dict.fromkeys(snapshot.get("edge_invalidated", [])):
+        edge = await _get_edge(session, edge_id, tenant_id)
+        if edge is None or edge.valid_until is None:
+            return "skipped_modified"
+        invalidated.append(edge)
+    created_nodes = []
     for node_id in snapshot.get("created_nodes", []):
-        node = await session.get(MemoryNode, uuid.UUID(node_id))
-        if node is not None and node.deleted_at is None:
-            node.deleted_at = now
-            node.is_current = False
+        node = await _get_node(session, node_id, tenant_id)
+        if node is None or node.deleted_at is not None:
+            return "skipped_modified"
+        created_nodes.append(node)
+    created_edges = []
     for edge_id in snapshot.get("created_edges", []):
-        edge = await session.get(MemoryRelationship, uuid.UUID(edge_id))
-        if edge is not None and edge.valid_until is None:
-            edge.valid_until = now
+        edge = await _get_edge(session, edge_id, tenant_id)
+        if edge is None or edge.valid_until is not None:
+            return "skipped_modified"
+        created_edges.append(edge)
+
+    # Phase 2: apply all of it.
+    for node, before in node_meta:
+        node.metadata_ = before
+    for edge, before in edge_meta:
+        edge.metadata_ = before
+    for edge in created_edges:
+        edge.valid_until = now
+    for node in created_nodes:
+        node.deleted_at = now
+        node.is_current = False
+    await session.flush()  # retire added edges before reinstating the ones they replaced
+    for node in deleted_nodes:
+        node.deleted_at = None
+    for edge in invalidated:
+        edge.valid_until = None
     extraction_ids = [uuid.UUID(x) for x in snapshot.get("created_extractions", [])]
     if extraction_ids:
-        await session.execute(delete(ConversationExtraction).where(ConversationExtraction.id.in_(extraction_ids)))
-    return "skipped_modified" if modified else "rolled_back"
+        await session.execute(delete(ConversationExtraction).where(
+            ConversationExtraction.id.in_(extraction_ids),
+            ConversationExtraction.tenant_id == tenant_id,
+        ))
+    return "rolled_back"
 
 
 def utcnow() -> datetime:

@@ -67,6 +67,11 @@ async def test_dreaming_builds_a_graph_that_553_retrieval_returns(async_session,
     root_id = uuid.UUID(result["procedures"]["procedure_ids"][0])
 
     entry = await resolve_procedure_entry(root_id, async_session, tenant_id=TENANT)
+    from memoryhub_core.services.exceptions import ProcedureNotEstablishedError
+
+    with pytest.raises(ProcedureNotEstablishedError):  # one session: still a candidate
+        await localized_guidance(entry, async_session, tenant_id=TENANT, generator=_Guidance())
+    monkeypatch.setenv("MEMORYHUB_PROCEDURAL_SERVE_CANDIDATES", "true")
     generator = _Guidance()
     guidance = await localized_guidance(entry, async_session, tenant_id=TENANT, generator=generator)
     assert guidance.guidance_text.startswith("Build")
@@ -118,3 +123,75 @@ async def test_failure_injection_is_atomic_on_postgres(async_session, embedding_
     for model in (MemoryNode, MemoryRelationship, ConversationExtraction):
         count = (await async_session.execute(select(func.count()).select_from(model))).scalar_one()
         assert count == 0, model.__name__
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (review of #554, item 2): two sessions, two connections.
+# ---------------------------------------------------------------------------
+
+
+class _SlowLLM(FakeLLM):
+    """Delays every answer so the two runs overlap in phase A."""
+
+    async def complete(self, messages):
+        import asyncio
+
+        await asyncio.sleep(0.3)
+        return await super().complete(messages)
+
+
+@pytest.fixture
+async def second_session(async_session):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from tests.integration.conftest import _build_db_url
+
+    engine = create_async_engine(_build_db_url())
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        yield session
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refinements_keep_both_sessions_evidence(async_session, second_session, embedding_service):
+    import asyncio
+
+    seed = await make_thread(async_session, SUCCESS)
+    first = await run(async_session, embedding_service, seed, FakeLLM(success_proposal()))
+    root_id = uuid.UUID(first["procedure_ids"][0])
+    t1 = await make_thread(async_session, SUCCESS)
+    t2 = await make_thread(async_session, SUCCESS)
+    t2_other = await second_session.get(type(t2), t2.id)
+
+    r1, r2 = await asyncio.gather(
+        run(async_session, embedding_service, t1, _SlowLLM(success_proposal())),
+        run(second_session, embedding_service, t2_other, _SlowLLM(success_proposal())),
+    )
+    assert r1["matched"] == 1 and r2["matched"] == 1, (r1, r2)
+    expected = {str(seed.id), str(t1.id), str(t2.id)}
+    async_session.expire_all()
+    graph = await load_graph(async_session, root_id=root_id, tenant_id=TENANT, lock=False)
+    await async_session.refresh(graph.root)
+    sessions = graph.root.metadata_["procedure"]["evidence"]["sessions"]
+    assert expected <= set(sessions), sorted(sessions)
+    for step in graph.steps.values():
+        await async_session.refresh(step)
+        assert step.metadata_["procedure"]["evidence"]["success_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_concurrent_creation_makes_one_root(async_session, second_session, embedding_service):
+    import asyncio
+
+    t1 = await make_thread(async_session, SUCCESS)
+    t2 = await make_thread(async_session, SUCCESS)
+    t2_other = await second_session.get(type(t2), t2.id)
+    r1, r2 = await asyncio.gather(
+        run(async_session, embedding_service, t1, _SlowLLM(success_proposal())),
+        run(second_session, embedding_service, t2_other, _SlowLLM(success_proposal())),
+    )
+    assert sorted([r1["created"], r2["created"]]) == [0, 1], (r1, r2)
+    assert sorted([r1["matched"], r2["matched"]]) == [0, 1]
+    async_session.expire_all()
+    assert len(await roots(async_session)) == 1

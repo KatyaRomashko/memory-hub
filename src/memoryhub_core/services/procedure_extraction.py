@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import re
+import ssl
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -44,7 +45,7 @@ from pydantic import (
     ValidationError,
     field_validator,
 )
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from memoryhub_core.config import AppSettings
@@ -245,7 +246,23 @@ def _clip(text: str, head: int, tail: int) -> str:
     return f"{text[:head]}\n[... {omitted} chars omitted ...]\n{text[-tail:]}"
 
 
+_DELIMITER_RE = re.compile(r"<(/?)(transcript)", re.IGNORECASE)
+
+
+def _neutralize_delimiters(text: str) -> str:
+    """Stop message content from closing or reopening the transcript block."""
+    return _DELIMITER_RE.sub(r"&lt;\1\2", text)
+
+
+def wrap_transcript(text: str) -> str:
+    return f"<transcript>\n{text}\n</transcript>"
+
+
 def _render_event(event: TrajectoryEvent) -> str:
+    event = TrajectoryEvent(
+        seq=event.seq, role=event.role, content=_neutralize_delimiters(event.content),
+        tool_call_id=event.tool_call_id, outcome_marker=event.outcome_marker, available=event.available,
+    )
     if event.role == "tool_result":
         body = _clip(event.content, _RESULT_HEAD, _RESULT_TAIL)
     elif event.role == "tool_call":
@@ -478,13 +495,17 @@ class ProceduralLLM:
         api_key: str = "",
         timeout: float = 60,
         client: httpx.AsyncClient | None = None,
+        ca_bundle: str | None = None,
     ) -> None:
         self.model = model
         self.url = url.rstrip("/")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         # TODO(#604): replace with the shared outbound LLM client factory once
         # it exists. Default TLS verification on purpose: no verify=False here.
-        self._client = client or httpx.AsyncClient(timeout=timeout, headers=headers)
+        # A private CA is configured with procedural_llm_ca_bundle (a path), never by
+        # turning verification off.
+        verify: Any = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
+        self._client = client or httpx.AsyncClient(timeout=timeout, headers=headers, verify=verify)
         self._owns_client = client is None
 
     async def aclose(self) -> None:
@@ -569,7 +590,7 @@ async def detect_procedure(llm: Any, transcript: str) -> ProceduralProposal:
     system_prompt, _, _ = load_prompts()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": transcript},
+        {"role": "user", "content": wrap_transcript(transcript)},
     ]
     content, finish = await llm.complete(messages)
     try:
@@ -784,16 +805,27 @@ class Rejection:
     detail: str
 
 
-def _ev(item: EvidencedText | None, included: set[int]) -> EvText | None:
+def _corroborated(seqs: list[int], trusted: set[int]) -> bool:
+    """True when at least one cited message was written by the agent or the user.
+
+    Tool results are untrusted text (command output, fetched pages, files).
+    Text that only a tool result shows is never ``observed``: otherwise a
+    line in a tool's output could become a step or a pitfall that #553
+    later injects into another agent's context (review of #554).
+    """
+    return bool(set(seqs) & trusted)
+
+
+def _ev(item: EvidencedText | None, included: set[int], trusted: set[int]) -> EvText | None:
     if item is None:
         return None
     seqs = sorted({s for s in item.source_messages if s in included})
-    evidence = item.evidence if seqs else "inferred"
+    evidence = item.evidence if _corroborated(seqs, trusted) else "inferred"
     return EvText(text=item.text, evidence=evidence, source_messages=seqs)
 
 
-def _ev_list(items: list[EvidencedText], included: set[int]) -> list[EvText]:
-    return [x for x in (_ev(item, included) for item in items) if x is not None]
+def _ev_list(items: list[EvidencedText], included: set[int], trusted: set[int]) -> list[EvText]:
+    return [x for x in (_ev(item, included, trusted) for item in items) if x is not None]
 
 
 def _resolve_outcome(
@@ -811,8 +843,9 @@ def _resolve_outcome(
     failure_edge = None
     if failure and failure.edge and (failure.edge.source, failure.edge.target) in edge_keys:
         failure_edge = (failure.edge.source, failure.edge.target)
+    trusted = {e.seq for e in events if e.role != "tool_result" and e.seq in included}
     failure_seqs = sorted({s for s in (failure.source_messages if failure else []) if s in included})
-    failure_observed = bool(failure and failure.evidence == "observed" and failure_seqs)
+    failure_observed = bool(failure and failure.evidence == "observed" and _corroborated(failure_seqs, trusted))
 
     marker_event = next((e for e in reversed(events) if e.outcome_marker), None)
     if marker_event is not None:
@@ -832,7 +865,7 @@ def _resolve_outcome(
     strong = (
         raw.result in ("success", "failure", "partial")
         and raw.evidence == "observed"
-        and bool(seqs)
+        and _corroborated(seqs, trusted)
         and raw.confidence >= settings.procedural_min_outcome_confidence
     )
     return OutcomeInfo(
@@ -860,6 +893,8 @@ def validate_proposal(
     roles = {e.seq: e.role for e in events}
     tool_seqs = {s for s, r in roles.items() if r in ("tool_call", "tool_result") and s in included}
     call_seqs = {s for s, r in roles.items() if r == "tool_call" and s in included}
+    # Messages the agent or the user wrote. Tool results corroborate nothing on their own.
+    trusted = {s for s, r in roles.items() if r != "tool_result" and s in included}
     notes: list[str] = []
 
     if not proposal.goal:
@@ -878,6 +913,9 @@ def validate_proposal(
             continue
         seqs = sorted({s for s in raw.source_messages if s in included})
         evidence = raw.evidence if seqs else "inferred"
+        if evidence == "observed" and not _corroborated(seqs, trusted):
+            evidence = "inferred"
+            notes.append(f"step {raw.key}: cited only tool output; downgraded")
         if evidence == "observed" and raw.tool_ref and not (set(seqs) & tool_seqs):
             evidence = "inferred"
             notes.append(f"step {raw.key}: tool_ref without a cited tool message; downgraded")
@@ -885,10 +923,10 @@ def validate_proposal(
             key=raw.key,
             action=raw.action,
             tool_ref=raw.tool_ref,
-            preconditions=_ev_list(raw.preconditions, included),
-            postconditions=_ev_list(raw.postconditions, included),
-            pitfalls=_ev_list(raw.pitfalls, included),
-            guidance=_ev(raw.guidance, included),
+            preconditions=_ev_list(raw.preconditions, included, trusted),
+            postconditions=_ev_list(raw.postconditions, included, trusted),
+            pitfalls=_ev_list(raw.pitfalls, included, trusted),
+            guidance=_ev(raw.guidance, included, trusted),
             status=raw.status,
             evidence=evidence,
             source_messages=seqs,
@@ -910,7 +948,7 @@ def validate_proposal(
             continue
         seen.add(triple)
         seqs = sorted({s for s in raw.source_messages if s in included})
-        evidence = raw.evidence if seqs else "inferred"
+        evidence = raw.evidence if _corroborated(seqs, trusted) else "inferred"
         if raw.source not in observed or raw.target not in observed:
             evidence = "inferred"
         elif raw.type == "precedes" and observed[raw.source].first_seq >= observed[raw.target].first_seq:
@@ -920,9 +958,9 @@ def validate_proposal(
             source=raw.source,
             target=raw.target,
             type=raw.type,
-            condition=_ev(raw.condition, included),
-            guidance=_ev(raw.guidance, included),
-            pitfalls=_ev_list(raw.pitfalls, included),
+            condition=_ev(raw.condition, included, trusted),
+            guidance=_ev(raw.guidance, included, trusted),
+            pitfalls=_ev_list(raw.pitfalls, included, trusted),
             evidence=evidence,
             source_messages=seqs,
         )
@@ -1429,6 +1467,51 @@ async def _overlapping_facts(
     return out
 
 
+async def release_transaction(session: AsyncSession) -> None:
+    """End the session's implicit read transaction before a slow step (an LLM call).
+
+    Holding a transaction open while waiting on a model leaves the pooled
+    connection "idle in transaction" for minutes (review of #554, item 3).
+    Only a transaction with nothing pending is ended; pending writes are a
+    programming error here and are left for the caller.
+    """
+    if not session.in_transaction():
+        return
+    if session.new or session.dirty or session.deleted:
+        logger.warning("release_transaction called with pending changes; leaving the transaction open")
+        return
+    await session.commit()
+
+
+def _dialect(session: AsyncSession) -> str:
+    try:
+        return session.get_bind().dialect.name
+    except Exception:  # pragma: no cover - unbound sessions in odd test setups
+        return ""
+
+
+async def lock_thread(session: AsyncSession, thread: ConversationThread) -> None:
+    """``SELECT ... FOR UPDATE`` on the thread and refresh it (no-op lock on SQLite)."""
+    await session.execute(
+        select(ConversationThread)
+        .where(ConversationThread.id == thread.id, ConversationThread.tenant_id == thread.tenant_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+async def lock_owner_scope(session: AsyncSession, thread: ThreadInfo) -> None:
+    """Transaction-scoped advisory lock serializing procedure *creation* per owner scope.
+
+    Two sessions of the same owner that detect the same new procedure
+    concurrently would otherwise both create a root. PostgreSQL only.
+    """
+    if _dialect(session) != "postgresql":
+        return
+    key = f"memoryhub:procedural:{thread.tenant_id}:{thread.owner_id}:{thread.scope}:{thread.scope_id or ''}"
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key})
+
+
 async def extract_procedures_from_thread(
     session: AsyncSession,
     *,
@@ -1448,6 +1531,13 @@ async def extract_procedures_from_thread(
 ) -> dict[str, Any]:
     """Run the procedural pass over one thread and return the ``procedures`` report.
 
+    Two phases. Phase A reads the trajectory, calls the model, validates,
+    runs the curation pre-flight and matching, and holds no transaction
+    while a model call is in flight. Phase B takes the locks (thread row,
+    owner-scope advisory lock for a new root, ``FOR UPDATE`` on a matched
+    root), re-checks the cursor and the ledger, and writes everything in one
+    transaction.
+
     Never raises for model, validation or write failures: those are reported
     under ``error`` or ``rejections`` so the fact results are unaffected.
     """
@@ -1466,25 +1556,21 @@ async def extract_procedures_from_thread(
     run_id = f"dream-proc:{model}:{prompt_hash}:{now.isoformat()}"
     info = ThreadInfo.of(thread)
 
-    if not dry_run:
-        # Serialize procedural runs per thread (a no-op on SQLite).
-        await session.execute(
-            select(ConversationThread)
-            .where(ConversationThread.id == info.id, ConversationThread.tenant_id == info.tenant_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
     cursor = int(cursor_state(thread).get("last_seq", 0) or 0)
     report = _empty_report(mode, run_id, cursor)
     if dry_run:
         report["dry_run"] = True
+    max_seq = 0
 
     async def finish(*, advance: bool, error: str | None = None) -> None:
+        """Write the cursor (re-read under the thread lock) and commit."""
         if dry_run:
             return
+        await lock_thread(session, thread)
+        current = int(cursor_state(thread).get("last_seq", 0) or 0)
         updates: dict[str, Any] = {"last_run_id": run_id, "last_attempt_at": now.isoformat(), "last_error": error}
         if advance and turn_range is None:
-            updates["last_seq"] = max(cursor, max_seq)
+            updates["last_seq"] = max(current, max_seq)
             report["cursor"] = updates["last_seq"]
         set_cursor_state(thread, **updates)
         await session.commit()
@@ -1497,6 +1583,11 @@ async def extract_procedures_from_thread(
                 payload={"detail": detail, **(payload or {})}, stub=detail, **kwargs,
             )
 
+    async def rollback_and_reload() -> None:
+        await session.rollback()
+        await session.refresh(thread)
+        ctx.created_node_ids.clear()
+
     if info.scope not in ALLOWED_THREAD_SCOPES:
         report["skipped"] = "scope_not_allowed"
         reject("scope_not_allowed", f"thread scope {info.scope!r} may not produce procedures")
@@ -1504,30 +1595,33 @@ async def extract_procedures_from_thread(
             await session.commit()
         return report
 
+    # ---- Phase A: read, model, validate, pre-flight, match (no locks held) ----
     events = await load_trajectory(
         session, thread_id=info.id, tenant_id=info.tenant_id, s3_adapter=s3_adapter, turn_range=turn_range,
     )
     max_seq = max((e.seq for e in events), default=0)
     if turn_range is None and max_seq <= cursor:
         report["skipped"] = "no_new_messages"
-        if not dry_run:
-            await session.commit()
+        await release_transaction(session)
         return report
     if not any(e.role == "tool_call" for e in events):
         report["skipped"] = "no_tool_calls"
-        if not dry_run:
-            await session.commit()
+        await release_transaction(session)
         return report
 
     transcript, included = format_trajectory(events, max_chars=settings.procedural_max_transcript_chars)
     roles = {e.seq: e.role for e in events}
     owns_llm = llm is None
     if llm is None:
-        llm = ProceduralLLM(model=model, url=url, api_key=api_key, timeout=timeout)
+        llm = ProceduralLLM(
+            model=model, url=url, api_key=api_key, timeout=timeout,
+            ca_bundle=settings.procedural_llm_ca_bundle or None,
+        )
     ctx = RunContext(
         run_id=run_id, model=model, prompt_hash=prompt_hash, mode=mode,
         settings=settings, now=now, roles=roles,
     )
+    await release_transaction(session)
 
     try:
         try:
@@ -1564,6 +1658,7 @@ async def extract_procedures_from_thread(
             report["proposal"] = validated.to_dict()
             report["curation"] = "not_run_in_dry_run"
         else:
+            # May seed the tenant's curation rules (a commit): done before any lock.
             blocked = await curation_preflight(session, validated.all_text(), thread=info)
             if blocked is not None:
                 # The proposal text is withheld from the log on purpose.
@@ -1575,7 +1670,36 @@ async def extract_procedures_from_thread(
         match = await find_matching_procedure(
             session, thread=info, vp=validated, embedding_service=embedding_service,
             settings=settings, tiebreaker=make_tiebreaker(llm),
+            before_tiebreak=lambda: release_transaction(session),
         )
+
+        if dry_run:
+            return await _dry_run_plan(
+                session, embedding_service, report=report, info=info, validated=validated,
+                match=match, ctx=ctx, max_seq=max_seq,
+            )
+
+        # ---- Phase B: lock, re-check, write, commit ----
+        await release_transaction(session)
+        await lock_thread(session, thread)
+        locked_cursor = int(cursor_state(thread).get("last_seq", 0) or 0)
+        if turn_range is None and locked_cursor >= max_seq:
+            report["skipped"] = "processed_concurrently"
+            report["cursor"] = locked_cursor
+            await session.commit()
+            return report
+
+        if match.kind == "new":
+            await lock_owner_scope(session, info)
+            # Another run may have created the root while this one was in phase A.
+            rematch = await find_matching_procedure(
+                session, thread=info, vp=validated, embedding_service=embedding_service,
+                settings=settings, tiebreaker=None, known_verdicts=match.verdicts(),
+            )
+            if rematch.kind != "new":
+                rematch.candidates.append({"rematched_under_lock": True})
+                match = rematch
+
         report["match"] = match.to_dict()
         proposal_payload = {"proposal": validated.to_dict(), "match": match.to_dict()}
 
@@ -1591,10 +1715,6 @@ async def extract_procedures_from_thread(
                        proposal_payload, source_messages=validated.source_messages)
                 await finish(advance=True)
                 return report
-            if dry_run:
-                report["plan"] = {"action": "create", "status": "candidate"}
-                report["created"] = 0
-                return report
             try:
                 root_id = await write_new_procedure(
                     session, embedding_service, thread=info, vp=validated, ctx=ctx, max_seq=max_seq,
@@ -1608,18 +1728,14 @@ async def extract_procedures_from_thread(
                 )
                 await finish(advance=True)
             except ProceduralInvariantError as exc:
-                await session.rollback()
-                await session.refresh(thread)
-                ctx.created_node_ids.clear()
+                await rollback_and_reload()
                 reject("breaks_entry", str(exc)[:500], proposal_payload,
                        source_messages=validated.source_messages)
                 await finish(advance=True)
                 return report
             except Exception as exc:
                 logger.exception("Procedural graph write failed for thread %s", info.id)
-                await session.rollback()
-                await session.refresh(thread)
-                ctx.created_node_ids.clear()
+                await rollback_and_reload()
                 report["error"] = f"write failed: {str(exc)[:400]}"
                 await finish(advance=False, error=report["error"])
                 return report
@@ -1629,27 +1745,34 @@ async def extract_procedures_from_thread(
             report["overlapping_facts"] = await _overlapping_facts(
                 session, embedding_service, validated.description, fact_memory_ids or [], tenant_id=info.tenant_id,
             )
+            await release_transaction(session)
             return report
 
-        # match.kind == "match"
+        # match.kind == "match": evolve_procedure locks the root and re-reads its ledger.
         report["matched"] = 1
         report["procedure_ids"] = [str(match.root_id)]
         try:
-            result = await evolve_procedure(
-                session, embedding_service, thread=info, vp=validated, match=match,
-                ctx=ctx, max_seq=max_seq, dry_run=dry_run,
-            )
-        except ProceduralInvariantError as exc:
-            logger.warning("Structural edits for %s broke an invariant; retrying without them: %s",
-                           match.root_id, exc)
-            await session.rollback()
-            await session.refresh(thread)
-            ctx.created_node_ids.clear()
-            report["structural_rollback"] = str(exc)[:500]
-            result = await evolve_procedure(
-                session, embedding_service, thread=info, vp=validated, match=match,
-                ctx=ctx, max_seq=max_seq, dry_run=dry_run, structural_allowed=False,
-            )
+            try:
+                result = await evolve_procedure(
+                    session, embedding_service, thread=info, vp=validated, match=match,
+                    ctx=ctx, max_seq=max_seq, lock=True,
+                )
+            except ProceduralInvariantError as exc:
+                logger.warning("Structural edits for %s broke an invariant; retrying without them: %s",
+                               match.root_id, exc)
+                await rollback_and_reload()
+                report["structural_rollback"] = str(exc)[:500]
+                await lock_thread(session, thread)
+                result = await evolve_procedure(
+                    session, embedding_service, thread=info, vp=validated, match=match,
+                    ctx=ctx, max_seq=max_seq, lock=True, structural_allowed=False,
+                )
+        except Exception as exc:
+            logger.exception("Procedural refinement failed for %s", match.root_id)
+            await rollback_and_reload()
+            report["error"] = f"refinement failed: {str(exc)[:400]}"
+            await finish(advance=False, error=report["error"])
+            return report
 
         if result.status in ("duplicate", "evicted"):
             reason = "duplicate" if result.status == "duplicate" else "evidence_evicted"
@@ -1661,14 +1784,6 @@ async def extract_procedures_from_thread(
         report["edits_proposed"] = len(result.edits)
         report["edits_applied"] = len(result.applied)
         report["edits_rejected"] = len(result.rejected)
-        if dry_run:
-            report["plan"] = {
-                "action": "refine",
-                "edits": [e.to_dict() for e in result.edits],
-                "would_apply": [e.to_dict() for e in result.applied],
-            }
-            return report
-
         record_procedural_decision(
             session, kind=PROC_MATCH, reason=None, thread=info, run_id=run_id,
             payload={
@@ -1702,10 +1817,56 @@ async def extract_procedures_from_thread(
         report["overlapping_facts"] = await _overlapping_facts(
             session, embedding_service, validated.description, fact_memory_ids or [], tenant_id=info.tenant_id,
         )
+        await release_transaction(session)
         return report
     finally:
         if owns_llm:
             await llm.aclose()
+
+
+async def _dry_run_plan(
+    session: AsyncSession,
+    embedding_service: Any,
+    *,
+    report: dict[str, Any],
+    info: ThreadInfo,
+    validated: ValidatedProcedure,
+    match: Any,
+    ctx: RunContext,
+    max_seq: int,
+) -> dict[str, Any]:
+    """The dry-run tail: describe what would happen, write nothing, take no locks."""
+    from memoryhub_core.services.procedure_evolution import evolve_procedure
+
+    report["match"] = match.to_dict()
+    if match.kind == "ambiguous":
+        report["rejections"].append({"reason": "ambiguous_match", "detail": "nothing would be created"})
+    elif match.kind == "new":
+        if validated.outcome.is_failure:
+            report["rejections"].append({"reason": "insufficient_evidence", "detail": "failed_session"})
+        else:
+            report["plan"] = {"action": "create", "status": "candidate"}
+    else:
+        report["matched"] = 1
+        report["procedure_ids"] = [str(match.root_id)]
+        result = await evolve_procedure(
+            session, embedding_service, thread=info, vp=validated, match=match,
+            ctx=ctx, max_seq=max_seq, dry_run=True,
+        )
+        if result.status in ("duplicate", "evicted"):
+            report["rejections"].append({"reason": "duplicate" if result.status == "duplicate"
+                                         else "evidence_evicted", "detail": "already accounted"})
+        else:
+            report["edits_proposed"] = len(result.edits)
+            report["edits_applied"] = len(result.applied)
+            report["edits_rejected"] = len(result.rejected)
+            report["plan"] = {
+                "action": "refine",
+                "edits": [e.to_dict() for e in result.edits],
+                "would_apply": [e.to_dict() for e in result.applied],
+            }
+    await release_transaction(session)
+    return report
 
 
 async def _trigger_entity_extraction(ctx: RunContext, thread: ThreadInfo, embedding_service: Any) -> None:
