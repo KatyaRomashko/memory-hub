@@ -240,7 +240,7 @@ For each extraction window:
 
 ### Procedural graph pass (#554)
 
-When `MEMORYHUB_PROCEDURAL_EXTRACTION_MODE` is `propose` or `apply` (default `off`), `extract` runs a second pass after the fact windows. It re-reads the whole session (S3 content hydrated, budgeted), asks the model for a procedural graph proposal, writes new procedures in one transaction and refines matching ones. It keeps its own cursor in `thread.metadata_["procedural_extraction"]` and never moves `extraction_cursor`. An explicit outcome can be attached to a message with `append(..., options={"metadata": {"outcome": "success" | "failure" | "partial"}})`. Design: `planning/procedural-graph-extraction.md`.
+When `MEMORYHUB_PROCEDURAL_EXTRACTION_MODE` is `propose` or `apply` (default `off`), `extract` runs a second pass after the fact windows. It re-reads the whole session (S3 content hydrated, budgeted), asks the model for a procedural graph proposal, writes new procedures in one transaction and refines matching ones. It keeps its own cursor in `thread.metadata_["procedural_extraction"]` and never moves `extraction_cursor`. An explicit outcome can be attached to a message with `append(..., options={"metadata": {"outcome": "success" | "failure" | "partial"}})`, or `memoryhub thread outcome`. Hosts can stream trajectories into threads with `memoryhub thread record` (Claude Code hooks, installed by `memoryhub config init --record-trajectories`) or the opencode plugin's `recordTrajectory` option. Both are opt-in. Design: `planning/procedural-graph-extraction.md`.
 
 ### Integration with `write_memory`
 

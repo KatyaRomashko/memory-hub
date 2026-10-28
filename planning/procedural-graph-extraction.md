@@ -343,7 +343,9 @@ that structural edits need at least two independent sessions.
    `owner_id = thread.owner_id`, `scope = thread.scope`, and `scope_id = thread.scope_id`
    (`IS NULL` when the thread has none). Owner-equality mirrors the fact path's
    `check_similarity`. Hand-authored roots are candidates too, so a session that follows a
-   documented runbook does not create a duplicate of it.
+   documented runbook does not create a duplicate of it. **Amended 2026-10-28:** in a `project`
+   thread with a `scope_id`, the owner filter is dropped, so every member's procedures in that
+   project are candidates (see "Second review round").
 2. **Similarity.** Embed `"{goal}: {summary}"` and rank candidates by pgvector cosine with a
    dedicated query in the new module (`check_similarity` is not changed; it lacks the
    `content_type`, root and `scope_id` filters). Bands reuse `reconciliation.SKIP_THRESHOLD` (0.98)
@@ -491,7 +493,18 @@ whole edit batch is rolled back and each edit is recorded as `breaks_entry`.
 - `dry_run` (either mode): computes everything, writes nothing (no ledger, no cursor, no log), and
   returns the full proposals.
 
-EvalHub validation, as in the paper, is a follow-up.
+**Optional validation gate (added 2026-10-28).** As in the paper, an evaluation can be put in
+front of structural edits. `MEMORYHUB_PROCEDURAL_VALIDATION_URL` (empty, so off, by default)
+names an HTTP service, for example one backed by an EvalHub replay benchmark. In `apply` mode, phase A
+plans the edits (a dry run), closes the transaction and POSTs the planned structural edits
+(`add_step`, `add_edge`, `deprecate_*`, keyed by `Edit.key()`, no transcript text) to the
+service. It answers `accept` or `reject` per key. Phase B applies a structural edit only if that
+exact key was accepted. The gate fails closed: rejected, unreachable, or not seen (a concurrent
+run changed the plan) edits stay in `pending_edits` with `validation_rejected`,
+`validation_unavailable` or `validation_unseen`, and are asked about again with the next
+supporting session. Attribute edits are not gated. Contract: `procedure_validation.py`. Related settings:
+`procedural_validation_api_key`, `procedural_validation_timeout`,
+`procedural_validation_ca_bundle` (TLS verification stays on).
 
 ## D8: Interaction with fact extraction
 
@@ -584,18 +597,27 @@ scope here.
 
 ## Limitations
 
-- **Input data is thin.** Threads are filled only through `thread(action="append")` (MCP) and
-  `memoryhub thread append` (CLI). No host hook in this repo streams tool-call trajectories into
-  threads, and the post-turn `memoryhub extract` hook sees only the last assistant message. Which
-  hosts produce threads with `tool_call` / `tool_result` messages has **not** been verified, and
-  this doc claims none. Until such a hook exists, the pass mostly runs on hand-appended or
-  test transcripts.
-- **No host emits outcome markers.** Refinement depends on D6a.5 (model-judged outcomes backed
-  by observed messages) unless hosts adopt `metadata_.outcome`.
+- **Input data comes from opt-in recorders.** Two recorders stream trajectories into threads:
+  Claude Code hooks (`memoryhub config init --record-trajectories`, which runs
+  `memoryhub thread record`) and the opencode plugin (`recordTrajectory.enabled`). Both are off
+  by default, redact common secret formats client-side and clip long tool output. Other hosts
+  still need `thread(action="append")`.
+- **Outcome markers are manual.** `memoryhub thread outcome success|failure|partial` writes the
+  explicit marker. Without it, refinement depends on D6a.5 (model-judged outcomes backed by
+  observed messages).
+- **Assistant corroboration is not proof of intent.** The corroboration rule stops text that
+  only a tool result shows from becoming `observed`. It does not stop an assistant that was
+  steered by that text from repeating it in a message of its own, which then counts as
+  corroboration. The rule narrows injection; it does not close it. Guidance from candidates is
+  still not served (`procedural_serve_candidates=false`), and promotion needs two sessions.
 - **Truncation.** Long tool results are clipped (D2). A failure visible only in the omitted
   middle of an output is missed.
-- **Owner-scoped matching.** In a shared project, two members following the same runbook build
-  two procedures (same limitation as fact reconciliation).
+- **Cross-member matches are proposal-only.** In a shared project, a session that matches
+  another member's procedure adds nothing to it. The match and the edits it would make are
+  recorded as a proposal (`foreign_owner`) for the owner to review.
+- **Personal edition is a subset.** `memoryhub dream --procedures` detects and creates (same
+  contract, prompt and gates) and adds matching sessions to the ledger, but does not refine,
+  deprecate or promote.
 - **No version history** for automated edits beyond the decision log (D6).
 
 ## Test plan
@@ -672,12 +694,12 @@ separately and not fixed on this branch.
 
 ## Out of scope and follow-ups (issues to file via `/issue-tracker`)
 
-- 🔴 `update_memory` on a procedure root re-parents steps under new ids, leaves edges on the
-  retired rows, and drops `content_type` / `scope_id` on the copies (bug; own PR).
-- `memoryhub-local` parity (`memoryhub_local.services.extraction`).
-- EvalHub validation gating for structural edits.
-- Host hooks that stream `tool_call` / `tool_result` messages (and an outcome marker) into
-  threads.
+Resolved in this branch on 2026-10-28 (see "Second review round"): the `update_memory` graph
+bug, `memoryhub-local` parity, the validation gate, host trajectory recorders and cross-member
+matching. Still open:
+
+- An EvalHub-backed implementation of the validation endpoint (needs a cluster and an eval
+  job; the gate's contract is in place).
 - Rollback surface (MCP or admin) for `rollback_extraction_run`.
 - #555 rejection memory (seam defined in D9); UI; benchmark against the paper's tasks.
 
@@ -817,3 +839,57 @@ Minor items:
   other members' procedures, proposal-only like hand-authored ones) needs a design decision.
 - **Follow-up: PR size.** The branch is still one series of commits; the split proposed in the
   PR notes stands.
+
+## Second review round (2026-10-28)
+
+Fixed after the second review:
+
+- **`proc_create` rollback refuses once the graph moved on.** The decision records a fingerprint
+  of the graph as it was created (`created_state`). Rollback compares it and returns
+  `skipped_modified` when a later session or edit changed the root, a step or an edge. It does
+  not delete evidence that other sessions added.
+- **Promotion to `established` is apply-only.** In `propose` mode the ledger and counters still
+  update, but status stays `candidate`. Once `established`, a procedure stays established. The
+  promotion is not re-evaluated downwards.
+- **`MEMORYHUB_PROCEDURAL_SERVE_CANDIDATES` stays `false`** (confirmed by the reviewer).
+- The limitation "assistant corroboration is not proof of intent" is now listed under
+  Limitations.
+
+The follow-up issues drafted for the PR were resolved in this branch instead of being filed:
+
+1. **`update_memory` on a procedure root kept its graph (bug).**
+   - The new version's step copies keep `scope_id`, `content_type`, `source` and the actor and
+     driver ids.
+   - Active edges are re-pointed to the copies, and the entry step id is remapped.
+   - Soft-deleted steps are not resurrected.
+2. **memoryhub-local parity.**
+   - The pure contract (transcript format, schema, parsing, validation with the corroboration
+     rule) moved to `procedure_contract.py`. It exists byte for byte in core and in
+     memoryhub-local, because neither package can import the other.
+   - The system prompt is mirrored as a constant in `memoryhub_local.services.procedure_prompt`.
+   - A parity test fails the build when either copy drifts.
+   - `memoryhub dream --procedures` runs the pass locally. It is off by default, keeps its own
+     cursor, writes only in the thread's own `user` or `project` scope, and does everything in
+     one transaction.
+3. **Validation gate for structural edits.**
+   - Optional and fails closed; see D7.
+   - The EvalHub-backed endpoint itself is not in this branch.
+4. **Host recorders.**
+   - `memoryhub thread record` maps Claude Code hook payloads to messages:
+     - `UserPromptSubmit` becomes `user`.
+     - `PostToolUse` / `PostToolUseFailure` become `tool_call` + `tool_result`, with `is_error`
+       on failures.
+     - `Stop` becomes `assistant`.
+   - `memoryhub config init --record-trajectories` installs the async hooks.
+   - `memoryhub thread outcome` writes the explicit outcome marker.
+   - The opencode plugin records `chat.message` and `tool.execute.after` with
+     `recordTrajectory.enabled`.
+   - Both skip MemoryHub's own tools, redact common secret formats and never fail the host.
+5. **Cross-member matching in a project.**
+   - Candidates include every member's procedures in the same project (`scope_id`), still
+     filtered by tenant in SQL.
+   - The member's own procedure wins a tie.
+   - A match on another member's procedure writes nothing to it. The session and its edits are
+     recorded as a `proc_propose` with reason `foreign_owner`.
+   - The scope lock for new roots is project-wide, so two members cannot race to create the
+     same procedure.
