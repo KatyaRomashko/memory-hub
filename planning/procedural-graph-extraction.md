@@ -755,3 +755,65 @@ Where the build refined the design:
 - Integration (PostgreSQL + pgvector): `tests/integration/test_procedure_extraction.py`. Covers
   dreaming end-to-end to `resolve_procedure_entry` and `localized_guidance`, matching and
   refinement plus rollback, and failure injection on real transactions.
+
+## Review follow-ups (2026-10-27)
+
+A code review of the branch found two blocking issues and three more to fix
+before the PR. All five are fixed; the reviewer's minor items are partly fixed
+and partly recorded as follow-ups.
+
+1. **Prompt injection through tool output (blocking).** Tool results are untrusted text, and
+   #553 injects procedural guidance into other agents' context.
+   - The prompt (v1.1) now states that the transcript is data, not instructions. The transcript
+     is fenced in `<transcript>…</transcript>`, and the fence is neutralized inside message
+     content.
+   - Validation enforces a corroboration rule: an item is `observed` only when it cites at least
+     one message the agent or user wrote (`tool_call`, `assistant`, `user`). This applies to
+     steps, edges, pitfalls, conditions, guidance, the outcome and failure attribution. Text that
+     only a tool result shows becomes `inferred`, so it never becomes a step and never reaches a
+     render field.
+   - The tiebreaker prompt carries the same rule.
+2. **Lost evidence under concurrency (blocking).**
+   - `evolve_procedure(lock=True)` takes `SELECT … FOR UPDATE` on the root and re-reads root,
+     steps and edges (`populate_existing`) before updating the ledger.
+   - Creating a new root first takes a transaction-scoped advisory lock on
+     `(tenant, owner, scope, scope_id)`, then re-runs matching under the lock, reusing phase-A
+     tiebreaker verdicts.
+   - Two Postgres integration tests run two connections concurrently. Both fail with the locks
+     disabled (one loses a session's evidence, the other creates two roots) and pass with them.
+3. **No transaction while the model runs.** The pass now has two phases.
+   - Phase A reads the trajectory, ends the read transaction, calls the model, runs the curation
+     pre-flight (whose rule-seeding commit now happens before any lock) and matching. Matching
+     does all its DB work first and releases the transaction before the tiebreaker.
+   - Phase B takes the thread lock, re-checks the cursor (`processed_concurrently` when another
+     run got there first), takes the scope or root lock, and writes.
+   - A test asserts that no transaction is open during either model call.
+4. **Candidates are not served as guidance.** `localized_guidance` refuses a step whose procedure
+   is an extracted `candidate` (`ProcedureNotEstablishedError`; MCP: a `ToolError` that says so).
+   - The check runs after the caller's read authorization, so it reveals nothing to a caller who
+     cannot read the step.
+   - `MEMORYHUB_PROCEDURAL_SERVE_CANDIDATES=true` restores the earlier behaviour.
+   - Hand-authored procedures are unaffected.
+   - Flat search still lists candidate memories; only the injected guidance path is gated.
+   - This narrows the D7 sign-off ("candidates retrievable through #553 immediately"); that
+     change needs operator confirmation.
+5. **Rollback is all or nothing per decision.**
+   - `rollback_procedural_decision` first verifies every recorded change is still as the run left
+     it. If any item was modified since, nothing is touched (`skipped_modified`).
+   - Undoing `proc_create` also closes the graph's active edges.
+   - Every rollback lookup is tenant-scoped.
+
+Minor items:
+
+- **Fixed: `deprecate_step` rewires its neighbours.** A middle step is removed with
+  `pred → succ` edges added (recorded in the snapshot), so it no longer orphans its predecessor
+  and takes the run's other structural edits down with it.
+- **Fixed: applied attributes keep their provenance.** Each attribute keeps the supporting
+  threads' `source_messages` (`sources` per thread) and the run id.
+- **Fixed: private CA.** `MEMORYHUB_PROCEDURAL_LLM_CA_BUNDLE` (a path) gives the procedural
+  client a CA bundle with verification still on, for cluster endpoints behind a private CA.
+- **Follow-up: cross-member matching in project scope.** Matching is still owner-scoped. Two
+  members of a project build two copies of the same procedure. The reviewer's proposal (match
+  other members' procedures, proposal-only like hand-authored ones) needs a design decision.
+- **Follow-up: PR size.** The branch is still one series of commits; the split proposed in the
+  PR notes stands.
