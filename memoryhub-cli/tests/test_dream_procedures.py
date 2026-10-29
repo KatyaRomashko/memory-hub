@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import sys
 import types
 
@@ -19,7 +20,8 @@ runner = CliRunner()
 def test_dream_help_lists_procedures_flag():
     result = runner.invoke(app, ["dream", "--help"])
     assert result.exit_code == 0
-    assert "--procedures" in result.output
+    # On CI Rich forces colour and styles the two dashes separately.
+    assert "--procedures" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
 
 @pytest.fixture
