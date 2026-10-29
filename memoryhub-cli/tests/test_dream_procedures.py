@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sys
 import types
@@ -62,11 +63,10 @@ class _State:
         return self._session()
 
 
-@pytest.mark.asyncio
-async def test_procedural_pass_reports_per_thread_and_never_raises(fake_local):
-    summary = await main._run_procedural_pass(
+def test_procedural_pass_reports_per_thread_and_never_raises(fake_local):
+    summary = asyncio.run(main._run_procedural_pass(
         _State(), "llama3.2", "http://localhost:11434/v1", None, None, OutputFormat.json,
-    )
+    ))
     assert fake_local["threads"] == ["11111111-aaaa", "22222222-bbbb"]
     assert fake_local["llm"] == ("llama3.2", "http://localhost:11434/v1", None)
     assert fake_local["kwargs"]["extraction_model"] == "llama3.2"
@@ -74,9 +74,8 @@ async def test_procedural_pass_reports_per_thread_and_never_raises(fake_local):
     assert summary["results"][1]["error"] == "boom"
 
 
-@pytest.mark.asyncio
-async def test_procedural_pass_honours_explicit_thread(fake_local):
-    await main._run_procedural_pass(
+def test_procedural_pass_honours_explicit_thread(fake_local):
+    asyncio.run(main._run_procedural_pass(
         _State(), "m", "http://x", None, "11111111-aaaa", OutputFormat.json,
-    )
+    ))
     assert fake_local["threads"] == ["11111111-aaaa"]
