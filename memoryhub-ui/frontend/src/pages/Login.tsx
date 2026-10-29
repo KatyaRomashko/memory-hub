@@ -449,7 +449,7 @@ const SetupWizard: React.FC<{ status: AuthStatus | null; onDone: () => void }> =
   const [signup, setSignup] = useState<SetupPayload['signup']>({ mode: 'invite', allowed_domains: [], require_approval: true });
   const [domains, setDomains] = useState('');
   const [privacy, setPrivacy] = useState<SetupPayload['privacy']>({
-    admin_readable_scopes: ['organizational', 'enterprise'],
+    admin_readable_scopes: ['project', 'campaign', 'role', 'organizational', 'enterprise'],
     break_glass: true,
     break_glass_hours: 24,
     break_glass_approvers: 2,
@@ -645,60 +645,50 @@ const SetupWizard: React.FC<{ status: AuthStatus | null; onDone: () => void }> =
               What may platform admins read?
             </p>
             <div className="fx">
+              <label>
+                <span>
+                  <input type="checkbox" checked={false} disabled aria-describedby="always-private" /> User memories
+                </span>
+                <span className="sm muted">metadata only</span>
+              </label>
               {[
-                ['user', 'User'],
                 ['project', 'Project'],
                 ['campaign', 'Campaign'],
                 ['role', 'Role'],
-              ].map(([s, label]) => (
-                <label key={s}>
-                  <span>
-                    <input type="checkbox" checked={false} disabled aria-describedby="always-private" /> {label} memories
-                  </span>
-                  <span className="sm muted">metadata only</span>
-                </label>
-              ))}
-              {[
                 ['organizational', 'Organizational'],
                 ['enterprise', 'Enterprise'],
               ].map(([s, label]) => (
                 <label key={s}>
                   <span>
-                    <input type="checkbox" checked={privacy.admin_readable_scopes.includes(s)} onChange={() => toggleScope(s)} /> {label} policy memories
+                    <input type="checkbox" checked={privacy.admin_readable_scopes.includes(s)} onChange={() => toggleScope(s)} /> {label} memories
                   </span>
-                  <span className="sm muted">{privacy.admin_readable_scopes.includes(s) ? 'content readable' : 'metadata only'}</span>
+                  <span className="sm muted">{privacy.admin_readable_scopes.includes(s) ? 'readable · moderated' : 'metadata only'}</span>
                 </label>
               ))}
             </div>
             <p id="always-private" className="hint" style={{ marginTop: 8 }}>
-              Personal, project, campaign and role memories are always confidential. Admins see counts, scopes, owners, writing agents, weights, versions, links,
-              flags and activity.
+              Personal (user) memories are never readable to admins. A super-user can open them only for an incident, with a reference, for a limited time.
             </p>
           </div>
           <div className="swrow">
             <span>
-              Break-glass access
+              Super-user incident access
               <span className="hint" style={{ display: 'block' }}>
-                For incidents: an admin requests named memories with a reason; approvers sign off; access expires and is audited.
+                Super-users (set by the deployment) open user memories with an incident reference; access expires and every memory opened is audited.
               </span>
             </span>
-            <Switch on={privacy.break_glass} onChange={(v) => setPrivacy({ ...privacy, break_glass: v })} label="Break-glass access" />
+            <Switch on={privacy.break_glass} onChange={(v) => setPrivacy({ ...privacy, break_glass: v })} label="Super-user incident access" />
           </div>
           {privacy.break_glass && (
             <div className="grid2">
               <div className="f">
-                <label htmlFor="bh">Access expires after (hours)</label>
+                <label htmlFor="bh">A grant lasts at most (hours)</label>
                 <input id="bh" className="in lg" type="number" min={1} max={72} value={privacy.break_glass_hours} onChange={(e) => setPrivacy({ ...privacy, break_glass_hours: Number(e.target.value) })} />
-              </div>
-              <div className="f">
-                <label htmlFor="ba">Approvals needed</label>
-                <input id="ba" className="in lg" type="number" min={1} max={5} value={privacy.break_glass_approvers} onChange={(e) => setPrivacy({ ...privacy, break_glass_approvers: Number(e.target.value) })} />
-                <span className="hint">The memory owner plus compliance is a common choice (2).</span>
               </div>
             </div>
           )}
           <div className="swrow">
-            <span>Notify the owner when an admin opens their memory</span>
+            <span>Tell the owner when a super-user opens their memory</span>
             <Switch on={privacy.notify_owner} onChange={(v) => setPrivacy({ ...privacy, notify_owner: v })} label="Notify the owner" />
           </div>
         </section>
@@ -720,7 +710,7 @@ const SetupWizard: React.FC<{ status: AuthStatus | null; onDone: () => void }> =
               {signup.require_approval ? ' · admin approval' : ''}
             </dd>
             <dt>Admins may read</dt>
-            <dd>{privacy.admin_readable_scopes.length ? privacy.admin_readable_scopes.join(', ') + ' memories' : 'no memory content'}</dd>
+            <dd>{privacy.admin_readable_scopes.length ? privacy.admin_readable_scopes.join(', ') + ' memories (never user)' : 'no memory content'}</dd>
             <dt>Break-glass</dt>
             <dd>{privacy.break_glass ? `${privacy.break_glass_approvers} approval(s), expires after ${privacy.break_glass_hours} h` : 'off'}</dd>
             <dt>Sessions</dt>

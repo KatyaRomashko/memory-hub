@@ -338,7 +338,7 @@ test.describe('Release 1 surface', () => {
     await expect(page.getByRole('heading', { name: 'Memory hygiene', exact: true })).toBeVisible();
   });
 
-  test('users do not get the curation rules editor', async ({ page }) => {
+  test('users get the connection check, not the admin rule list', async ({ page }) => {
     await page.unrouteAll();
     await mockDashboardApi(page, { role: 'user' });
     await page.goto('/#/overview');
@@ -394,5 +394,56 @@ test.describe('Release 1 surface', () => {
   test('token counts are labelled as estimates', async ({ page }) => {
     await page.goto('/#/knowledge/packs/p1');
     await expect(page.getByText('≈12 of 2,000 tokens')).toHaveAttribute('title', /Estimated/);
+  });
+});
+
+test.describe('#667 role tiers', () => {
+  test('admins moderate every scope except user memories', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'admin' });
+    await page.goto('/#/memories');
+    await expect(page.getByRole('heading', { name: /Content moderation/ })).toBeVisible();
+    await expect(page.getByText('Personal memories: metadata only')).toBeVisible();
+    await expect(page.getByText('Personal memories are private.')).toBeVisible();
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'Incident access' })).toHaveCount(0);
+  });
+
+  test('super-users start incident access with a reference', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'superuser' });
+    await page.goto('/#/overview');
+    await expect(page.locator('.role-pill')).toHaveText('Super-user');
+    await page.getByRole('navigation').getByRole('link', { name: 'Incident access' }).click();
+    const start = page.getByRole('button', { name: 'Start incident access' });
+    await page.getByLabel('Incident reference').fill('1234');
+    await expect(page.getByText('Use the reference from your incident tracker', { exact: false })).toBeVisible();
+    await page.getByLabel('Incident reference').fill('INC-1234');
+    await page.getByLabel('Justification').fill('Spill of a customer contract into a user memory');
+    await expect(start).toBeDisabled();
+    await page.getByRole('checkbox', { name: /privacy-invasive/ }).check();
+    await expect(start).toBeEnabled();
+    const req = page.waitForRequest((r) => r.url().endsWith('/api/break-glass') && r.method() === 'POST');
+    await start.click();
+    expect((await req).postDataJSON().incident_ref).toBe('INC-1234');
+  });
+
+  test('an active grant is shown on every page', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'superuser', grant: true });
+    await page.goto('/#/memories');
+    await expect(page.locator('.incident-banner')).toContainText('INC-1234');
+    await expect(page.getByText('Incident INC-1234 · user memories open')).toBeVisible();
+    await page.goto('/#/incident');
+    await expect(page.getByRole('button', { name: 'End incident access now' })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'ann' })).toBeVisible();
+  });
+
+  test('users keep their own curation rules', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'user' });
+    await page.goto('/#/overview');
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'My curation rules' })).toBeVisible();
+    await page.goto('/#/incident');
+    await expect(page.getByText('Only super-users can open this')).toBeVisible();
   });
 });

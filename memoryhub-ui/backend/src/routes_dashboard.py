@@ -109,9 +109,18 @@ async def _auth_clients(settings: Settings) -> list[dict] | None:
 
 
 @router.get("/api/me")
-async def me(request: Request, settings: SettingsDep):
+async def me(request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
+    access = None
+    if viewer.redacts_content:
+        try:
+            acc = await access_for(db, settings, viewer)
+            access = {"hidden_scopes": list(acc.hidden_scopes), "break_glass": acc.break_glass}
+        except Exception:  # pragma: no cover - needs a database
+            await db.rollback()
     return {
+        # #667 tier: user, admin (no user-scope content) or superuser (incident grants).
+        "access": access,
         "username": viewer.username,
         "name": viewer.name,
         "email": viewer.email,
@@ -855,7 +864,9 @@ async def browse_memories(
 ):
     tenant_id = settings.ui_tenant_id
     acc = await access_for(db, settings, viewer)
-    metadata_only = viewer.redacts_content
+    # #667: admins read and search the scopes they may moderate; the rest stays metadata only.
+    metadata_only = viewer.redacts_content and not acc.open_scopes
+    readable_only = [MemoryNode.scope.in_(acc.open_scopes)] if viewer.redacts_content else []
     base = _tab_filters(tenant_id, tab) + acc.filters()
     filters = list(base)
     if scope:
@@ -873,6 +884,7 @@ async def browse_memories(
         )
     if domain and not metadata_only:
         filters.append(MemoryNode.domains.overlap(domain))
+        filters.extend(readable_only)
     if entity:
         entity_id = parse_uuid(entity, "entity ID")
         filters.append(
@@ -909,6 +921,9 @@ async def browse_memories(
         )
         search_mode = "metadata"
         query = ""
+    if query and readable_only:
+        # Cross-owner content search for moderation never reaches user memories.
+        filters.extend(readable_only)
     if query:
         vector = await embed(query, settings.embedding_url) if mode == "semantic" else None
         if vector is not None:
@@ -1071,7 +1086,7 @@ async def browse_memories(
         )
     ).all()
     domain_col = func.unnest(MemoryNode.domains).label("d")
-    domain_sub = select(domain_col).where(*base).subquery()
+    domain_sub = select(domain_col).where(*base, *readable_only).subquery()
     domain_rows = (
         []
         if metadata_only
@@ -1103,6 +1118,8 @@ async def browse_memories(
         "per_page": per_page,
         "search_mode": search_mode,
         "metadata_only": metadata_only,
+        "hidden_scopes": list(acc.hidden_scopes),
+        "break_glass": acc.break_glass,
         "tab_counts": tab_counts,
         "facets": {
             "scopes": [{"value": s, "count": facet_scope.get(s, 0)} for s in SCOPES]
@@ -1486,7 +1503,8 @@ class RelationshipRequest(BaseModel):
 
 
 class BulkRequest(BaseModel):
-    action: str = Field(pattern="^(weight|delete|restore|promote|relate)$")
+    action: str = Field(pattern="^(weight|delete|restore|quarantine|promote|relate)$")
+    reason: str | None = Field(default=None, max_length=500)
     ids: list[str] = Field(min_length=1, max_length=200)
     weight: float | None = Field(default=None, ge=0, le=1)
     target_scope: str | None = None
@@ -1803,6 +1821,22 @@ async def _propose_promotion(
     return new_id
 
 
+def _moderation_meta(viewer, node) -> dict:
+    """Super-user actions on user memories carry the incident (#667 audit requirements)."""
+    if not (viewer.is_superuser and node.scope == "user"):
+        return {}
+    from src.breakglass import _request
+
+    grant = (_request.get() or {}).get("grant") or {}
+    return {
+        "break_glass": True,
+        "privacy_invasive": True,
+        "severity": "HIGH",
+        "incident_ref": grant.get("incident_ref"),
+        "grant_id": grant.get("id"),
+    }
+
+
 @router.post("/api/memories/bulk")
 async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: SettingsDep):
     viewer = viewer_from_request(request, settings)
@@ -1818,8 +1852,31 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
 
                 done.append((await restore_memory(db, settings, viewer, raw_id))["id"])
                 continue
-            await _writable(db, settings, viewer, node)
-            if body.action == "weight":
+            if body.action in ("delete", "quarantine") and viewer.redacts_content:
+                # #667: admins moderate the scopes they can read, never user memories without a grant.
+                (await access_for(db, settings, viewer)).ensure_moderatable(node)
+            else:
+                await _writable(db, settings, viewer, node)
+            if body.action == "quarantine":
+                if node.status == "quarantined":
+                    raise HTTPException(status_code=409, detail="Already quarantined")
+                node.status = "quarantined"
+                node.metadata_ = {
+                    **(node.metadata_ or {}),
+                    "quarantine_reason": body.reason or "Quarantined by a moderator",
+                }
+                await audit(
+                    db,
+                    tenant_id=tenant_id,
+                    viewer=viewer,
+                    event_type="admin.quarantine",
+                    scope=node.scope,
+                    owner_id=node.owner_id,
+                    memory_id=node.id,
+                    metadata={"reason": body.reason, **_moderation_meta(viewer, node)},
+                )
+                done.append(raw_id)
+            elif body.action == "weight":
                 if body.weight is None:
                     raise HTTPException(status_code=422, detail="weight is required")
                 from memoryhub_core.models.schemas import MemoryNodeUpdate
@@ -1856,6 +1913,7 @@ async def bulk_action(body: BulkRequest, request: Request, db: DbDep, settings: 
                     scope=node.scope,
                     owner_id=node.owner_id,
                     memory_id=node.id,
+                    metadata=_moderation_meta(viewer, node) or None,
                 )
                 done.append(raw_id)
             elif body.action == "promote":

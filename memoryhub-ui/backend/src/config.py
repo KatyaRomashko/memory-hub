@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # Comma-separated OpenShift usernames that are platform admins. Use this
     # when the OAuth proxy does not forward X-Forwarded-Groups.
     ui_admin_users: str = ""
+    # #667 tier 3: super-users may open user-scope memories, but only through
+    # a time-limited incident grant (break-glass). Granted by deployment
+    # config only, never self-service: an OpenShift group and/or usernames.
+    # A super-user is also a platform admin.
+    ui_superuser_group: str = "memoryhub-superusers"
+    ui_superuser_users: str = ""
     # Where "Log out" sends the browser behind the OAuth proxy. Empty = derive
     # https://oauth-openshift.apps.<cluster>/logout from the route host.
     ui_oauth_logout_url: str = ""

@@ -24,6 +24,9 @@ import type {
   MyPrefs,
   MyPrefsResponse,
   VerifyList,
+  BreakGlassGrant,
+  BreakGlassReport,
+  BreakGlassState,
   VerifyResult,
   MyReads,
   DreamInsight,
@@ -188,8 +191,9 @@ export const api = {
     post<{ id: string }>('/relationships', body),
   deleteMemory: (id: string) => del<void>(`/memory/${enc(id)}`),
   bulk: (body: {
-    action: 'weight' | 'delete' | 'restore' | 'promote' | 'relate';
+    action: 'weight' | 'delete' | 'restore' | 'quarantine' | 'promote' | 'relate';
     ids: string[];
+    reason?: string;
     weight?: number;
     target_scope?: string;
     target_scope_id?: string;
@@ -300,6 +304,11 @@ export const api = {
   notifications: () => get<NotificationsResponse>('/notifications'),
   markNotificationsSeen: () => post<{ ok: boolean }>('/notifications/seen'),
   onboarding: () => get<Onboarding>('/me/onboarding'),
+  // Super-user incident access (#667)
+  breakGlass: () => get<BreakGlassState>('/break-glass'),
+  startBreakGlass: (body: { incident_ref: string; justification: string; hours?: number }) => post<BreakGlassGrant>('/break-glass', body),
+  endBreakGlass: () => post<{ ended: string }>('/break-glass/end'),
+  breakGlassReport: (month?: string) => get<BreakGlassReport>(`/break-glass/report${month ? `?month=${month}` : ''}`),
   // Connection check (R1-024)
   verifyResults: () => get<VerifyList>('/verify'),
   connectInfo: () => get<{ mcp_url: string; auth_url: string; tenant: string; agents: string[]; projects: string[] }>('/connect'),

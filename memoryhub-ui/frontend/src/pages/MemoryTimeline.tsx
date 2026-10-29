@@ -39,7 +39,7 @@ const MemoryTimeline: React.FC<{
   route: HashRoute;
   setParams: (changes: Record<string, string | number | string[] | undefined>, resetPage?: boolean) => void;
 }> = ({ route, setParams }) => {
-  const { standby, role } = useApp();
+  const { standby } = useApp();
   const p = route.params;
   const days = p.get('tdays') === null ? 90 : Number(p.get('tdays'));
   const by: 'created' | 'updated' = p.get('tby') === 'updated' ? 'updated' : 'created';
@@ -329,7 +329,7 @@ const MemoryTimeline: React.FC<{
             )}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <a className="btn bs" href={memoryHref(sel.id)}>
-                {role === 'admin' ? 'Metadata' : 'Open'}
+                {sel.redacted ? 'Metadata' : 'Open'}
               </a>
               <a className="btn bl" href={buildHash('/memories', { ...Object.fromEntries(p), view: 'graph', gfocus: 'memory', focus: sel.id })}>
                 Show in graph

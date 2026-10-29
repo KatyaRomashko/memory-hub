@@ -29,8 +29,9 @@ const readCols = (): Column[] => {
 
 const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const toast = useToast();
-  const { standby, refreshCounts, role, me } = useApp();
+  const { standby, refreshCounts, role, me, superuser } = useApp();
   const isAdmin = role === 'admin';
+  const grant = me?.access?.break_glass ?? null;
   const p = route.params;
   const view: 'table' | 'graph' | 'timeline' = p.get('view') === 'graph' ? 'graph' : p.get('view') === 'timeline' ? 'timeline' : 'table';
   // Old links drew time inside the graph; it is its own view now.
@@ -97,7 +98,8 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const [columns, setColumns] = useState<Column[]>(readCols);
   const [moreWriters, setMoreWriters] = useState(false);
   const [moreDomains, setMoreDomains] = useState(false);
-  const [modal, setModal] = useState<null | 'write' | 'weight' | 'relate' | 'promote' | 'delete'>(null);
+  const [modal, setModal] = useState<null | 'write' | 'weight' | 'relate' | 'promote' | 'delete' | 'quarantine'>(null);
+  const [qReason, setQReason] = useState('');
   const [rowDelete, setRowDelete] = useState<MemoryRow | null>(null);
   const [docOpen, setDocOpen] = useState(false);
   const [weightValue, setWeightValue] = useState(0.7);
@@ -157,20 +159,28 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
         title={
           isAdmin ? (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              Memory analytics
-              <span className="lbl g" style={{ fontFamily: 'var(--mh-font-text)' }}>
-                <LockIcon size={12} />
-                Metadata only
-              </span>
+              Content moderation
+              {grant ? (
+                <span className="lbl red" style={{ fontFamily: 'var(--mh-font-text)' }}>
+                  Incident {grant.incident_ref} · user memories open
+                </span>
+              ) : (
+                <span className="lbl g" style={{ fontFamily: 'var(--mh-font-text)' }}>
+                  <LockIcon size={12} />
+                  Personal memories: metadata only
+                </span>
+              )}
             </span>
           ) : (
             'Memory browser'
           )
         }
-        crumbs={[{ label: isAdmin ? 'Memory analytics' : 'Memory browser' }]}
+        crumbs={[{ label: isAdmin ? 'Content moderation' : 'Memory browser' }]}
         description={
           isAdmin
-            ? 'Volume, activity, structure and health of every memory in the tenant. What a personal, project, campaign or role memory says is confidential and never reaches this view.'
+            ? grant
+              ? 'Search, quarantine, restore and delete memories across owners, including personal (user-scope) memories while incident access is on.'
+              : 'Search, quarantine, restore and delete memories across owners. Project, campaign, role, organizational and enterprise memories are readable; what a personal (user-scope) memory says stays private.'
             : role === 'user'
               ? 'Every memory you are allowed to read — your own, and what your projects, campaigns, roles and organization share with you — as a table, a graph of how they connect, or a timeline.'
               : 'Every memory you are allowed to read, across all six scopes — as a table, a graph of how they connect, or a timeline. Nodes you cannot read are counted, never shown.'
@@ -242,11 +252,30 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
       />
       <div className="body">
         {isAdmin && (
-          <div className="alert" role="note">
+          <div className={`alert ${grant ? 'err-a' : ''}`} role="note">
             <LockIcon size={18} />
             <div style={{ flex: '1 1 400px', minWidth: 0 }}>
-              <b>Memory content is confidential.</b> As a platform admin you see counts, scopes, owners, writing agents, weights, versions, links, flags and activity —
-              never what a user, project, campaign or role memory says, and no semantic search over it. Organizational and enterprise policy memories stay readable.
+              {grant ? (
+                <>
+                  <b>Incident access {grant.incident_ref} is on.</b> User memories are readable until {new Date(grant.expires_at).toLocaleString()}. Every one you open is
+                  logged with HIGH severity and its owner is told. <a href={buildHash('/incident')}>End it</a> as soon as you are done.
+                </>
+              ) : (
+                <>
+                  <b>Personal memories are private.</b> You read and moderate project, campaign, role, organizational and enterprise memories. User-scope memories show
+                  metadata only and are left out of search{data?.hidden_scopes?.includes('user') && (facets?.scopes.find((f) => f.value === 'user')?.count ?? 0) > 0
+                    ? ` (${fmtCompact(facets!.scopes.find((f) => f.value === 'user')!.count)} here)`
+                    : ''}
+                  .{' '}
+                  {superuser ? (
+                    <>
+                      For an incident, start <a href={buildHash('/incident')}>incident access</a>.
+                    </>
+                  ) : (
+                    'Opening them needs a super-user with an incident reference.'
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -341,7 +370,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                     options={[{ value: '', label: 'All projects' }, ...(facets.projects ?? []).map((pr) => ({ value: pr.value, label: `${pr.value} · ${fmtCompact(pr.count)}` }))]}
                   />
                 </div>
-                {!isAdmin && (
+                {(
                 <div>
                   <p className="fh">Domain tags</p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -407,10 +436,10 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                   disabled={standby}
                   onChange={(e) => setQuery(e.target.value)}
                   onBlur={() => query.trim() !== state.q && setParams({ q: query.trim(), sort: '' })}
-                  placeholder={isAdmin ? 'Filter by memory ID, owner or agent' : 'Semantic search or filter by text'}
+                  placeholder={isAdmin ? (grant ? 'Search every scope, including user memories' : 'Search project, campaign, role, organizational and enterprise memories') : 'Semantic search or filter by text'}
                 />
               </div>
-              {!isAdmin && <SelectMenu
+              {<SelectMenu
                 label="Search mode"
                 value={state.mode}
                 onChange={(v) => setParams({ mode: v === 'semantic' ? '' : v })}
@@ -490,6 +519,26 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                   </>
                 ) : isAdmin ? (
                   <>
+                    {state.tab === 'deleted' ? (
+                      <button
+                        type="button"
+                        className="btn bp"
+                        onClick={() => runBulk({ action: 'restore', ids }, `${fmtInt(ids.length)} restored.`).catch((e) => toast(errorMessage(e), 'err'))}
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <>
+                        {state.tab !== 'quarantined' && (
+                          <button type="button" className="btn bl" onClick={() => setModal('quarantine')}>
+                            Quarantine
+                          </button>
+                        )}
+                        <button type="button" className="btn bl danger" onClick={() => setModal('delete')}>
+                          Delete
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       className="btn bl"
@@ -498,7 +547,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                       Show in graph
                     </button>
                     <span style={{ marginLeft: 'auto' }} className="sm muted">
-                      Admin actions never reveal content · audited
+                      {grant ? `Incident ${grant.incident_ref} · every action audited with HIGH severity` : 'User memories need incident access · audited'}
                     </span>
                   </>
                 ) : (
@@ -710,6 +759,47 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                                   <a href={buildHash('/memories', { ...Object.fromEntries(p), view: 'graph', gfocus: 'memory', focus: m.id, sel: m.id })}>Open in graph</a>
                                   <a href={buildHash('/memories', { ...Object.fromEntries(p), view: 'timeline', sel: m.id })}>Show on timeline</a>
                                   <a href={buildHash(`/memory/${m.id}`, { tab: 'access' })}>Access log</a>
+                                  {isAdmin && !m.redacted && (
+                                    <>
+                                      <hr />
+                                      {state.tab === 'deleted' ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            close();
+                                            runBulk({ action: 'restore', ids: [m.id] }, 'Memory restored.').catch((e) => toast(errorMessage(e), 'err'));
+                                          }}
+                                        >
+                                          Restore
+                                        </button>
+                                      ) : (
+                                        <>
+                                          {state.tab !== 'quarantined' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                close();
+                                                setSelected(new Set([m.id]));
+                                                setModal('quarantine');
+                                              }}
+                                            >
+                                              Quarantine
+                                            </button>
+                                          )}
+                                          <button
+                                            type="button"
+                                            className="danger"
+                                            onClick={() => {
+                                              close();
+                                              setRowDelete(m);
+                                            }}
+                                          >
+                                            Delete
+                                          </button>
+                                        </>
+                                      )}
+                                    </>
+                                  )}
                                   {state.tab === 'deleted' && !isAdmin && (
                                     <>
                                       <hr />
@@ -845,6 +935,24 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
             )}
           </div>
         </Modal>
+      )}
+      {modal === 'quarantine' && (
+        <ConfirmModal
+          title={`Quarantine ${ids.length} ${ids.length === 1 ? 'memory' : 'memories'}?`}
+          confirmLabel="Quarantine"
+          danger
+          onClose={() => setModal(null)}
+          onConfirm={async () => {
+            await runBulk({ action: 'quarantine', ids, reason: qReason.trim() || undefined }, `${fmtInt(ids.length)} quarantined — agents stop receiving ${ids.length === 1 ? 'it' : 'them'}.`);
+            setQReason('');
+          }}
+        >
+          Agents stop receiving {ids.length === 1 ? 'it' : 'them'} at once. Quarantined memories wait in the Review queue, where a moderator restores or rejects them. Audited.
+          <div className="f" style={{ marginTop: 12 }}>
+            <label htmlFor="qr">Reason</label>
+            <input id="qr" className="in" maxLength={500} value={qReason} onChange={(e) => setQReason(e.target.value)} placeholder="e.g. Contains a customer contract number" />
+          </div>
+        </ConfirmModal>
       )}
       {(modal === 'delete' || rowDelete) && (
         <ConfirmModal

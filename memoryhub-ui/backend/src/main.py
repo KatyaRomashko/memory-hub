@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.accounts import router as accounts_router
+from src.breakglass import BreakGlassAuditMiddleware
+from src.breakglass import router as breakglass_router
 from src.config import get_settings
 from src.documents import router as documents_router
 from src.dreaming import router as dreams_router
@@ -73,6 +75,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Audits every user memory a super-user opens under an incident grant (#667).
+    app.add_middleware(BreakGlassAuditMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -113,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(packs_router)
     app.include_router(verify_router)
+    app.include_router(breakglass_router)
     app.include_router(quality_router)
     app.include_router(retrieval_router)
     app.include_router(notifications_router)

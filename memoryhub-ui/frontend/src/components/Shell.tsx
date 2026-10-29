@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import type { Me, NavFeatures, NotificationsResponse, Role, SwitchTargets } from '@/types';
+import type { BreakGlassGrant, Me, NavFeatures, NotificationsResponse, Role, SwitchTargets } from '@/types';
 import { buildHash } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
@@ -12,8 +12,10 @@ const REPO_URL = 'https://github.com/redhat-ai-americas/memory-hub';
 
 export interface AppState {
   me: Me | null;
-  /** Viewer role; 'operator' until /api/me answers and in open development mode. */
+  /** Viewer role; 'operator' until /api/me answers and in open development mode.
+   * A super-user works as an admin here; ``superuser`` says they are one. */
   role: Role;
+  superuser: boolean;
   tenant: string;
   /** null until the first count arrives. */
   memoryCount: number | null;
@@ -28,6 +30,7 @@ export interface AppState {
 const AppContext = createContext<AppState>({
   me: null,
   role: 'operator',
+  superuser: false,
   tenant: '',
   memoryCount: null,
   standby: false,
@@ -81,7 +84,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     <AppContext.Provider
       value={{
         me,
-        role: me?.role ?? 'operator',
+        role: me?.role === 'superuser' ? 'admin' : (me?.role ?? 'operator'),
+        superuser: me?.role === 'superuser',
         tenant: me?.tenant_id ?? '',
         memoryCount,
         standby: memoryCount === 0,
@@ -114,22 +118,26 @@ export interface NavItem {
   feature?: Partial<Record<Role, (keyof NavFeatures)[]>>;
   /** Beyond Release 1: shown only with MemoryHub Labs on (MEMORYHUB_UI_LABS). */
   labs?: boolean;
+  /** #667: super-users only (incident access to user memories). */
+  superuser?: boolean;
 }
 
 const ADMIN: Role[] = ['admin', 'operator'];
 const USER: Role[] = ['user', 'operator'];
 
 /**
- * Users work with memories; platform admins run the platform and see memory
- * metadata only. The open-mode operator (no sign-in configured) sees both.
+ * #667 tiers. Users work with the memories they may read; platform admins run
+ * the platform and moderate every scope except user (personal memories are
+ * metadata only); super-users are admins who can also open user memories for
+ * an incident. The open-mode operator (no sign-in configured) sees everything.
  */
 export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; items: NavItem[] }[] = [
   { items: [{ path: '/overview', label: 'Overview', labelFor: { user: 'My overview', admin: 'Platform overview' } }] },
   {
     group: 'Memory',
-    groupFor: { admin: 'Memory · metadata only', user: 'My memory' },
+    groupFor: { admin: 'Memory · personal hidden', user: 'My memory' },
     items: [
-      { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Memory analytics' } },
+      { path: '/memories', label: 'Memory browser', labelFor: { admin: 'Content moderation' } },
       {
         path: '/knowledge',
         label: 'Knowledge',
@@ -148,7 +156,7 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
     groupFor: { user: 'My governance' },
     items: [
       { path: '/review', label: 'Review queue', badge: 'review', labelFor: { user: 'Review requests' } },
-      { path: '/curation', label: 'Curation rules', roles: ADMIN },
+      { path: '/curation', label: 'Curation rules', labelFor: { user: 'My curation rules' } },
       {
         path: '/quality',
         label: 'Retrieval quality',
@@ -158,6 +166,7 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
       },
       { path: '/reads', label: 'Who read my memories', roles: USER },
       { path: '/audit', label: 'Audit & forensics', roles: [...ADMIN, 'user'], labelFor: { user: 'My activity' } },
+      { path: '/incident', label: 'Incident access', roles: ['admin'], superuser: true },
     ],
   },
   {
@@ -182,8 +191,8 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
   },
 ];
 
-export const canSee = (path: string, role: Role) =>
-  NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role))));
+export const canSee = (path: string, role: Role, superuser = false) =>
+  NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role)) && (!i.superuser || superuser)));
 
 const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => {
   const keys = item.feature?.[role];
@@ -193,17 +202,18 @@ const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => 
 
 export const isLabsPath = (path: string) => NAV.some((s) => s.items.some((i) => i.path === path && i.labs));
 
-export const navFor = (role: Role, features: NavFeatures | null = null, labs = false) =>
+export const navFor = (role: Role, features: NavFeatures | null = null, labs = false, superuser = false) =>
   NAV.map((s) => ({
     group: s.groupFor?.[role] ?? s.group,
     items: s.items
       .filter((i) => !i.roles || i.roles.includes(role))
+      .filter((i) => !i.superuser || superuser)
       .filter((i) => labs || !i.labs)
       .filter((i) => hasContent(i, role, features))
       .map((i) => ({ ...i, label: i.labelFor?.[role] ?? i.label })),
   })).filter((s) => s.items.length > 0);
 
-export const ROLE_LABEL: Record<Role, string> = { admin: 'Platform admin', user: 'User', operator: 'Open mode' };
+export const ROLE_LABEL: Record<Role | 'superuser', string> = { admin: 'Platform admin', superuser: 'Super-user', user: 'User', operator: 'Open mode' };
 
 const NAV_PREF = 'memoryhub.navOpen';
 const readNavPref = () => {
@@ -215,7 +225,7 @@ const readNavPref = () => {
 };
 
 export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> = ({ activePath, children }) => {
-  const { me, role, tenant, reviewCount, features } = useApp();
+  const { me, role, superuser, tenant, reviewCount, features } = useApp();
   const narrow = () => window.innerWidth < 960;
   const [open, setOpen] = useState<boolean>(() => (narrow() ? false : readNavPref()));
 
@@ -327,8 +337,17 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
           </span>
         </a>
         {role !== 'operator' && (
-          <span className={`role-pill ${role}`} title={role === 'admin' ? 'You see memory metadata only' : 'You see memories you are allowed to read'}>
-            {ROLE_LABEL[role]}
+          <span
+            className={`role-pill ${superuser ? 'superuser' : role}`}
+            title={
+              superuser
+                ? 'Platform admin who can open user memories for an incident, with an incident reference'
+                : role === 'admin'
+                  ? 'You moderate every scope except user; personal memories show metadata only'
+                  : 'You see memories you are allowed to read'
+            }
+          >
+            {ROLE_LABEL[superuser ? 'superuser' : role]}
           </span>
         )}
         {tenant && (
@@ -386,7 +405,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
                 <div className="mh">
                   {me ? `${me.real_username ? 'Viewing as' : 'Signed in as'} ${me.username}` : 'Not signed in'}
                   <br />
-                  <span className="muted sm">{ROLE_LABEL[role]}</span>
+                  <span className="muted sm">{ROLE_LABEL[superuser ? 'superuser' : role]}</span>
                   {me?.real_username && (
                     <>
                       <br />
@@ -402,7 +421,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
                       <div className="mh muted">Loading…</div>
                     ) : (
                       switchable.targets.map((t) => {
-                        const on = t.username === me.username && t.role === role;
+                        const on = t.username === me.username && t.role === me.role;
                         return (
                           <button
                             key={`${t.username}-${t.role}`}
@@ -444,9 +463,10 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
           </Dropdown>
         </div>
       </header>
+      {me?.access?.break_glass && <IncidentBanner grant={me.access.break_glass} />}
       {me?.real_username && (
         <div className="viewing-as" role="status">
-          <b>Test mode:</b> viewing as {me.username} · {ROLE_LABEL[role]} (signed in as {me.real_username}).
+          <b>Test mode:</b> viewing as {me.username} · {ROLE_LABEL[superuser ? 'superuser' : role]} (signed in as {me.real_username}).
           <button type="button" onClick={() => switchTo(null, null)}>
             Back to my account
           </button>
@@ -454,7 +474,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
       )}
       <div className={`shell ${open ? 'nav-open' : 'nav-closed'}`}>
         <nav className="nav" aria-label="Primary">
-          {navFor(role, features, !!me?.labs).map((section, i) => (
+          {navFor(role, features, !!me?.labs, superuser).map((section, i) => (
             <React.Fragment key={section.group ?? i}>
               {section.group && <div className="ng">{section.group}</div>}
               {section.items.map((item) => (
@@ -634,3 +654,14 @@ const fmtRelativeShort = (iso: string) => {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
 };
+
+/** #667: while a super-user holds an incident grant, every page says so. */
+const IncidentBanner: React.FC<{ grant: BreakGlassGrant }> = ({ grant }) => (
+  <div className="incident-banner" role="status">
+    <b>Incident access {grant.incident_ref}</b>
+    <span>
+      User memories are open until {new Date(grant.expires_at).toLocaleString()}. Every one you open is logged with HIGH severity and its owner is told.
+    </span>
+    <a href={buildHash('/incident')}>Manage</a>
+  </div>
+);

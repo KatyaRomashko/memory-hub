@@ -174,7 +174,7 @@ async def logout(request: Request, response: Response, settings: SettingsDep):
 
 class SwitchRequest(BaseModel):
     username: str | None = Field(default=None, max_length=255)
-    role: str | None = Field(default=None, pattern="^(admin|user|operator)$")
+    role: str | None = Field(default=None, pattern="^(admin|superuser|user|operator)$")
 
 
 def _switch_allowed(request: Request, settings: Settings):
@@ -184,6 +184,9 @@ def _switch_allowed(request: Request, settings: Settings):
     if real.source == "anonymous" and auth_enabled(settings):
         raise HTTPException(status_code=401, detail="Log in to the dashboard first")
     return real
+
+
+ROLE_NAMES = {"admin": "platform admin", "superuser": "super-user", "user": "user", "operator": "open mode"}
 
 
 @router.get("/api/auth/switch")
@@ -202,6 +205,7 @@ async def switch_targets(request: Request, db: DbDep, settings: SettingsDep):
 
     add(real.username, "user", f"{real.username} · user", "your own identity")
     add(real.username, "admin", f"{real.username} · platform admin", "your own identity")
+    add(real.username, "superuser", f"{real.username} · super-user", "admin + incident access to user memories")
     if real.source == "anonymous":
         add(real.username, "operator", "Open mode operator", "sees everything (development)")
     try:
@@ -233,7 +237,7 @@ async def switch_targets(request: Request, db: DbDep, settings: SettingsDep):
                 add(
                     username,
                     role,
-                    f"{username} · {'platform admin' if role == 'admin' else 'user'}",
+                    f"{username} · {ROLE_NAMES.get(role, role)}",
                     "dashboard account",
                 )
     except Exception as exc:  # pragma: no cover - needs a database
@@ -1658,6 +1662,9 @@ async def review_decision(memory_id: str, body: ReviewDecision, request: Request
     viewer = viewer_from_request(request, settings)
     node = await _load_memory(db, tenant_id, memory_id)
     tenant_settings = await load_tenant_settings(db, tenant_id)
+    if viewer.redacts_content and node.status == "quarantined":
+        # #667: quarantined user memories are moderated by super-users under an incident grant.
+        (await access_for(db, settings, viewer)).ensure_moderatable(node)
 
     if body.decision in ("approve", "reject", "request_changes") and node.status not in ("pending", "quarantined"):
         # Contradiction reviews resolve the reports instead.
@@ -1774,6 +1781,8 @@ async def audit_log(
     mine = acc.grants.identities if acc.grants is not None else None
     if mine is not None:
         where.append(or_(AuditLog.actor_id.in_(mine), AuditLog.driver_id.in_(mine)))
+    # #667: admins audit everything except operations on user memories; super-users see all.
+    hides_user_ops = viewer.redacts_content and not viewer.is_superuser
     if operation:
         where.append(AuditLog.event_type.in_(operation))
     if decision:
@@ -1785,6 +1794,13 @@ async def audit_log(
             where.append(or_(AuditLog.actor_id == actor, AuditLog.driver_id == actor))
     if hours:
         where.append(AuditLog.timestamp >= now_utc() - timedelta(hours=hours))
+    hidden_user_ops = 0
+    if hides_user_ops:
+        user_ops = and_(AuditLog.scope == "user", AuditLog.memory_id.is_not(None))
+        hidden_user_ops = (
+            await db.execute(select(func.count()).select_from(AuditLog).where(*where, user_ops))
+        ).scalar_one()
+        where.append(~user_ops)
     total = (await db.execute(select(func.count()).select_from(AuditLog).where(*where))).scalar_one()
     rows = (
         await db.execute(
@@ -1830,6 +1846,7 @@ async def audit_log(
         "operations": {t: tool_name(t) for t in types},
         "denied_total": denied_total,
         "retention_days": tenant_settings["audit"]["full_retention_days"],
+        "hidden_user_operations": hidden_user_ops,
     }
 
 

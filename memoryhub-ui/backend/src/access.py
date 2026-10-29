@@ -7,11 +7,15 @@ viewer may not see:
   own user-scope memories, projects they belong to, roles assigned to them,
   campaigns their projects are enrolled in, and every organizational and
   enterprise memory.
-* **Platform admins** see every memory's metadata (scope, owner, writer,
-  weight, version, links, flags, activity) but never the content of personal,
-  project, campaign or role memories. Only scopes listed in the tenant's
-  ``privacy.admin_readable_scopes`` (organizational and enterprise by default)
-  stay readable.
+* **Platform admins** (#667 tier 2) see every memory's metadata (scope,
+  owner, writer, weight, version, links, flags, activity) and read and
+  moderate the content of the scopes in the tenant's
+  ``privacy.admin_readable_scopes`` — every scope except user by default.
+  User-scope content is never readable to an admin.
+* **Super-users** (#667 tier 3) are admins who may also open user-scope
+  content, only while they hold a time-limited incident grant
+  (``src.breakglass``). Every user memory revealed under a grant is audited
+  with the incident reference and HIGH severity.
 
 The open-mode ``operator`` (no sign-in configured, development only) keeps the
 legacy tenant-wide view.
@@ -35,6 +39,8 @@ from src.ui_common import DEFAULT_TENANT_SETTINGS, Viewer, load_tenant_settings,
 
 HIDDEN_TEXT = "Content hidden"
 OPEN_SCOPES_DEFAULT = tuple(DEFAULT_TENANT_SETTINGS["privacy"]["admin_readable_scopes"])
+# Scopes an admin may ever be allowed to read; user scope needs a super-user grant.
+ADMIN_SCOPES = ("project", "campaign", "role", "organizational", "enterprise")
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +189,40 @@ class Access:
     viewer: Viewer
     grants: Grants | None
     open_scopes: tuple[str, ...]
+    # Active super-user incident grant (src.breakglass), when there is one.
+    break_glass: dict | None = None
+
+    @property
+    def hidden_scopes(self) -> tuple[str, ...]:
+        """Scopes whose content this viewer cannot read (shown as a capability hint)."""
+        if not self.viewer.redacts_content:
+            return ()
+        return tuple(s for s in ("user", *ADMIN_SCOPES) if s not in self.open_scopes)
+
+    def can_moderate(self, n: Any) -> bool:
+        """Quarantine, restore or delete: admins only where they can read the content."""
+        if not self.viewer.redacts_content:
+            return self.can_read_row(n)
+        return n.scope in self.open_scopes
+
+    def ensure_moderatable(self, n: Any) -> None:
+        if n is None:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        if not self.can_moderate(n):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "User memories are private. Only a super-user with an incident reference can moderate them."
+                    if n.scope == "user"
+                    else f"Admins on this tenant cannot moderate {n.scope} memories"
+                ),
+            )
+
+    def _reveal(self, item: dict, scope: str | None) -> None:
+        if self.break_glass and scope == "user" and item.get("id"):
+            from src.breakglass import record_reveal
+
+            record_reveal(str(item["id"]), item.get("owner_id"))
 
     def clause(self, node=MemoryNode):
         """Extra WHERE clause, or None when the viewer is not row-restricted."""
@@ -204,7 +244,10 @@ class Access:
 
     def redact(self, item: dict, scope: str | None = None) -> dict:
         """Strip content-bearing fields from a serialised memory for admins."""
-        if not self.hides(scope if scope is not None else item.get("scope")):
+        own = scope if scope is not None else item.get("scope")
+        if not self.hides(own):
+            if self.viewer.redacts_content:
+                self._reveal(item, own)
             item.setdefault("redacted", False)
             return item
         out = dict(item)
@@ -240,10 +283,11 @@ class Access:
         if not isinstance(obj, dict):
             return obj
         own = obj.get("scope", scope)
-        if any(
-            k in obj for k in ("content", "content_preview", "stub", "observed_behavior", "memory_stub")
-        ) and self.hides(own):
-            obj = self.redact(obj, own)
+        if any(k in obj for k in ("content", "content_preview", "stub", "observed_behavior", "memory_stub")):
+            if self.hides(own):
+                obj = self.redact(obj, own)
+            else:
+                self._reveal(obj, own)
         return {
             k: self.redact_tree(v, own) if isinstance(v, (list, dict)) and k != "metadata" else v
             for k, v in obj.items()
@@ -257,12 +301,20 @@ class Access:
 async def access_for(db: AsyncSession, settings: Settings, viewer: Viewer) -> Access:
     grants = await load_grants(db, settings.ui_tenant_id, viewer.username) if viewer.restricted else None
     open_scopes = OPEN_SCOPES_DEFAULT
+    grant = None
     if viewer.redacts_content:
         privacy = (await load_tenant_settings(db, settings.ui_tenant_id)).get("privacy", {})
         scopes = privacy.get("admin_readable_scopes")
         if isinstance(scopes, list):
-            open_scopes = tuple(s for s in scopes if s in ("organizational", "enterprise"))
-    return Access(viewer=viewer, grants=grants, open_scopes=open_scopes)
+            open_scopes = tuple(s for s in scopes if s in ADMIN_SCOPES)
+        if viewer.is_superuser:
+            from src.breakglass import active_grant, bind_request
+
+            grant = await active_grant(db, settings.ui_tenant_id, viewer.username)
+            if grant:
+                open_scopes = ("user", *open_scopes)
+                bind_request(viewer, grant, settings.ui_tenant_id)
+    return Access(viewer=viewer, grants=grants, open_scopes=open_scopes, break_glass=grant)
 
 
 def nothing():

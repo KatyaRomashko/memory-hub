@@ -38,7 +38,7 @@ const Preferences: React.FC = () => {
     <>
       <PageHeader
         title="Preferences & privacy"
-        description="Your defaults for new memories, who may build on your memories, and your data. Platform admins never see what your memories say."
+        description="Your defaults for new memories, who may build on your memories, and your data. Platform admins never read your personal memories; a super-user can open one only for an incident, and you are told."
         actions={
           <button type="button" className="btn bp" disabled={!dirty || busy} onClick={save}>
             {busy ? 'Saving…' : 'Save changes'}
@@ -115,10 +115,10 @@ const Preferences: React.FC = () => {
                   </div>
                   <div className="row">
                     <span>
-                      <b className="sm">Admin access to my content</b>
+                      <b className="sm">Admin access to my personal memories</b>
                       <span className="hint" style={{ display: 'block' }}>
-                        Platform admins see counts, scopes and activity only. Break-glass access to a named memory needs approval and is always shown in{' '}
-                        <a href={buildHash('/reads')}>Who read my memories</a>.
+                        Platform admins see counts, scopes and activity of your user memories, never what they say. A super-user can open them only for an incident, with a
+                        reference and for a limited time; every access is shown in <a href={buildHash('/reads')}>Who read my memories</a>.
                       </span>
                     </span>
                     <span className="lbl g">Always off</span>

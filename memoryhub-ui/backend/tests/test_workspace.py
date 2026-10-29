@@ -234,12 +234,3 @@ async def test_labs_features_are_off_by_default(monkeypatch):
         ]:
             resp = await client.get(path)
             assert resp.status_code == 404 and "Labs" in resp.json()["detail"], path
-
-
-@pytest.mark.asyncio
-async def test_users_cannot_edit_curation_rules(monkeypatch):
-    user = Viewer(username="ar", name="ar", email=None, source="account", role="user")
-    monkeypatch.setattr("src.routes.viewer_from_request", lambda request, settings: user)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-        resp = await client.post("/api/rules", json={"name": "x", "tier": "embedding", "action": "flag", "config": {}})
-        assert resp.status_code == 403 and "Preferences" in resp.json()["detail"]

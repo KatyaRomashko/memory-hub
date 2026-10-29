@@ -14,10 +14,13 @@ export interface Me {
   email: string | null;
   initials: string;
   source: 'oauth-proxy' | 'api-key' | 'account' | 'anonymous';
-  role: Role;
+  /** #667 tier. A super-user is a platform admin who can start incident access to user memories. */
+  role: Role | 'superuser';
+  /** Admins and super-users: what they cannot read, and the active incident grant. */
+  access?: { hidden_scopes: string[]; break_glass: BreakGlassGrant | null } | null;
   /** Test mode: who is really signed in while viewing as someone else. */
   real_username?: string | null;
-  real_role?: Role | null;
+  real_role?: Role | 'superuser' | null;
   test_mode?: boolean;
   /** MemoryHub Labs features beyond Release 1 are on (MEMORYHUB_UI_LABS). */
   labs?: boolean;
@@ -26,15 +29,15 @@ export interface Me {
 
 export interface SwitchTarget {
   username: string;
-  role: Role;
+  role: Role | 'superuser';
   label: string;
   note: string | null;
 }
 
 export interface SwitchTargets {
   enabled: boolean;
-  real?: { username: string; role: Role };
-  current?: { username: string; role: Role };
+  real?: { username: string; role: Role | 'superuser' };
+  current?: { username: string; role: Role | 'superuser' };
   targets: SwitchTarget[];
 }
 
@@ -250,6 +253,9 @@ export interface BrowseResponse {
   per_page: number;
   search_mode: 'none' | 'semantic' | 'text' | 'metadata';
   metadata_only?: boolean;
+  /** #667: scopes whose content this viewer cannot read (admins: user). */
+  hidden_scopes?: string[];
+  break_glass?: BreakGlassGrant | null;
   tab_counts: { current: number; all: number; quarantined: number; deleted: number };
   facets: {
     scopes: Facet[];
@@ -834,6 +840,8 @@ export interface AuditResponse {
   event_types: string[];
   operations: Record<string, string>;
   denied_total: number;
+  /** #667: operations on user memories an admin may not see (super-users see all). */
+  hidden_user_operations?: number;
   retention_days: number;
 }
 
@@ -1308,4 +1316,30 @@ export interface VerifyList {
   categories: { id: string; label: string }[];
   host_command: string | null;
   results: VerifyResult[];
+}
+
+export interface BreakGlassGrant {
+  id: string;
+  username: string;
+  incident_ref: string;
+  justification: string;
+  created_at: string;
+  expires_at: string;
+  ended_at: string | null;
+  active: boolean;
+  reads?: number;
+  owners?: number;
+}
+
+export interface BreakGlassState {
+  policy: { enabled: boolean; hours: number; pattern: string; notify_owner: boolean };
+  active: BreakGlassGrant | null;
+  grants: BreakGlassGrant[];
+}
+
+export interface BreakGlassReport {
+  month: string;
+  grants: BreakGlassGrant[];
+  accesses: { actor: string; incident_ref: string | null; owner: string; reads: number; first: string; last: string }[];
+  totals: { grants: number; reads: number; owners: number };
 }

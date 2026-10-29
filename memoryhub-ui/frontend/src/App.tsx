@@ -28,6 +28,7 @@ import Search from '@/pages/Search';
 import Settings from '@/pages/Settings';
 import Connect from '@/pages/Connect';
 import Verify from '@/pages/Verify';
+import Incident from '@/pages/Incident';
 
 interface Screen {
   nav: string;
@@ -58,6 +59,7 @@ const SCREENS: Record<string, Screen> = {
   '/clients': { nav: '/clients', title: 'OAuth clients & keys', render: (r) => <Clients route={r} /> },
   '/connect': { nav: '/connect', title: 'Connect an agent', render: () => <Connect /> },
   '/verify': { nav: '/verify', title: 'Connection check', render: () => <Verify /> },
+  '/incident': { nav: '/incident', title: 'Incident access', render: () => <Incident /> },
   '/settings': { nav: '/settings', title: 'Settings', render: () => <Settings /> },
 };
 
@@ -77,7 +79,7 @@ const AUTH_PATHS = ['/login', '/register', '/setup'];
 
 /** Screens a role may not open show a short explanation instead. */
 const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, children }) => {
-  const { me, role } = useApp();
+  const { me, role, superuser } = useApp();
   const listed = NAV.some((s) => s.items.some((i) => i.path === nav));
   if (me && isLabsPath(nav) && !me.labs) {
     return (
@@ -90,14 +92,20 @@ const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, ch
       </div>
     );
   }
-  if (!me || !listed || canSee(nav, role)) return <>{children}</>;
+  if (!me || !listed || canSee(nav, role, superuser)) return <>{children}</>;
   return (
     <div className="body">
       <div className="card">
-        <Empty title={role === 'admin' ? 'Not available to platform admins' : 'Only platform admins can open this'}>
-          {role === 'admin'
-            ? 'This screen shows what memories say. Memory content is confidential: admins see metadata only, in Memory analytics.'
-            : 'Platform settings, identities, keys, rules and the audit log are managed by platform admins.'}
+        <Empty
+          title={
+            nav === '/incident' ? 'Only super-users can open this' : role === 'admin' ? 'Not available to platform admins' : 'Only platform admins can open this'
+          }
+        >
+          {nav === '/incident'
+            ? 'Incident access to user memories is for super-users, who are set by the deployment (MEMORYHUB_UI_SUPERUSER_GROUP), never in the dashboard.'
+            : role === 'admin'
+              ? 'This screen works with personal memories. Platform admins moderate every other scope in Content moderation; user memories need a super-user with an incident reference.'
+              : 'Platform settings, identities, keys and the audit log are managed by platform admins.'}
         </Empty>
       </div>
     </div>

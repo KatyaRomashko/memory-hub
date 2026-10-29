@@ -53,26 +53,35 @@ async def _user_items(db: AsyncSession, settings: Settings, viewer, mine: list[s
         MemoryNode.owner_id.in_(mine),
     )
 
-    # Break-glass reads by an admin.
-    for event, node in (
-        await db.execute(
-            select(AuditLog, MemoryNode)
-            .join(MemoryNode, owned)
-            .where(
-                AuditLog.tenant_id == tenant_id,
-                AuditLog.timestamp >= since,
-                AuditLog.event_metadata["break_glass"].as_boolean().is_(True),
+    # Super-user reads under an incident grant (#667), unless the tenant turned owner notices off.
+    privacy = (await load_tenant_settings(db, tenant_id)).get("privacy", {})
+    break_glass_events = (
+        []
+        if privacy.get("notify_owner", True) is False
+        else (
+            await db.execute(
+                select(AuditLog, MemoryNode)
+                .join(MemoryNode, owned)
+                .where(
+                    AuditLog.tenant_id == tenant_id,
+                    AuditLog.timestamp >= since,
+                    AuditLog.event_metadata["break_glass"].as_boolean().is_(True),
+                )
+                .order_by(AuditLog.timestamp.desc())
+                .limit(10)
             )
-            .order_by(AuditLog.timestamp.desc())
-            .limit(10)
-        )
-    ).all():
+        ).all()
+    )
+    for event, node in break_glass_events:
+        incident = (event.event_metadata or {}).get("incident_ref")
         items.append(
             {
                 "id": f"bg:{event.id}",
                 "kind": "break_glass",
                 "severity": "danger",
-                "title": f"{event.actor_id} opened one of your memories with break-glass access",
+                "title": f"{event.actor_id} opened one of your memories for incident {incident}"
+                if incident
+                else f"{event.actor_id} opened one of your memories with break-glass access",
                 "body": clean_stub(node.stub),
                 "at": event.timestamp,
                 "href": "/reads",

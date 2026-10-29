@@ -99,14 +99,15 @@ async def restore_memory(db: AsyncSession, settings: Settings, viewer, memory_id
     from src.routes_dashboard import _load_memory, _writable
 
     tenant_id = settings.ui_tenant_id
-    if viewer.redacts_content:
-        raise HTTPException(status_code=403, detail="Platform admins cannot restore memory content")
     node = await _load_memory(db, tenant_id, memory_id)
     acc = await access_for(db, settings, viewer)
     acc.ensure_readable(node)
     if node.deleted_at is None:
         raise HTTPException(status_code=409, detail="This memory is not deleted")
-    await _writable(db, settings, viewer, node)
+    if viewer.redacts_content:
+        acc.ensure_moderatable(node)  # #667 moderation
+    else:
+        await _writable(db, settings, viewer, node)
     rows = await _deleted_batch(db, tenant_id, node)
     current = heads(rows)
     ids = [r.id for r in rows]

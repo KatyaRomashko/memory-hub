@@ -199,8 +199,16 @@ def validate_access_settings(values: dict) -> list[str]:
         errors.append("Domain sign-up needs at least one allowed domain")
     privacy = values.get("privacy", {})
     scopes = privacy.get("admin_readable_scopes") or []
-    if not isinstance(scopes, list) or any(s not in ("organizational", "enterprise") for s in scopes):
-        errors.append("Admins may only read organizational and enterprise memories")
+    if not isinstance(scopes, list) or any(
+        s not in ("project", "campaign", "role", "organizational", "enterprise") for s in scopes
+    ):
+        errors.append("Admins can never read user memories; that needs a super-user incident grant")
+    pattern = privacy.get("incident_pattern")
+    if pattern is not None:
+        try:
+            re.compile(str(pattern))
+        except re.error:
+            errors.append("The incident reference pattern is not a valid regular expression")
     if not (1 <= int(privacy.get("break_glass_hours", 24)) <= 72):
         errors.append("Break-glass access must expire within 1 to 72 hours")
     if not (1 <= int(privacy.get("break_glass_approvers", 2)) <= 5):

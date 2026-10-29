@@ -675,9 +675,8 @@ async def forget_memory(memory_id: str, db: AsyncSession, settings: Settings, vi
     if node is None:
         raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found")
     if viewer.redacts_content:
-        raise HTTPException(
-            status_code=403, detail="Platform admins cannot delete memories; use retention or a legal hold"
-        )
+        # #667: admins moderate the scopes they can read; user memories need a super-user grant.
+        (await access_for(db, settings, viewer)).ensure_moderatable(node)
     if viewer.restricted and not (await access_for(db, settings, viewer)).can_read_row(node):
         raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found")
     if node.deleted_at is not None:
@@ -961,18 +960,25 @@ def _rule_to_response(rule: CuratorRule) -> CurationRuleResponse:
     )
 
 
-async def _own_rule_guard(request: Request, settings: SettingsDep) -> None:
-    """Curation rules are the operator guardrail layer (R1: no second rule editor).
-
-    People choose what gets remembered through their memory-behavior profile
-    (Preferences); the profile maps onto these rules and cannot weaken them.
-    Users may read the rules that apply to them, never change them.
-    """
+async def _own_rule_guard(rule_id: str, request: Request, db: DbDep, settings: SettingsDep) -> None:
+    """#667: users change only their own user-layer rules; organizational and
+    system rules are managed by platform admins and read-only for users."""
     viewer = viewer_from_request(request, settings)
-    if not viewer.can_admin:
+    if viewer.can_admin:
+        return
+    try:
+        parsed = uuid.UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {rule_id!r}") from None
+    rule = (
+        await db.execute(
+            select(CuratorRule).where(CuratorRule.id == parsed, CuratorRule.tenant_id == settings.ui_tenant_id)
+        )
+    ).scalar_one_or_none()
+    if rule is None or rule.layer != "user" or rule.owner_id != viewer.username:
         raise HTTPException(
             status_code=403,
-            detail="Curation rules are managed by platform operators. Choose what gets remembered in Preferences.",
+            detail="Organizational rules are managed by platform admins. You can change only your own rules.",
         )
 
 
@@ -1012,9 +1018,7 @@ async def list_rules(
     return [_rule_to_response(r) for r in rules]
 
 
-@router.post(
-    "/api/rules", response_model=CurationRuleResponse, status_code=201, dependencies=[Depends(_own_rule_guard)]
-)
+@router.post("/api/rules", response_model=CurationRuleResponse, status_code=201)
 async def create_rule(body: CreateRuleRequest, request: Request, db: DbDep, settings: SettingsDep):
     """Create a new curation rule.
 

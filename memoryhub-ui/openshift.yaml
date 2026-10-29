@@ -62,8 +62,14 @@ spec:
         # TEST DEPLOYMENTS ONLY: account switcher in the user menu (view the
         # dashboard as another identity / role without logging out).
         # Set to "false" or remove before production.
+        # Test cluster: ON so the user menu can switch between the user,
+        # platform admin and other identities. Set "false" for production.
         - name: MEMORYHUB_UI_TEST_MODE
-          value: "false"
+          value: "true"
+        # #667 tier 3: OpenShift group whose members are super-users (admins who
+        # can open user memories for an incident). Assigned here only.
+        - name: MEMORYHUB_UI_SUPERUSER_GROUP
+          value: "memoryhub-superusers"
         # Release 1 surface: features beyond R1 (knowledge pages, packs,
         # retrieval checks, entity merge…) stay hidden unless set to "true".
         - name: MEMORYHUB_UI_LABS

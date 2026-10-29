@@ -100,7 +100,7 @@ def test_access_settings_validation():
     values["privacy"]["admin_readable_scopes"] = ["user"]
     values["signup"]["mode"] = "domain"
     errors = validate_access_settings(values)
-    assert any("organizational and enterprise" in e for e in errors)
+    assert any("never read user memories" in e for e in errors)
     assert any("allowed domain" in e for e in errors)
 
 

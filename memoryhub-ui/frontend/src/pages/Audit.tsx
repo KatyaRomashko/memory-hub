@@ -398,6 +398,11 @@ const AuditLog: React.FC<{
           <Pager page={page} perPage={25} total={data!.total} onPage={(pg) => setParam({ page: String(pg) })} noun="events" />
         </>
       )}
+      {!!data?.hidden_user_operations && (
+        <div className="sm muted" style={{ padding: '12px 20px 0' }} role="note">
+          {data.hidden_user_operations.toLocaleString('en-US')} operations on personal memories in this period are left out: only super-users audit user-scope activity.
+        </div>
+      )}
       <div className="sm muted" style={{ padding: '12px 20px' }}>
         Entries are immutable · full detail kept {data?.retention_days ?? 90} days, summaries 1 year, then archived to object storage.
       </div>

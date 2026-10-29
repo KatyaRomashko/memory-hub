@@ -92,12 +92,17 @@ class Viewer:
 
     @property
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        """Platform admin or super-user (#667 tiers 2 and 3)."""
+        return self.role in ("admin", "superuser")
+
+    @property
+    def is_superuser(self) -> bool:
+        return self.role == "superuser"
 
     @property
     def can_admin(self) -> bool:
         """Platform management (identities, keys, rules, settings, audit)."""
-        return self.role in ("admin", "operator")
+        return self.role in ("admin", "superuser", "operator")
 
     @property
     def restricted(self) -> bool:
@@ -111,7 +116,9 @@ class Viewer:
 
     @property
     def redacts_content(self) -> bool:
-        return self.role == "admin"
+        """Admins and super-users never see user-scope content by default;
+        which scopes they may read is decided in ``access.access_for``."""
+        return self.role in ("admin", "superuser")
 
 
 def _groups(header_value: str | None) -> list[str]:
@@ -119,7 +126,7 @@ def _groups(header_value: str | None) -> list[str]:
 
 
 VIEW_AS_COOKIE = "memoryhub_ui_view_as"
-VIEW_AS_ROLES = ("admin", "user", "operator")
+VIEW_AS_ROLES = ("admin", "superuser", "user", "operator")
 
 
 def make_view_as_cookie(username: str, role: str, settings: Settings) -> str:
@@ -161,6 +168,13 @@ def viewer_from_request(request: Request, settings: Settings) -> Viewer:
     )
 
 
+def _is_superuser(username: str, groups: list[str], settings: Settings) -> bool:
+    """Super-user is assigned by deployment config only (#667), never in the UI."""
+    if settings.ui_superuser_group and settings.ui_superuser_group in groups:
+        return True
+    return username in _groups(settings.ui_superuser_users)
+
+
 def real_viewer(request: Request, settings: Settings) -> Viewer:
     """Identify the human behind the request.
 
@@ -177,17 +191,23 @@ def real_viewer(request: Request, settings: Settings) -> Viewer:
         in_group = bool(settings.ui_admin_group) and settings.ui_admin_group in _groups(
             headers.get("x-forwarded-groups")
         )
+        groups = _groups(headers.get("x-forwarded-groups"))
         listed = username in _groups(settings.ui_admin_users)
         role = "admin" if in_group or listed else "user"
+        if _is_superuser(username, groups, settings):
+            role = "superuser"
         return Viewer(username=username, name=username, email=email, source="oauth-proxy", role=role)
     session = read_session(request, settings)
     if session:
+        role = session.role
+        if role == "admin" and _is_superuser(session.username, [], settings):
+            role = "superuser"
         return Viewer(
             username=session.username,
             name=session.name or session.username,
             email=None,
             source=session.source,
-            role=session.role,
+            role=role,
         )
     return Viewer(username="dashboard", name="Dashboard operator", email=None, source="anonymous", role="operator")
 
@@ -392,11 +412,13 @@ DEFAULT_TENANT_SETTINGS: dict[str, Any] = {
         "require_approval": True,
     },
     "privacy": {
-        # Scopes whose content admins may read (shared policy, not personal data).
-        "admin_readable_scopes": ["organizational", "enterprise"],
+        # Scopes whose content admins may read and moderate (#667). User scope
+        # is never on this list: personal memories need a super-user incident grant.
+        "admin_readable_scopes": ["project", "campaign", "role", "organizational", "enterprise"],
         "break_glass": True,
         "break_glass_hours": 24,
-        "break_glass_approvers": 2,
+        "break_glass_approvers": 2,  # unused since #667: grants need an incident reference, not approvals
+        "incident_pattern": r"^[A-Za-z][A-Za-z0-9]{1,15}-[0-9]{1,10}$",
         "notify_owner": True,
     },
     "security": {

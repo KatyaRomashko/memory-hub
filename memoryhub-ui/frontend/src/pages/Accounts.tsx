@@ -40,7 +40,7 @@ const Accounts: React.FC = () => {
     <>
       <PageHeader
         title="Accounts & sign-up"
-        description="Dashboard accounts for people. Agents and service identities live under Users & agents. Admins manage accounts but never see what anyone's memories say."
+        description="Dashboard accounts for people. Agents and service identities live under Users & agents. Admins manage accounts; they never read personal memories."
         actions={
           <button type="button" className="btn bp" onClick={() => setInviteOpen(true)}>
             <Icon.Plus />
@@ -338,7 +338,7 @@ const InviteModal: React.FC<{ onClose: () => void; onCreated: (i: InviteCreated)
             </button>
           ))}
         </div>
-        {role === 'admin' && <span className="hint">Platform admins manage the platform and see memory metadata only.</span>}
+        {role === 'admin' && <span className="hint">Platform admins manage the platform and moderate every scope except personal memories.</span>}
       </div>
       <div className="f">
         <label htmlFor="ie">Email (optional)</label>
@@ -446,10 +446,11 @@ const PolicyEditor: React.FC = () => {
             <h3>Admin access to memory content</h3>
           </div>
           <p className="sm muted" style={{ marginTop: 0 }}>
-            User, project, campaign and role memories are always confidential: admins see metadata only. You can let admins read shared policy memories.
+            Admins moderate the scopes you tick below. User (personal) memories are never readable to admins: only a super-user, with an incident reference and
+            for a limited time, can open them.
           </p>
           <div className="fx">
-            {(['organizational', 'enterprise'] as const).map((s) => (
+            {(['project', 'campaign', 'role', 'organizational', 'enterprise'] as const).map((s) => (
               <label key={s}>
                 <span>
                   <input
@@ -457,29 +458,30 @@ const PolicyEditor: React.FC = () => {
                     checked={scopes.includes(s)}
                     onChange={() => upd('privacy', { admin_readable_scopes: scopes.includes(s) ? scopes.filter((x) => x !== s) : [...scopes, s] })}
                   />{' '}
-                  {s === 'organizational' ? 'Organizational' : 'Enterprise'} memories readable by admins
+                  {s[0].toUpperCase() + s.slice(1)} memories readable and moderated by admins
                 </span>
               </label>
             ))}
           </div>
           <div className="swrow" style={{ marginTop: 16 }}>
-            <span>Break-glass access for incidents</span>
-            <Switch on={v.privacy.break_glass} onChange={(on) => upd('privacy', { break_glass: on })} label="Break-glass access" />
+            <span>
+              Super-user incident access
+              <span className="hint" style={{ display: 'block' }}>
+                Super-users are set by the deployment (MEMORYHUB_UI_SUPERUSER_GROUP). Each grant needs an incident reference and is logged with HIGH severity.
+              </span>
+            </span>
+            <Switch on={v.privacy.break_glass} onChange={(on) => upd('privacy', { break_glass: on })} label="Super-user incident access" />
           </div>
           {v.privacy.break_glass && (
             <div className="fg">
               <div className="f">
-                <label htmlFor="pbh">Expires after (hours)</label>
+                <label htmlFor="pbh">A grant lasts at most (hours)</label>
                 <input id="pbh" className="in" type="number" min={1} max={72} value={v.privacy.break_glass_hours} onChange={(e) => upd('privacy', { break_glass_hours: Number(e.target.value) })} />
-              </div>
-              <div className="f">
-                <label htmlFor="pba">Approvals needed</label>
-                <input id="pba" className="in" type="number" min={1} max={5} value={v.privacy.break_glass_approvers} onChange={(e) => upd('privacy', { break_glass_approvers: Number(e.target.value) })} />
               </div>
             </div>
           )}
           <div className="swrow" style={{ marginTop: 16 }}>
-            <span>Notify owners when their memory is opened by an admin</span>
+            <span>Tell owners when a super-user opens one of their memories</span>
             <Switch on={v.privacy.notify_owner} onChange={(on) => upd('privacy', { notify_owner: on })} label="Notify owners" />
           </div>
         </section>

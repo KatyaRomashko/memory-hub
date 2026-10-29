@@ -142,7 +142,7 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
           ) : null
         }
         actions={
-          m && deleted && role !== 'admin' ? (
+          m && deleted && (role !== 'admin' || !m.redacted) ? (
             <button
               type="button"
               className="btn bp"
@@ -385,7 +385,7 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
                   <div className="alert" role="note">
                     <div>
                       <b>Deleted {fmtRelative(m.deleted_at as string).toLowerCase()}.</b> Agents no longer receive it.
-                      {role !== 'admin' ? ' Restore brings back every version deleted with it and makes the newest one current.' : ''}
+                      {role !== 'admin' || !m.redacted ? ' Restore brings back every version deleted with it and makes the newest one current.' : ''}
                     </div>
                   </div>
                 )}

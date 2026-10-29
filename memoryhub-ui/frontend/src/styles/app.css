@@ -610,3 +610,10 @@ button.tag { cursor: pointer; border: 1px solid transparent; font: inherit; font
 .checkgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 16px; font-size: 14px; }
 .checkgrid label { display: flex; gap: 8px; align-items: center; }
 .est { text-decoration: underline dotted #8a8d90; text-underline-offset: 3px; cursor: help; }
+
+/* ---------- #667 tiers ---------- */
+.role-pill.superuser { background: #a60000; color: #fff; border: 1px solid #f9a8a8; }
+.sw-dot.superuser { background: #ee0000; box-shadow: 0 0 0 2px #f9a8a8; }
+.incident-banner { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: #a60000; color: #fff; padding: 8px 24px; font-size: 13px; }
+.incident-banner a { color: #fff; text-decoration: underline; margin-left: auto; }
+.tier-note { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--mh-muted); }

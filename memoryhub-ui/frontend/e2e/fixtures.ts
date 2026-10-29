@@ -195,11 +195,14 @@ const prefs = {
 
 export interface MockOptions {
   labs?: boolean;
-  role?: 'operator' | 'user' | 'admin';
+  role?: 'operator' | 'user' | 'admin' | 'superuser';
+  grant?: boolean;
 }
 
 export async function mockDashboardApi(page: Page, opts: MockOptions = {}) {
-  const { labs = true, role } = opts;
+  const { labs = true, role, grant = false } = opts;
+  const activeGrant = { id: 'g1', username: 'admin', incident_ref: 'INC-1234', justification: 'Spill of a customer contract into a user memory', created_at: now, expires_at: '2026-12-31T12:00:00.000Z', ended_at: null, active: true, reads: 3, owners: 1 };
+  const access = role === 'admin' || role === 'superuser' ? { hidden_scopes: grant ? [] : ['user'], break_glass: grant ? activeGrant : null } : null;
   await page.route('**/*', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -207,7 +210,11 @@ export async function mockDashboardApi(page: Page, opts: MockOptions = {}) {
     const path = url.pathname.replace(/^\/api/, '');
 
     if (path === '/auth/status') return respond(route, { mode: 'api-key', authenticated: true, api_key_login: true, user: 'admin', cluster_domain: 'cluster.test' });
-    if (path === '/me') return respond(route, { username: 'admin', name: 'Admin User', email: 'admin@example.test', initials: 'AU', source: 'api-key', tenant_id: 'demo-tenant', labs, ...(role ? { role } : {}) });
+    if (path === '/me') return respond(route, { username: 'admin', name: 'Admin User', email: 'admin@example.test', initials: 'AU', source: 'api-key', tenant_id: 'demo-tenant', labs, access, ...(role ? { role } : {}) });
+    if (path === '/break-glass' && request.method() === 'GET') return respond(route, { policy: { enabled: true, hours: 24, pattern: '^[A-Za-z][A-Za-z0-9]{1,15}-[0-9]{1,10}$', notify_owner: true }, active: grant ? activeGrant : null, grants: grant ? [activeGrant] : [] });
+    if (path === '/break-glass' && request.method() === 'POST') return respond(route, activeGrant, 201);
+    if (path === '/break-glass/end') return respond(route, { ended: 'g1' });
+    if (path === '/break-glass/report') return respond(route, { month: '2026-10', grants: [activeGrant], accesses: [{ actor: 'admin', incident_ref: 'INC-1234', owner: 'ann', reads: 3, first: now, last: now }], totals: { grants: 1, reads: 3, owners: 1 } });
     if (path === '/me/prefs' && request.method() === 'GET') return respond(route, prefs);
     if (path === '/me/prefs' && request.method() === 'PUT') {
       const body = JSON.parse(request.postData() || '{}');
