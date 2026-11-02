@@ -208,8 +208,9 @@ export interface EntitiesResponse {
 }
 
 export interface MemoryRow {
-  /** delete: #671, authors or project admins; moderate and write follow the server's rules. */
-  capabilities: { write: boolean; moderate: boolean; delete?: boolean };
+  capabilities: { write: boolean; moderate: boolean };
+  /** #671: authors (and project admins) may delete this row; moderation alone is not enough for shared memories. */
+  can_delete?: boolean;
   id: string;
   stub: string;
   content_preview: string;
@@ -303,8 +304,9 @@ export interface NodeBrief {
 
 export interface MemoryContext {
   memory: NodeBrief & {
-    /** delete: #671, authors or project admins; moderate and write follow the server's rules. */
-  capabilities: { write: boolean; moderate: boolean; delete?: boolean };
+    capabilities: { write: boolean; moderate: boolean };
+  /** #671: authors (and project admins) may delete this row; moderation alone is not enough for shared memories. */
+  can_delete?: boolean;
     content: string;
     logical_id: string | null;
     parent_id: string | null;

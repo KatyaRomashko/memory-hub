@@ -106,7 +106,7 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
   const canWrite = Boolean(m?.capabilities?.write);
   const canModerate = Boolean(m?.capabilities?.moderate);
   /** #671: authors (and project admins) delete; moderation alone is not enough for shared memories. */
-  const canDelete = Boolean(m?.capabilities?.delete);
+  const canDelete = Boolean(m?.can_delete);
 
   return (
     <>

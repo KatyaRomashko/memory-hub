@@ -185,7 +185,8 @@ export const api = {
   writeMemory: (body: {
     content: string;
     scope: string;
-    weight: number;
+    /** Omit to use the default (a project's default weight for project writes). */
+    weight?: number;
     owner_id?: string;
     scope_id?: string;
     domains?: string[];

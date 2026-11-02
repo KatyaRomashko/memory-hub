@@ -545,12 +545,15 @@ test.describe('#676 central project provisioning', () => {
     await page.getByRole('button', { name: 'More actions for memoryhub-ui' }).click();
     await page.getByRole('menu').getByRole('button', { name: 'Delete…' }).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog).toContainText('the project name can never be used again');
-    await dialog.getByRole('button', { name: 'Delete project' }).click();
-    await expect(dialog).toContainText('Type memoryhub-ui to confirm');
+    await expect(dialog).toContainText('a new project can never be called memoryhub-ui');
+    await expect(dialog).toContainText('archive the project instead');
+    const confirm = dialog.getByRole('button', { name: 'Delete project and memories' });
+    await expect(confirm).toBeDisabled();
+    await dialog.getByLabel('Type memoryhub-ui to confirm').fill('memoryhub');
+    await expect(confirm).toBeDisabled();
     await dialog.getByLabel('Type memoryhub-ui to confirm').fill('memoryhub-ui');
     const del = page.waitForRequest((r) => r.url().endsWith('/api/projects/memoryhub-ui') && r.method() === 'DELETE');
-    await dialog.getByRole('button', { name: 'Delete project' }).click();
+    await confirm.click();
     expect((await del).postDataJSON()).toEqual({ confirm: 'memoryhub-ui' });
     await expect(page.getByText('memoryhub-ui deleted with 12 memories.')).toBeVisible();
   });
@@ -573,7 +576,10 @@ test.describe('#676 central project provisioning', () => {
     await page.goto('/#/projects');
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
     await page.getByLabel('Keep relevant for (days)').fill('30');
+    await page.getByLabel('Memory limit').fill('0');
+    await expect(page.getByText('new memories are refused until fewer than 0 remain', { exact: false })).toBeVisible();
     await page.getByLabel('Memory limit').fill('1000');
+    await expect(page.getByText('they are not deleted', { exact: false })).toBeVisible();
     const req = page.waitForRequest((r) => r.url().endsWith('/api/projects/memoryhub-ui') && r.method() === 'PATCH');
     await page.getByRole('button', { name: 'Save' }).click();
     expect((await req).postDataJSON().policies).toEqual({ ttl_days: 30, max_memories: 1000, default_weight: null });
@@ -586,5 +592,37 @@ test.describe('#676 central project provisioning', () => {
     await page.getByRole('button', { name: 'Actions', exact: true }).first().click();
     await expect(page.getByRole('menu')).toBeVisible();
     await expect(page.getByRole('menu').getByRole('button', { name: 'Delete' })).toHaveCount(0);
+  });
+
+  test('users write only where they may, to a project picked from a list', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'user' });
+    await page.goto('/#/memories');
+    await page.getByRole('button', { name: 'Write memory' }).first().click();
+    const dialog = page.getByRole('dialog');
+    const scope = dialog.getByLabel('Scope');
+    await expect(scope.locator('option')).toHaveText(['User', 'Project', 'Campaign']);
+    await expect(page.getByText('Only you and your agents see it.')).toBeVisible();
+    await scope.selectOption('project');
+    const project = dialog.getByLabel('Project ID', { exact: true });
+    await expect(project.locator('option')).toHaveText(['Select a project', 'memoryhub-ui']);
+    await project.selectOption('memoryhub-ui');
+    await expect(page.getByText('Every member of memoryhub-ui and their agents see it.')).toBeVisible();
+    await dialog.getByLabel('Content').fill('Deploy with the golden test first');
+    const req = page.waitForRequest((r) => r.url().endsWith('/api/memories') && r.method() === 'POST');
+    await dialog.getByRole('button', { name: 'Write memory' }).click();
+    const body = (await req).postDataJSON();
+    expect(body).toMatchObject({ scope: 'project', scope_id: 'memoryhub-ui' });
+    expect(body.weight).toBeUndefined();
+  });
+
+  test('a refused request says so instead of offering a retry', async ({ page }) => {
+    await page.unrouteAll();
+    await mockDashboardApi(page, { role: 'user' });
+    await page.route('**/api/projects?**', (route) => route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Not for you' }) }));
+    await page.goto('/#/projects');
+    await expect(page.getByText('You don’t have access to this')).toBeVisible();
+    await expect(page.getByText('Not for you')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0);
   });
 });

@@ -112,8 +112,8 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const selectionCanWrite = selectionKnown && selectedItems.every((item) => item.capabilities?.write);
   const selectionCanModerate = selectionKnown && selectedItems.every((item) => item.capabilities?.moderate);
   // #671: people delete what they or their agents wrote; project admins anything in their project.
-  const selectionCanDelete = selectionKnown && selectedItems.every((item) => item.capabilities?.delete);
-  const undeletable = items.filter((m) => selected.has(m.id) && m.capabilities?.delete === false).length;
+  const selectionCanDelete = selectionKnown && selectedItems.every((item) => item.can_delete);
+  const undeletable = items.filter((m) => selected.has(m.id) && m.can_delete === false).length;
 
   const chips = useMemo(() => {
     const out: { label: string; clear: () => void }[] = [];
@@ -581,9 +581,11 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                     <a className="btn bp" href={buildHash('/clients')}>
                       Connect an agent
                     </a>
-                    <button type="button" className="btn bs" onClick={() => setModal('write')}>
-                      Write memory
-                    </button>
+                    {!isAdmin && (
+                      <button type="button" className="btn bs" onClick={() => setModal('write')}>
+                        Write memory
+                      </button>
+                    )}
                   </div>
                 }
               >
@@ -811,7 +813,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                                       </button>
                                     </>
                                   )}
-                                  {state.tab !== 'deleted' && !isAdmin && m.capabilities?.delete && (
+                                  {state.tab !== 'deleted' && !isAdmin && m.can_delete && (
                                     <>
                                       <hr />
                                       <button

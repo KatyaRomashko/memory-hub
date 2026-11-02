@@ -266,3 +266,31 @@ async def test_only_platform_admins_delete_projects(monkeypatch):
         wrong = routes_admin.ProjectDeleteRequest(confirm="team")
         await routes_admin.delete_project("team-x", wrong, None, None, Settings())
     assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_project_write_refusals_say_why(monkeypatch):
+    """No project vs not a member: different errors, each with the next step (#676)."""
+    from src import authz, routes_dashboard
+    from src.config import Settings
+
+    async def acc(db, settings, viewer):
+        return SimpleNamespace(grants=SimpleNamespace(identities={"alice"}, projects=set()))
+
+    monkeypatch.setattr(routes_dashboard, "access_for", acc)
+    monkeypatch.setattr(authz, "person_can_write", lambda *a, **k: False)
+
+    class _Db:
+        def __init__(self, found):
+            self.found = found
+
+        async def execute(self, *a, **k):
+            return SimpleNamespace(scalar_one_or_none=lambda: self.found)
+
+    alice = _viewer("user", "alice")
+    with pytest.raises(HTTPException) as exc:
+        await routes_dashboard._writable_scope(_Db(None), Settings(), alice, "project", "ghost")
+    assert exc.value.status_code == 404 and "does not exist" in exc.value.detail
+    with pytest.raises(HTTPException) as exc:
+        await routes_dashboard._writable_scope(_Db("team-x"), Settings(), alice, "project", "team-x")
+    assert exc.value.status_code == 403 and "not a member of team-x" in exc.value.detail

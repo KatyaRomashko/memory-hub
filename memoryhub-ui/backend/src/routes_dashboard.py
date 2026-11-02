@@ -21,8 +21,7 @@ from memoryhub_core.models.audit import AuditLog
 from memoryhub_core.models.campaign import CampaignMembership
 from memoryhub_core.models.contradiction import ContradictionReport
 from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
-from memoryhub_core.models.project import Project, ProjectMembership
-from memoryhub_core.models.role import RoleAssignment
+from memoryhub_core.models.project import Project
 from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, Float, String, and_, case, cast, exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1069,7 +1068,8 @@ async def browse_memories(
                 "deleted_at": n.deleted_at,
                 "score": round(scores[n.id], 4) if n.id in scores else None,
                 "entities": entities_by_memory.get(n.id, []),
-                "capabilities": node_capabilities(acc, n, viewer, deletable, archived),
+                "capabilities": node_capabilities(acc, n, viewer, archived),
+                "can_delete": node_can_delete(acc, n, viewer, deletable),
             }
         )
     items = [acc.redact(i) for i in items]
@@ -1403,7 +1403,8 @@ async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep, viewe
             "embedding_dims": dims,
             "injection": "full" if node.weight >= full_threshold else "stub",
             "full_content_threshold": full_threshold,
-            "capabilities": node_capabilities(acc, node, viewer, deletable, archived),
+            "capabilities": node_capabilities(acc, node, viewer, archived),
+            "can_delete": node_can_delete(acc, node, viewer, deletable),
         },
         "versions": [
             {
@@ -1618,15 +1619,21 @@ async def archived_projects(db: AsyncSession, names: set[str]) -> set[str]:
     return set(rows.scalars().all())
 
 
-def node_capabilities(acc, n, viewer, deletable, archived) -> dict:
-    """What the viewer may do with a row. Archived projects take no writes; authors may still delete (#671)."""
+def node_capabilities(acc, n, viewer, archived) -> dict:
+    """Write and moderate for a row. Archived projects take no writes or moderation from people (#671)."""
     caps = acc.memory_capabilities(n)
-    delete = caps["moderate"] if deletable is None else (n.id in deletable and caps["moderate"])
     if n.scope == "project" and n.scope_id in archived:
         caps["write"] = False
         if viewer.restricted:
             caps["moderate"] = False
-    return {**caps, "delete": delete}
+    return caps
+
+
+def node_can_delete(acc, n, viewer, deletable) -> bool:
+    """Authors (and project admins) delete, even in archived projects; admins follow moderation (#671)."""
+    if deletable is None:
+        return acc.can_moderate(n)
+    return n.id in deletable and acc.can_write(n)
 
 
 async def _writable_scope(db: AsyncSession, settings: Settings, viewer, scope: str, scope_id: str | None) -> None:
@@ -1642,6 +1649,24 @@ async def _writable_scope(db: AsyncSession, settings: Settings, viewer, scope: s
     grants = (await access_for(db, settings, viewer)).grants
     owner = viewer.username if scope == "user" else (scope_id or "")
     if not person_can_write(grants, settings.ui_tenant_id, scope, owner, scope_id):
+        if scope == "project" and scope_id:
+            exists = (
+                await db.execute(
+                    select(Project.name).where(
+                        Project.name == scope_id,
+                        Project.tenant_id == settings.ui_tenant_id,
+                        Project.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Project {scope_id!r} does not exist. Ask a platform admin to create it and add you.",
+                )
+            raise HTTPException(
+                status_code=403, detail=f"You are not a member of {scope_id}. Ask a project admin to add you."
+            )
         detail = {
             "role": "Role memories are written by service agents, not people",
             "campaign": "Your project is not enrolled in that campaign",
@@ -1728,19 +1753,33 @@ async def new_version(memory_id: str, body: NewVersionRequest, request: Request,
     viewer = viewer_from_request(request, settings)
     node = await _load_memory(db, settings.ui_tenant_id, memory_id)
     await _writable(db, settings, viewer, node)
+    # Two people saving an edit of the same version: the second waits, then sees it is no longer current.
+    await db.execute(select(MemoryNode.id).where(MemoryNode.id == node.id).with_for_update())
+    await db.refresh(node)
     if not node.is_current or node.deleted_at is not None:
-        raise HTTPException(status_code=409, detail="Only the current version can be edited")
+        raise HTTPException(
+            status_code=409,
+            detail="Someone saved a newer version of this memory. Reload to see it, then edit that version.",
+        )
     if body.content is None and body.weight is None and body.domains is None:
         raise HTTPException(status_code=422, detail="Nothing to change")
-    updated = await update_memory(
-        node.id,
-        MemoryNodeUpdate(content=body.content, weight=body.weight, domains=body.domains),
-        db,
-        _embedding_service(settings),
-        s3_adapter=get_memory_storage(),
-        actor_id=viewer.username,
-        driver_id=viewer.username,
-    )
+    from memoryhub_core.services.exceptions import MemoryNotCurrentError
+
+    try:
+        updated = await update_memory(
+            node.id,
+            MemoryNodeUpdate(content=body.content, weight=body.weight, domains=body.domains),
+            db,
+            _embedding_service(settings),
+            s3_adapter=get_memory_storage(),
+            actor_id=viewer.username,
+            driver_id=viewer.username,
+        )
+    except MemoryNotCurrentError:
+        raise HTTPException(
+            status_code=409,
+            detail="Someone saved a newer version of this memory. Reload to see it, then edit that version.",
+        ) from None
     await audit(
         db,
         tenant_id=settings.ui_tenant_id,

@@ -410,6 +410,13 @@ def _lifecycle(project: Project) -> dict:
     }
 
 
+async def _lock(db: AsyncSession, name: str) -> None:
+    """Serialise last-admin checks on one project (two admins demoting each other)."""
+    from memoryhub_core.services.project import lock_project
+
+    await lock_project(db, name)
+
+
 async def _ensure_not_last_admin(db: AsyncSession, project: str, user: str) -> None:
     admins = (
         await db.execute(
@@ -787,6 +794,7 @@ async def remove_member(name: str, user_id: str, request: Request, db: DbDep, se
     project = await _load_project(db, settings, name)
     if user_id != viewer.username:
         await _require_project_admin(db, viewer, project)
+    await _lock(db, name)
     await _ensure_not_last_admin(db, name, user_id)
     membership = (
         await db.execute(
@@ -822,6 +830,7 @@ async def set_member_role(
     viewer = viewer_from_request(request, settings)
     project = await _load_project(db, settings, name)
     await _require_project_admin(db, viewer, project)
+    await _lock(db, name)
     membership = (
         await db.execute(
             select(ProjectMembership)

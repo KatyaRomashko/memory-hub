@@ -519,6 +519,13 @@ const ProjectPanel: React.FC<{
             </div>
           )}
         </div>
+        {data.can_manage !== false && !data.members_list.some((m) => m.role === 'admin') && (
+          <div className="alert warn-a" role="status" style={{ marginBottom: 14 }}>
+            <div>
+              <b>No project admin.</b> Only platform admins can manage its members. Make a member an admin below.
+            </div>
+          </div>
+        )}
         {data.archived && (
           <div className="alert warn-a" role="status" style={{ marginBottom: 14 }}>
             <div style={{ flex: 1 }}>
@@ -839,9 +846,22 @@ const ProjectForm: React.FC<{ existing?: ProjectRow; central?: boolean; onClose:
                 <input id="pweight" className="in" type="number" min={0} max={1} step={0.05} inputMode="decimal" value={weight} onChange={(e) => setWeight(e.target.value)} placeholder="0.7" />
               </div>
             </div>
-            <span className="hint">
-              Apply to new memories: they go stale after the set days, writes stop at the limit (versions and branches don’t count), and writes without a weight get the default. Leave empty for none.
-            </span>
+            <ul className="hint" style={{ margin: 0, paddingLeft: 18, listStyle: 'disc' }}>
+              <li>
+                <b>Keep relevant</b>: new memories are marked no longer relevant after that many days (they are not deleted). Existing memories are not changed.
+              </li>
+              <li>
+                <b>Memory limit</b>: new memories are refused once the project holds that many current memories. New versions and branches don’t count.
+              </li>
+              <li>
+                <b>Default weight</b>: used only when the agent or person writing doesn’t set a weight. Existing memories keep theirs.
+              </li>
+            </ul>
+            {quota && existing.memories > Number(quota) && (
+              <div className="alert warn-a" role="status">
+                {existing.name} already holds {fmtInt(existing.memories)} memories. Nothing is removed, but new memories are refused until fewer than {fmtInt(Number(quota))} remain.
+              </div>
+            )}
           </fieldset>
         )}
         {central ? (
@@ -852,7 +872,10 @@ const ProjectForm: React.FC<{ existing?: ProjectRow; central?: boolean; onClose:
           <label className="swrow">
             <span>
               <b>Invite-only</b>
-              <div className="hint">Agents must be added by a project admin before they can read or write.</div>
+              <div className="hint">
+                Agents must be added by a project admin before they can read or write.
+                {existing && !existing.invite_only && inviteOnly ? ' Current members keep their access.' : ''}
+              </div>
             </span>
             <input type="checkbox" checked={inviteOnly} onChange={(e) => setInviteOnly(e.target.checked)} />
           </label>
@@ -1063,7 +1086,7 @@ const PolicySummary: React.FC<{ policies?: ProjectPolicies; memories: number }> 
   return (
     <div style={{ marginBottom: 16 }}>
       <b className="sm">Memory policies</b>
-      <ul className="sm" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+      <ul className="sm" style={{ margin: '6px 0 0', paddingLeft: 18, listStyle: 'disc' }}>
         {items.map((t) => (
           <li key={t}>{t}</li>
         ))}
@@ -1079,6 +1102,7 @@ const LifecycleModal: React.FC<{
   onDone: (message: string) => void;
 }> = ({ action, project, onClose, onDone }) => {
   const [typed, setTyped] = useState('');
+  const confirmed = typed.trim() === project.name;
   if (action !== 'delete')
     return (
       <ConfirmModal
@@ -1105,19 +1129,29 @@ const LifecycleModal: React.FC<{
   return (
     <ConfirmModal
       title={`Delete ${project.name}?`}
-      confirmLabel="Delete project"
+      confirmLabel="Delete project and memories"
       danger
+      confirmDisabled={!confirmed}
       onClose={onClose}
       onConfirm={async () => {
-        if (typed !== project.name) throw new Error(`Type ${project.name} to confirm.`);
-        const res = await api.deleteProject(project.name, typed);
+        const res = await api.deleteProject(project.name, typed.trim());
         onDone(`${project.name} deleted with ${fmtInt(res.memories_deleted)} ${res.memories_deleted === 1 ? 'memory' : 'memories'}.`);
       }}
     >
+      <p style={{ margin: '0 0 8px' }}>Deleting removes more than the project:</p>
+      <ul style={{ margin: '0 0 12px', paddingLeft: 20, listStyle: 'disc' }}>
+        <li>
+          all <b>{fmtInt(project.memories)}</b> project {project.memories === 1 ? 'memory' : 'memories'}, with their versions and branches, for every member and agent;
+        </li>
+        <li>
+          access for its <b>{fmtInt(project.members)}</b> {project.members === 1 ? 'member' : 'members'} and any linked teams;
+        </li>
+        <li>the name: a new project can never be called {project.name}.</li>
+      </ul>
       <p style={{ margin: '0 0 12px' }}>
-        This deletes <b>{project.name}</b> and all of its <b>{fmtInt(project.memories)}</b> {project.memories === 1 ? 'memory' : 'memories'} for every member and agent. It cannot be undone from the dashboard, and the project name can never be used again.
+        The dashboard cannot undo it.{' '}
+        {project.archived ? 'The project is archived already: members can still read it until you delete it.' : <b>To keep the memories readable, archive the project instead.</b>}
       </p>
-      {!project.archived && <p style={{ margin: '0 0 12px' }}>To keep the memories readable, archive the project instead.</p>}
       <div className="f">
         <label htmlFor="pdel">
           Type <span className="mono">{project.name}</span> to confirm

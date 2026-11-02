@@ -62,7 +62,8 @@ const settings = {
 };
 
 const commonMemory = {
-  capabilities: { write: true, moderate: true, delete: true },
+  capabilities: { write: true, moderate: true },
+  can_delete: true,
   id: memoryId,
   stub: 'Run the MemoryHub UI locally with npm run dev',
   content_preview: 'Run the MemoryHub UI locally with npm run dev.',
@@ -198,7 +199,7 @@ export interface MockOptions {
   labs?: boolean;
   role?: 'operator' | 'user' | 'admin' | 'superuser';
   grant?: boolean;
-  /** #671: whether the viewer may delete the row (capabilities.delete). */
+  /** #671: whether the viewer may delete the row (can_delete). */
   canDelete?: boolean | null;
 }
 
@@ -248,7 +249,7 @@ export async function mockDashboardApi(page: Page, opts: MockOptions = {}) {
       });
     if (path === '/identities') return respond(route, { items: [identity], auth_available: true, roles: [{ name: 'admin', members: 1 }], counts: { all: 1, users: 1, user_agents: 0, service_agents: 0, roles: 1 } });
     if (path.startsWith('/identities/')) return respond(route, { ...identity, grant: 'password', scope_matrix: [], activity_24h: { searches: 1, writes: 1, denied: 0, total: 2 }, hourly: [], agents: [] });
-    if (path === '/memories/browse') return respond(route, { items: [{ ...commonMemory, capabilities: { ...commonMemory.capabilities, delete: canDelete ?? true } }], total: 1, page: 1, per_page: 20, search_mode: 'none', tab_counts: { current: 1, all: 1, quarantined: 0, deleted: 0 }, facets: { scopes: ['user', 'project', 'campaign', 'role', 'organizational', 'enterprise'].map((value) => ({ value, count: value === 'project' ? 1 : 0 })), writers: [{ value: 'admin', count: 1 }], projects: [{ value: 'memoryhub-ui', count: 1 }], domains: [{ value: 'tooling', count: 1 }], flags: { contradicted: 0, has_branches: 0, near_duplicate: null } } });
+    if (path === '/memories/browse') return respond(route, { items: [{ ...commonMemory, can_delete: canDelete ?? true }], total: 1, page: 1, per_page: 20, search_mode: 'none', tab_counts: { current: 1, all: 1, quarantined: 0, deleted: 0 }, facets: { scopes: ['user', 'project', 'campaign', 'role', 'organizational', 'enterprise'].map((value) => ({ value, count: value === 'project' ? 1 : 0 })), writers: [{ value: 'admin', count: 1 }], projects: [{ value: 'memoryhub-ui', count: 1 }], domains: [{ value: 'tooling', count: 1 }], flags: { contradicted: 0, has_branches: 0, near_duplicate: null } } });
     if (path === '/graph/all') return respond(route, { nodes: [{ ...node(memoryId, 'Run the MemoryHub UI locally with npm run dev', 0), degree: 1 }, { ...node(otherMemoryId, 'The UI is served on port 3000', 0), degree: 1 }], edges: [{ id: 'rel-1', source: memoryId, target: otherMemoryId, type: 'related_to' }], total: 2, truncated: false, orphan_count: 0, hidden_links: 0, metadata_only: false });
     if (path === '/memories/timeline')
       return respond(route, {
