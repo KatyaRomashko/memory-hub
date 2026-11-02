@@ -111,6 +111,9 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const selectionKnown = ids.length > 0 && selectedItems.length === ids.length;
   const selectionCanWrite = selectionKnown && selectedItems.every((item) => item.capabilities?.write);
   const selectionCanModerate = selectionKnown && selectedItems.every((item) => item.capabilities?.moderate);
+  // #671: people delete what they or their agents wrote; project admins anything in their project.
+  const selectionCanDelete = selectionKnown && selectedItems.every((item) => item.capabilities?.delete);
+  const undeletable = items.filter((m) => selected.has(m.id) && m.capabilities?.delete === false).length;
 
   const chips = useMemo(() => {
     const out: { label: string; clear: () => void }[] = [];
@@ -528,7 +531,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                             Quarantine
                           </button>
                         )}
-                        <button type="button" className="btn bl danger" disabled={!selectionCanModerate} title={!selectionCanModerate ? 'Moderation access is required for every selected memory.' : undefined} onClick={() => setModal('delete')}>
+                        <button type="button" className="btn bl danger" disabled={!selectionCanDelete} title={!selectionCanDelete ? 'Delete needs authorship, or project admin, for every selected memory.' : undefined} onClick={() => setModal('delete')}>
                           Delete
                         </button>
                       </>
@@ -555,7 +558,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 <button type="button" className="btn bl" disabled={!selectionCanWrite} title={!selectionCanWrite ? 'Write access is required for every selected memory.' : undefined} onClick={() => setModal('promote')}>
                   Propose promotion
                 </button>
-                <button type="button" className="btn bl danger" disabled={!selectionCanModerate} title={!selectionCanModerate ? 'Moderation access is required for every selected memory.' : undefined} onClick={() => setModal('delete')}>
+                <button type="button" className="btn bl danger" disabled={!selectionCanDelete} title={!selectionCanDelete ? 'Delete needs authorship, or project admin, for every selected memory.' : undefined} onClick={() => setModal('delete')}>
                   Delete
                 </button>
                 <button type="button" className="btn bl" onClick={() => setParams({ view: 'graph', gfocus: 'memory', focus: ids[0] }, false)}>
@@ -808,7 +811,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                                       </button>
                                     </>
                                   )}
-                                  {state.tab !== 'deleted' && !isAdmin && m.capabilities?.moderate && (
+                                  {state.tab !== 'deleted' && !isAdmin && m.capabilities?.delete && (
                                     <>
                                       <hr />
                                       <button
@@ -964,6 +967,11 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
         >
           This soft-deletes {rowDelete ? <b>“{rowDelete.stub}”</b> : <b>{ids.length} memories</b>} together with every version and child branch. Agents stop
           receiving {rowDelete ? 'it' : 'them'} immediately; the rows stay in the Deleted tab for forensics. The action is recorded in the audit log.
+          {!rowDelete && undeletable > 0 && (
+            <div className="alert warn-a" style={{ marginTop: 12 }}>
+              {fmtInt(undeletable)} of them {undeletable === 1 ? 'was' : 'were'} written by someone else and will be skipped: only the author or a project admin can delete a shared memory.
+            </div>
+          )}
         </ConfirmModal>
       )}
     </>

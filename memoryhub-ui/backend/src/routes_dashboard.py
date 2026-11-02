@@ -21,6 +21,8 @@ from memoryhub_core.models.audit import AuditLog
 from memoryhub_core.models.campaign import CampaignMembership
 from memoryhub_core.models.contradiction import ContradictionReport
 from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
+from memoryhub_core.models.project import Project, ProjectMembership
+from memoryhub_core.models.role import RoleAssignment
 from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, Float, String, and_, case, cast, exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1034,6 +1036,10 @@ async def browse_memories(
 
     entities_by_memory = await _entities_for(db, tenant_id, ids)
 
+    # #671: who may delete each row, and which of their projects are archived (read-only to everyone else).
+    deletable = await deletable_ids(db, tenant_id, acc, viewer, nodes)
+    archived = await archived_projects(db, {n.scope_id for n in nodes if n.scope == "project" and n.scope_id})
+
     items = []
     for n in nodes:
         branches = branch_info.get(n.id, [])
@@ -1063,7 +1069,7 @@ async def browse_memories(
                 "deleted_at": n.deleted_at,
                 "score": round(scores[n.id], 4) if n.id in scores else None,
                 "entities": entities_by_memory.get(n.id, []),
-                "capabilities": acc.memory_capabilities(n),
+                "capabilities": node_capabilities(acc, n, viewer, deletable, archived),
             }
         )
     items = [acc.redact(i) for i in items]
@@ -1374,6 +1380,8 @@ async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep, viewe
             contents[memory.id] = (
                 memory.content if acc.hides(memory.scope) else await full_memory_content(memory, content_cache)
             )
+    deletable = await deletable_ids(db, tenant_id, acc, viewer, [node])
+    archived = await archived_projects(db, {node.scope_id} if node.scope == "project" and node.scope_id else set())
     result = {
         "memory": {
             **_node_brief(node),
@@ -1395,7 +1403,7 @@ async def memory_context(memory_id: str, db: DbDep, settings: SettingsDep, viewe
             "embedding_dims": dims,
             "injection": "full" if node.weight >= full_threshold else "stub",
             "full_content_threshold": full_threshold,
-            "capabilities": acc.memory_capabilities(node),
+            "capabilities": node_capabilities(acc, node, viewer, deletable, archived),
         },
         "versions": [
             {
@@ -1545,6 +1553,80 @@ def _embedding_service(settings: Settings):
 async def _writable(db: AsyncSession, settings: Settings, viewer, node: MemoryNode) -> None:
     """Use write permissions for every mutation, independently of read access."""
     (await access_for(db, settings, viewer)).ensure_writable(node)
+    if node.scope == "project" and node.scope_id:
+        await project_writable(db, node.scope_id)
+
+
+async def project_writable(db: AsyncSession, project: str) -> None:
+    """#671: archived (and deleted) projects take no new memories, versions or branches."""
+    from memoryhub_core.services.exceptions import ProjectArchivedError, ProjectNotProvisionedError
+    from memoryhub_core.services.project import assert_project_writable
+
+    try:
+        await assert_project_writable(db, project)
+    except ProjectArchivedError:
+        raise HTTPException(
+            status_code=409, detail=f"Project {project} is archived and read-only. Ask a project admin to unarchive it."
+        ) from None
+    except ProjectNotProvisionedError:
+        raise HTTPException(status_code=404, detail=f"Project {project!r} not found") from None
+
+
+async def _project_policies(db: AsyncSession, tenant_id: str, project: str) -> dict:
+    """Policies for a new project memory; refuses archived projects and full quotas."""
+    from memoryhub_core.services.exceptions import (
+        ProjectArchivedError,
+        ProjectNotProvisionedError,
+        ProjectQuotaExceededError,
+    )
+    from memoryhub_core.services.project import project_write_policies
+
+    try:
+        return await project_write_policies(db, project, tenant_id, new_memory=True)
+    except ProjectQuotaExceededError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except (ProjectArchivedError, ProjectNotProvisionedError):
+        await project_writable(db, project)
+        raise
+
+
+async def deletable_ids(db: AsyncSession, tenant_id: str, acc, viewer, nodes) -> set | None:
+    """#671: people delete what they or their agents wrote; project admins anything in their project.
+
+    None for viewers who are not restricted: their delete rights come from moderation.
+    """
+    if not viewer.restricted:
+        return None
+    from src.routes import admin_projects, first_version, may_forget
+
+    identities = acc.grants.identities if acc.grants else set()
+    admin_of = await admin_projects(db, identities)
+    out = set()
+    for n in nodes:
+        author = await first_version(db, tenant_id, n)
+        if may_forget(identities, admin_of, n, author):
+            out.add(n.id)
+    return out
+
+
+async def archived_projects(db: AsyncSession, names: set[str]) -> set[str]:
+    if not names:
+        return set()
+    rows = await db.execute(
+        select(Project.name).where(Project.name.in_(list(names)), Project.archived_at.is_not(None))
+    )
+    return set(rows.scalars().all())
+
+
+def node_capabilities(acc, n, viewer, deletable, archived) -> dict:
+    """What the viewer may do with a row. Archived projects take no writes; authors may still delete (#671)."""
+    caps = acc.memory_capabilities(n)
+    delete = caps["moderate"] if deletable is None else (n.id in deletable and caps["moderate"])
+    if n.scope == "project" and n.scope_id in archived:
+        caps["write"] = False
+        if viewer.restricted:
+            caps["moderate"] = False
+    return {**caps, "delete": delete}
 
 
 async def _writable_scope(db: AsyncSession, settings: Settings, viewer, scope: str, scope_id: str | None) -> None:
@@ -1582,13 +1664,21 @@ async def create_dashboard_memory(
 
     await _writable_scope(db, settings, viewer, body.scope, body.scope_id)
     tenant_id = settings.ui_tenant_id
+    weight, relevant_until = body.weight, None
+    if body.scope == "project" and body.scope_id:
+        from memoryhub_core.services.project import relevant_until_from_policies
+
+        policies = await _project_policies(db, tenant_id, body.scope_id)
+        if "weight" not in body.model_fields_set and "default_weight" in policies:
+            weight = policies["default_weight"]
+        relevant_until = relevant_until_from_policies(policies)
     owner = body.owner_id or (tenant_id if body.scope in ("organizational", "enterprise") else viewer.username)
     if viewer.restricted:
         owner = viewer.username if body.scope == "user" else (body.scope_id or owner)
     data = MemoryNodeCreate(
         content=body.content,
         scope=body.scope,
-        weight=body.weight,
+        weight=weight,
         owner_id=owner,
         actor_id=viewer.username,
         driver_id=viewer.username,
@@ -1597,6 +1687,7 @@ async def create_dashboard_memory(
         content_type=body.content_type,
         source="import",
         metadata=metadata,
+        relevant_until=relevant_until,
     )
     memory, curation = await create_memory(data, db, _embedding_service(settings), tenant_id=tenant_id)
     if memory is None:
@@ -1774,6 +1865,8 @@ async def _propose_promotion(
 ) -> uuid.UUID:
     if target_scope not in PROMOTION_ORDER or node.scope not in PROMOTION_ORDER:
         raise HTTPException(status_code=422, detail=f"Cannot promote {node.scope} → {target_scope}")
+    if target_scope == "project" and target_scope_id:
+        await project_writable(db, target_scope_id)
     if PROMOTION_ORDER.index(target_scope) <= PROMOTION_ORDER.index(node.scope):
         raise HTTPException(status_code=422, detail="Promotion must move to a broader scope")
     if node.scope == "user" and node.owner_id != viewer.username:

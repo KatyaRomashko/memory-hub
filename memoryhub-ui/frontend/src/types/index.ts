@@ -208,7 +208,8 @@ export interface EntitiesResponse {
 }
 
 export interface MemoryRow {
-  capabilities: { write: boolean; moderate: boolean };
+  /** delete: #671, authors or project admins; moderate and write follow the server's rules. */
+  capabilities: { write: boolean; moderate: boolean; delete?: boolean };
   id: string;
   stub: string;
   content_preview: string;
@@ -302,7 +303,8 @@ export interface NodeBrief {
 
 export interface MemoryContext {
   memory: NodeBrief & {
-    capabilities: { write: boolean; moderate: boolean };
+    /** delete: #671, authors or project admins; moderate and write follow the server's rules. */
+  capabilities: { write: boolean; moderate: boolean; delete?: boolean };
     content: string;
     logical_id: string | null;
     parent_id: string | null;
@@ -490,6 +492,20 @@ export interface ProjectRow {
   campaigns: { id: string; name: string; status: string }[];
   /** The viewer's own role in the project, if they are a member. */
   my_role?: 'admin' | 'member' | null;
+  /** #671: archived projects are read-only. */
+  archived?: boolean;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  policies?: ProjectPolicies;
+}
+
+export interface ProjectPolicies {
+  /** New memories stay relevant this many days. */
+  ttl_days?: number;
+  /** Limit on current memories. */
+  max_memories?: number;
+  /** Weight for writes that don't set one. */
+  default_weight?: number;
 }
 
 export type ProjectProvisioning = 'central' | 'self_service';
@@ -497,6 +513,8 @@ export type ProjectProvisioning = 'central' | 'self_service';
 export interface ProjectDetail extends ProjectRow {
   /** Platform admin or project admin: may edit, add, remove and change roles. */
   can_manage?: boolean;
+  /** Platform admins only: deleting removes every memory in the project. */
+  can_delete?: boolean;
   provisioning?: ProjectProvisioning;
   agents_today: number;
   members_list: { user_id: string; role: string; joined_at: string; joined_by: string; via_team?: string | null }[];
