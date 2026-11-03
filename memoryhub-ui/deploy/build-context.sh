@@ -37,6 +37,9 @@ rsync -a --exclude='__pycache__' --exclude='node_modules' --exclude='dist' \
 # Copy backend source
 mkdir -p "$BUILD_DIR/backend"
 cp "$PROJECT_ROOT/backend/requirements.txt" "$BUILD_DIR/backend/"
+cp "$PROJECT_ROOT/backend/alembic.ini" "$BUILD_DIR/backend/"
+rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
+    "$PROJECT_ROOT/backend/migrations/" "$BUILD_DIR/backend/migrations/"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
     --exclude='.mypy_cache' "$PROJECT_ROOT/backend/src/" "$BUILD_DIR/backend/src/"
 
