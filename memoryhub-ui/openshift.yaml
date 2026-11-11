@@ -1,4 +1,3 @@
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,115 +14,40 @@ spec:
       annotations:
         alpha.image.policy.openshift.io/resolve-names: '*'
     spec:
-      serviceAccountName: memoryhub-ui
       containers:
       - name: memoryhub-ui
         image: memoryhub-ui:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
-          protocol: TCP
+          name: http
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 30
         readinessProbe:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        envFrom:
-        - secretRef:
-            name: memoryhub-db-credentials
-        env:
-        - name: MEMORYHUB_MCP_SERVER_URL
-          value: "http://memory-hub-mcp.memory-hub-mcp.svc:8080/mcp/"
-        - name: MEMORYHUB_AUTH_SERVICE_URL
-          value: "http://auth-server.memoryhub-auth.svc:8081"
-        # Public-facing Route URLs used by the Client Management welcome-email
-        # renderer. Populated at deploy time by memoryhub-ui/deploy/deploy.sh
-        # which queries the actual Routes and calls `oc set env`. These
-        # defaults are placeholders — if they appear in a generated welcome
-        # email, the deploy script's post-deploy `oc set env` step didn't
-        # run.
-        - name: MEMORYHUB_PUBLIC_MCP_URL
-          value: "https://mcp-server.example.com/mcp/"
-        - name: MEMORYHUB_PUBLIC_AUTH_URL
-          value: "https://auth-server.example.com"
-        - name: MEMORYHUB_ADMIN_KEY
-          valueFrom:
-            secretKeyRef:
-              name: memoryhub-ui-admin-key
-              key: MEMORYHUB_ADMIN_KEY
         resources:
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
           requests:
-            memory: "256Mi"
-            cpu: "250m"
-      - name: oauth-proxy
-        image: registry.redhat.io/openshift4/ose-oauth-proxy:v4.14
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 8443
-          name: proxy
-          protocol: TCP
-        args:
-        - --http-address=127.0.0.1:4180
-        - --https-address=:8443
-        - --provider=openshift
-        - --openshift-service-account=memoryhub-ui
-        - --upstream=http://localhost:8080
-        - --tls-cert=/etc/tls/private/tls.crt
-        - --tls-key=/etc/tls/private/tls.key
-        - --cookie-secret-file=/etc/proxy/secrets/session-secret
-        - --pass-basic-auth=false
-        - --pass-access-token=true
-        - --skip-auth-regex=^/healthz$
-        volumeMounts:
-        - name: proxy-tls
-          mountPath: /etc/tls/private
-          readOnly: true
-        - name: proxy-secret
-          mountPath: /etc/proxy/secrets
-          readOnly: true
-        resources:
+            cpu: 50m
+            memory: 128Mi
           limits:
-            memory: "128Mi"
-            cpu: "100m"
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-      volumes:
-      - name: proxy-tls
-        secret:
-          secretName: memoryhub-ui-tls
-      - name: proxy-secret
-        secret:
-          secretName: memoryhub-ui-proxy
+            cpu: 500m
+            memory: 512Mi
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: memoryhub-ui
-  annotations:
-    service.beta.openshift.io/serving-cert-secret-name: memoryhub-ui-tls
 spec:
   selector:
     app: memoryhub-ui
   ports:
-  - name: proxy
-    port: 8443
-    targetPort: 8443
-    protocol: TCP
-  - name: app
+  - name: http
     port: 8080
     targetPort: 8080
-    protocol: TCP
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
@@ -134,7 +58,7 @@ spec:
     kind: Service
     name: memoryhub-ui
   port:
-    targetPort: 8443
+    targetPort: http
   tls:
-    termination: reencrypt
+    termination: edge
     insecureEdgeTerminationPolicy: Redirect
