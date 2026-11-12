@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api } from '@/api/client';
+import { api, ApiError } from '@/api/client';
 import { PageHeader, Tabs } from '@/components/Shell';
 import { Empty, ErrorState, Icon, SkTable, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
@@ -65,7 +65,7 @@ const MyRequests: React.FC<{ route: HashRoute }> = ({ route }) => {
 
         {error && !data ? (
           <div className="card">
-            <ErrorState error={error} onRetry={reload} title="Your requests could not be loaded" />
+            <ErrorState error={error} onRetry={reload} title={error instanceof ApiError && error.status === 404 ? 'My requests is not available on this server yet' : 'Your requests could not be loaded'} />
           </div>
         ) : loading && !data ? (
           <div className="card">

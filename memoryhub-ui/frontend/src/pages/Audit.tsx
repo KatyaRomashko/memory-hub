@@ -21,11 +21,12 @@ const localInput = (d: Date) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-const Audit: React.FC<{ route: HashRoute }> = ({ route }) => {
+/** fixedTab: My activity shows the log and the denied-only view as views of its own, without these tabs. */
+const Audit: React.FC<{ route: HashRoute; fixedTab?: 'log' | 'denied' }> = ({ route, fixedTab }) => {
   const toast = useToast();
   const { role } = useApp();
   const personal = role === 'user';
-  const requestedTab = route.params.get('tab') || 'forensics';
+  const requestedTab = fixedTab ?? (route.params.get('tab') || 'forensics');
   const tab = personal && !['log', 'denied'].includes(requestedTab) ? 'log' : requestedTab;
   const setParam = (changes: Record<string, string | undefined>) => {
     const next = new URLSearchParams(route.params);
@@ -72,6 +73,7 @@ const Audit: React.FC<{ route: HashRoute }> = ({ route }) => {
           )
         }
         tabs={
+          fixedTab ? undefined : (
           <Tabs
             label="Audit views"
             value={tab}
@@ -90,6 +92,7 @@ const Audit: React.FC<{ route: HashRoute }> = ({ route }) => {
                   ]
             }
           />
+          )
         }
       />
       <div className="body">

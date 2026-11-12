@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api } from '@/api/client';
+import { api, ApiError } from '@/api/client';
 import { PageHeader, Tabs } from '@/components/Shell';
 import { DocumentsSection } from './Documents';
 import { PacksSection } from './Packs';
@@ -423,7 +423,7 @@ const SharedKnowledge: React.FC<{ route: HashRoute }> = ({ route }) => {
 
         <section className="card" style={{ padding: 0 }}>
           {error && !data ? (
-            <ErrorState error={error} onRetry={reload} title="Shared knowledge could not be loaded" />
+            <ErrorState error={error} onRetry={reload} title={error instanceof ApiError && error.status === 404 ? 'Shared knowledge is not available on this server yet' : 'Shared knowledge could not be loaded'} />
           ) : loading && !data ? (
             <SkTable rows={4} cols={7} />
           ) : !data || data.items.length === 0 ? (

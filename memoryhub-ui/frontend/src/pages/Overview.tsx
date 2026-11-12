@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api } from '@/api/client';
+import { api, ApiError } from '@/api/client';
 import { PageHeader, useApp } from '@/components/Shell';
 import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby, Status, TOKEN_ESTIMATE_NOTE } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
@@ -369,6 +369,7 @@ const Overview: React.FC = () => {
             <div className="stack">
               <MyContradictions data={data} loading={first} />
               <MyOpenRequests />
+              <ContextAssembly data={data} loading={first} empty={empty} />
             </div>
           ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -697,7 +698,7 @@ const MyOpenRequests: React.FC = () => {
         <SkLines lines={3} />
       ) : error && !data ? (
         <p className="sm muted" style={{ margin: 0 }}>
-          Requests could not be loaded.
+          {error instanceof ApiError && error.status === 404 ? 'Requests are not available on this server yet.' : 'Requests could not be loaded.'}
         </p>
       ) : open.length === 0 ? (
         <p className="sm muted" style={{ margin: 0 }}>
@@ -718,3 +719,39 @@ const MyOpenRequests: React.FC = () => {
     </section>
   );
 };
+
+/** Cache hits and tokens per injection, for the agents the user connects. */
+const ContextAssembly: React.FC<OverviewCardProps> = ({ data, loading, empty }) => (
+  <section className="card">
+    <h3 style={{ marginBottom: 12 }}>Context assembly</h3>
+    {loading ? (
+      <SkLines lines={3} />
+    ) : empty || !data ? (
+      <Standby>Cache hits and tokens per injection appear once agents start searching.</Standby>
+    ) : (
+      <>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <div className="sm muted">KV-cache prefix hits</div>
+            <div className="kpi" style={{ fontSize: 26 }}>
+              {data.context_assembly.prefix_hit_rate !== null ? `${Math.round(data.context_assembly.prefix_hit_rate * 100)}%` : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="sm muted" title={TOKEN_ESTIMATE_NOTE}>
+              Avg tokens / injection (est.)
+            </div>
+            <div className="kpi" style={{ fontSize: 26 }}>
+              {fmtInt(data.context_assembly.avg_tokens)}
+            </div>
+          </div>
+        </div>
+        <p className="sm muted" style={{ margin: '8px 0 0' }}>
+          {data.context_assembly.avg_tokens === null && data.context_assembly.prefix_hit_rate === null
+            ? 'Shown when the MCP server reports response tokens and cache hits with its search events.'
+            : 'Epoch-locked ordering keeps shared memory prefixes cache-friendly across agents.'}
+        </p>
+      </>
+    )}
+  </section>
+);

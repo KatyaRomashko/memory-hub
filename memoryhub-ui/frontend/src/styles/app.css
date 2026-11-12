@@ -695,3 +695,11 @@ button.tag { cursor: pointer; border: 1px solid transparent; font: inherit; font
 .side-item:nth-child(2) { border-top: 0; padding-top: 0; }
 .side-item.row { display: flex; gap: 10px; align-items: baseline; }
 .side-item .tag { flex: none; }
+.sub-seg { align-self: flex-start; }
+.sub-seg button { font-size: 13px; padding: 5px 14px; }
+.sub-seg .cnt-s { font-size: 12px; opacity: .75; }
+.sub-seg button.on .cnt-s { opacity: .9; }
+.filters .in.auto { font-size: 13px; padding: 7px 10px; }
+.filters .in-icon { flex: 0 1 230px; }
+.filters .in-icon .in { font-size: 13px; }
+.filters select.in.auto { max-width: 190px; }

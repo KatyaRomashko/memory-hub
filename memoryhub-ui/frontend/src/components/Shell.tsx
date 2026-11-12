@@ -252,8 +252,9 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
 
 /**
  * The user's menu. Screens that used to have their own item live inside a
- * hub now: My activity collects the log, readers, connections, requests, jobs,
- * Dreaming and retrieval checks; My agents & API keys joins agents and keys.
+ * hub now: My activity collects the log, readers, background jobs, retrieval
+ * checks and incident notices; My agents & API keys joins agents, keys,
+ * connecting an agent and the connection check.
  */
 export const USER_NAV: { group?: string; items: NavItem[] }[] = [
   { items: [{ path: '/overview', label: 'Overview' }] },
@@ -263,6 +264,7 @@ export const USER_NAV: { group?: string; items: NavItem[] }[] = [
       { path: '/memories', label: 'Memory browser' },
       { path: '/search', label: 'Search playground' },
       { path: '/knowledge', label: 'Knowledge', labs: true },
+      { path: '/hygiene', label: 'Dreaming', labs: true },
       { path: '/entities', label: 'Entities' },
     ],
   },
@@ -287,10 +289,9 @@ export const USER_NAV: { group?: string; items: NavItem[] }[] = [
 /** Old user screens and where they live now (the hub path and its view). */
 export const USER_MOVED: Record<string, { path: string; view: string }> = {
   '/reads': { path: '/audit', view: 'reads' },
-  '/connect': { path: '/audit', view: 'connections' },
-  '/verify': { path: '/audit', view: 'connections' },
+  '/connect': { path: '/identities', view: 'connect' },
+  '/verify': { path: '/identities', view: 'verify' },
   '/operations': { path: '/audit', view: 'jobs' },
-  '/hygiene': { path: '/audit', view: 'dreaming' },
   '/quality': { path: '/audit', view: 'checks' },
   '/clients': { path: '/identities', view: 'keys' },
 };
@@ -619,16 +620,16 @@ export const PageHeader: React.FC<{
     // Inside a hub (My activity, My agents & API keys): the hub owns the page
     // title and crumbs; the screen keeps its own description, actions and tabs.
     return (
-      <div className={`ph-sub ${tabs ? 'has-tabs' : ''}`}>
+      <div className="ph-sub">
         <div className="ph-row">
-          <div style={{ minWidth: 0, flex: '1 1 420px' }}>
+          <div style={{ minWidth: 0, flex: '1 1 420px', display: 'flex', flexDirection: 'column', gap: 10 }}>
             {embed.showTitle && <h2>{title}</h2>}
             {description && <p className="desc">{description}</p>}
             {below}
+            {tabs}
           </div>
           {actions && <div className="ph-actions">{actions}</div>}
         </div>
-        {tabs}
       </div>
     );
   }
@@ -712,6 +713,21 @@ export function Tabs<T extends string>({
   label: string;
   inCard?: boolean;
 }) {
+  const embedded = useContext(EmbedContext);
+  if (embedded && !inCard) {
+    // Inside a hub the hub's tabs are the only tab row; a screen's own tabs
+    // become a segmented filter so the page never shows two rows of tabs.
+    return (
+      <div className="seg sub-seg" role="tablist" aria-label={label}>
+        {tabs.map((t) => (
+          <button key={t.value} type="button" role="tab" aria-selected={t.value === value} className={t.value === value ? 'on' : ''} onClick={() => onChange(t.value)}>
+            {t.label}
+            {t.count !== undefined && t.count !== null && <span className="cnt-s">{typeof t.count === 'number' ? t.count.toLocaleString() : t.count}</span>}
+          </button>
+        ))}
+      </div>
+    );
+  }
   return (
     <nav className={`tabs ${inCard ? 'in-card' : ''}`} aria-label={label} role="tablist">
       {tabs.map((t) => (
