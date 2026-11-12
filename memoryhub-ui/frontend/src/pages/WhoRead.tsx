@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { api } from '@/api/client';
-import { PageHeader } from '@/components/Shell';
-import { Empty, ErrorState, Seg, SkTable } from '@/components/ui';
+import { EmbedContext, PageHeader } from '@/components/Shell';
+import { Empty, ErrorState, Icon, SkTable } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { MyReads } from '@/types';
-import { avatarColor, fmtInt, fmtRelative, initials } from '@/utils/format';
+import { fmtInt, fmtMonthDay, fmtTime } from '@/utils/format';
 import { memoryHref } from './common';
 
 const OP: Record<string, string> = {
@@ -18,8 +18,13 @@ const OP: Record<string, string> = {
 };
 const op = (t: string) => OP[t] ?? t.replace(/^memory\./, '').replace(/_/g, ' ');
 
+const REASON_CLASS: Record<string, string> = { project: 's-project', review: 's-user', incident: 'red', own: 'g' };
+
+const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
+
 /** Who read my memories: every agent or person that touched memories you own. */
 const WhoRead: React.FC<{ route: HashRoute }> = ({ route }) => {
+  const embedded = Boolean(useContext(EmbedContext));
   const days = Number(route.params.get('days') || 30);
   const who = route.params.get('who') === 'all' ? 'all' : 'others';
   const { data, error, loading, reload } = useApi<MyReads>(() => api.myReads(days, who), [days, who]);
@@ -27,168 +32,180 @@ const WhoRead: React.FC<{ route: HashRoute }> = ({ route }) => {
     const next = new URLSearchParams(route.params);
     if (v) next.set(k, v);
     else next.delete(k);
-    navigate('/reads', next, { replace: true });
+    navigate(route.path, next, { replace: true });
   };
+
+  const others = (data?.readers ?? []).filter((r) => !r.yours);
+  const summary = data?.summary;
+  const readsByOthers = summary?.reads_by_others ?? others.reduce((a, r) => a + r.count, 0);
+  const incidentGrants = summary?.incident_grants ?? (data?.events ?? []).filter((e) => e.break_glass).length;
 
   return (
     <>
-      <PageHeader
-        title="Who read my memories"
-        description="Every agent or person that read, found or changed a memory that belongs to you or your agents. Taken from the append-only audit log."
-        actions={
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <Seg
-              label="Who"
-              value={who}
-              onChange={(v) => set('who', v === 'others' ? undefined : v)}
-              options={[
-                { value: 'others', label: 'Others' },
-                { value: 'all', label: 'Including my agents' },
-              ]}
-            />
-            <Seg
-              label="Period"
-              value={String(days)}
-              onChange={(v) => set('days', v === '30' ? undefined : v)}
-              options={[
-                { value: '1', label: '24 h' },
-                { value: '7', label: '7 d' },
-                { value: '30', label: '30 d' },
-                { value: '90', label: '90 d' },
-              ]}
-            />
-          </div>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="Who read my memories"
+          description="Every agent or person that read, found or changed a memory that belongs to you or your agents. Taken from the append-only audit log."
+        />
+      )}
       <div className="body">
+        <div className="filters">
+          <label htmlFor="wr-days" className="vh">
+            Period
+          </label>
+          <select id="wr-days" className="in auto" value={String(days)} onChange={(e) => set('days', e.target.value === '30' ? undefined : e.target.value)}>
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <label className="check-pill">
+            <input type="checkbox" checked={who === 'all'} onChange={(e) => set('who', e.target.checked ? 'all' : undefined)} />
+            Include my agents
+          </label>
+        </div>
+
         {error && !data ? (
           <ErrorState error={error} onRetry={reload} />
         ) : loading && !data ? (
           <div className="card">
             <SkTable rows={6} cols={4} />
           </div>
-        ) : data && data.total === 0 ? (
-          <div className="card">
-            <Empty title={who === 'others' ? 'Nobody else touched your memories' : 'No activity on your memories'}>
-              {who === 'others'
-                ? `In the last ${days} days only you and your agents (${data.identities.join(', ')}) used your memories.`
-                : `No audit events on your memories in the last ${days} days.`}
-            </Empty>
-          </div>
         ) : (
           data && (
-            <div className="row-wrap">
-              <div className="col-main">
-                <section className="card" style={{ padding: 0 }}>
-                  <div className="ch" style={{ padding: '18px 20px 0' }}>
-                    <h3>Readers</h3>
-                    <span className="sm muted">{fmtInt(data.total)} events</span>
-                  </div>
-                  <div className="scroll">
-                    <table className="tbl mid">
-                      <thead>
-                        <tr>
-                          <th>Who</th>
-                          <th>What</th>
-                          <th>Events</th>
-                          <th>Last</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.readers.map((r) => (
-                          <tr key={r.actor_id}>
-                            <td>
-                              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                                <span className="mav" style={{ background: avatarColor(r.actor_id) }}>
-                                  {initials(r.actor_id)}
-                                </span>
-                                <div>
-                                  <div className="b6">
-                                    {r.actor_id}
-                                    {r.yours && <span className="sm muted"> · your agent</span>}
-                                  </div>
-                                  <div className="sm muted">
-                                    {r.driver_id && r.driver_id !== r.actor_id ? `for ${r.driver_id}` : 'acting for itself'}
-                                    {r.via_dashboard ? ' · via dashboard' : ''}
-                                  </div>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="sm">{r.kinds.map(op).join(', ')}</td>
-                            <td>
-                              {fmtInt(r.count)}
-                              {r.denied > 0 && <span className="lbl red" style={{ marginLeft: 6 }}>{r.denied} denied</span>}
-                            </td>
-                            <td className="sm muted">{fmtRelative(r.last)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-                <section className="card" style={{ padding: 0 }}>
-                  <div className="ch" style={{ padding: '18px 20px 0' }}>
-                    <h3>Recent events</h3>
-                    <a className="sm" href={buildHash('/memories', { scope: 'user' })}>
-                      My memories
-                    </a>
-                  </div>
-                  <div style={{ padding: '4px 20px 14px' }}>
+            <>
+              <div className="grid-kpi">
+                <Kpi label={`Reads by others · ${days === 1 ? '24 h' : `${days} d`}`} value={readsByOthers} sub="project members on project memories" />
+                <Kpi label="Reads of personal memory by others" value={summary?.personal_by_others} sub="reviewers of your open requests" />
+                <Kpi label="Admin reads without workflow" value={summary?.admin_without_workflow ?? 0} sub="never possible without incident" />
+                <Kpi label="Incident grants on my data" value={incidentGrants} sub="you are notified if one starts" />
+              </div>
+
+              <div className="row-wrap">
+                <div className="col-main">
+                  <section className="card">
+                    <div className="ch">
+                      <h3>Readers</h3>
+                      <span className="sm muted">{fmtInt(data.total)} events</span>
+                    </div>
+                    {data.readers.length === 0 ? (
+                      <Empty compact title={who === 'others' ? 'Nobody else touched your memories' : 'No activity on your memories'}>
+                        {who === 'others'
+                          ? `In this period only you and your agents (${data.identities.join(', ')}) used your memories.`
+                          : 'No audit events on your memories in this period.'}
+                      </Empty>
+                    ) : (
+                      <div className="scroll">
+                        <table className="tbl mid" style={{ minWidth: 560 }}>
+                          <thead>
+                            <tr>
+                              <th>Reader</th>
+                              <th>On behalf of</th>
+                              <th>Memories</th>
+                              <th>Reads</th>
+                              <th>Why allowed</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {data.readers.map((r) => (
+                              <tr key={r.actor_id}>
+                                <td>
+                                  {r.actor_id}
+                                  {r.yours && <span className="hint"> · your agent</span>}
+                                  {r.denied > 0 && (
+                                    <span className="lbl red" style={{ marginLeft: 6 }}>
+                                      {r.denied} denied
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="sm">{r.driver_id && r.driver_id !== r.actor_id ? r.driver_id : '—'}</td>
+                                <td>{r.memories !== undefined ? fmtInt(r.memories) : '—'}</td>
+                                <td>{fmtInt(r.count)}</td>
+                                <td>
+                                  {r.reason ? (
+                                    <span className={`lbl ${REASON_CLASS[r.reason_kind ?? 'project'] ?? 'g'}`}>{r.reason}</span>
+                                  ) : (
+                                    <span className="sm muted">{r.kinds.map(op).join(', ')}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                  <section className="card">
+                    <h3 style={{ marginBottom: 6 }}>Recent events</h3>
+                    {data.events.length === 0 && <p className="sm muted">No events in this period.</p>}
                     {data.events.map((e) => (
-                      <div key={String(e.id)} className="hrow">
-                        <span style={{ minWidth: 0 }}>
-                          <b>{e.actor_id}</b> {op(e.event_type)}{' '}
-                          <a href={memoryHref(e.memory_id)} className="ellipsis" style={{ display: 'inline-block', maxWidth: 360, verticalAlign: 'bottom' }}>
-                            {e.memory_stub}
-                          </a>
-                          {e.break_glass && <span className="lbl red" style={{ marginLeft: 6 }}>break-glass</span>}
-                          {e.decision === 'denied' && <span className="lbl red" style={{ marginLeft: 6 }}>denied</span>}
+                      <div key={String(e.id)} className="evrow">
+                        <span className="mono muted" style={{ width: 56, flex: 'none' }}>
+                          {isToday(e.timestamp) ? fmtTime(e.timestamp) : fmtMonthDay(e.timestamp)}
                         </span>
-                        <span className="sm muted" style={{ whiteSpace: 'nowrap' }}>
-                          {fmtRelative(e.timestamp)}
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                          {e.actor_id} {op(e.event_type)} <a href={memoryHref(e.memory_id)}>{e.memory_stub}</a>
+                          {e.break_glass && (
+                            <span className="lbl red" style={{ marginLeft: 6 }}>
+                              break-glass
+                            </span>
+                          )}
+                          {e.decision === 'denied' && (
+                            <span className="lbl red" style={{ marginLeft: 6 }}>
+                              denied
+                            </span>
+                          )}
                         </span>
                       </div>
                     ))}
+                  </section>
+                </div>
+                <aside className="col-side">
+                  <section className="card">
+                    <h3>Most used memories</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', marginTop: 8 }}>
+                      {data.top_memories.length === 0 && <p className="sm muted">Nothing read in this period.</p>}
+                      {data.top_memories.map((m) => (
+                        <div key={m.id} className="evrow">
+                          <span className="sm muted" style={{ width: 28, flex: 'none' }}>
+                            {m.count}
+                          </span>
+                          <a className="sm ellipsis" href={memoryHref(m.id)} style={{ minWidth: 0 }}>
+                            {m.stub}
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                  <section className="card">
+                    <h3>Whose activity counts as yours</h3>
+                    <p className="sm" style={{ margin: '10px 0 0' }}>
+                      You, and agents registered to you: {data.identities.length ? data.identities.join(', ') : 'none yet'}. Toggle “Include my agents” to see their reads too.
+                    </p>
+                    <a className="btn bl sm" href={buildHash('/identities')} style={{ marginTop: 6, paddingLeft: 0 }}>
+                      Manage my agents
+                    </a>
+                  </section>
+                  <div className="alert ok-a">
+                    <Icon.Shield stroke="#3d7317" style={{ flex: 'none', marginTop: 1 }} />
+                    <div className="sm">Any incident read of your memory appears here with its incident number.</div>
                   </div>
-                </section>
+                </aside>
               </div>
-              <aside className="col-side">
-                <section className="card">
-                  <h3>Most used memories</h3>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-                    {data.top_memories.map((m) => (
-                      <a key={m.id} className="hrow link-plain" href={memoryHref(m.id)} style={{ color: 'inherit' }}>
-                        <span className="ellipsis" style={{ minWidth: 0 }}>
-                          {m.stub}
-                        </span>
-                        <b className="sm">{m.count}</b>
-                      </a>
-                    ))}
-                  </div>
-                </section>
-                <section className="card">
-                  <h3>Whose activity counts as yours</h3>
-                  <p className="sm muted" style={{ margin: '8px 0 10px' }}>
-                    You and the agents linked to you. Others are shown by default.
-                  </p>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {data.identities.map((i) => (
-                      <span key={i} className="lbl g mono">
-                        {i}
-                      </span>
-                    ))}
-                  </div>
-                  <a className="btn bl sm" href={buildHash('/identities')} style={{ marginTop: 10 }}>
-                    Manage my agents
-                  </a>
-                </section>
-              </aside>
-            </div>
+            </>
           )
         )}
       </div>
     </>
   );
 };
+
+const Kpi: React.FC<{ label: string; value: number | null | undefined; sub: string }> = ({ label, value, sub }) => (
+  <div className="card">
+    <div className="sm">{label}</div>
+    <div className="kpi">{value === null || value === undefined ? '—' : fmtInt(value)}</div>
+    <div className="sm muted">{sub}</div>
+  </div>
+);
 
 export default WhoRead;

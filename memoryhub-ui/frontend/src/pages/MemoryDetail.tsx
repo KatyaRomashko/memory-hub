@@ -56,7 +56,8 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
   const id = decodeURIComponent(route.path.replace(/^\/memory\//, ''));
   const tab = route.params.get('tab') || 'details';
   const toast = useToast();
-  const { refreshCounts } = useApp();
+  const { refreshCounts, role } = useApp();
+  const userView = role === 'user';
   const [restoring, setRestoring] = useState(false);
   const { data, error, loading, reload } = useApi<MemoryContext>(() => api.memoryContext(id), [id]);
   const [modal, setModal] = useState<null | 'contradiction' | 'branch' | 'edit' | 'delete' | 'relate'>(null);
@@ -183,7 +184,7 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
                   </button>
                 </>
               )}
-              {canDelete && (
+              {canDelete && !userView && (
                 <button type="button" className="btn bd outline" aria-label="Delete memory" onClick={() => setModal('delete')}>
                   Delete
                 </button>
@@ -222,6 +223,8 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
               </div>
             </div>
           </div>
+        ) : data && m && userView && tab === 'details' ? (
+          <UserMemoryView data={data} byVersion={byVersion} canWrite={canWrite} canDelete={canDelete} deleted={deleted} onDelete={() => setModal('delete')} onRelate={() => setModal('relate')} />
         ) : data && m ? (
           tab === 'access' ? (
             <AccessLog id={id} />
@@ -521,7 +524,7 @@ const MemoryDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
         />
       )}
       {modal === 'relate' && canWrite && <RelationshipModal sourceIds={[id]} onClose={() => setModal(null)} onDone={reload} />}
-      {modal === 'delete' && m && canModerate && (
+      {modal === 'delete' && m && (canModerate || canDelete) && (
         <ConfirmModal
           title="Delete memory?"
           confirmLabel="Delete"
@@ -870,5 +873,317 @@ const SourceCard: React.FC<{ id: string }> = ({ id }) => {
         </>
       )}
     </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* User view: one page, content and details on the left, context right */
+/* ------------------------------------------------------------------ */
+
+const HOW: Record<string, string> = {
+  'memory.search': 'search_memory',
+  'memory.read': 'read_memory',
+  'memory.write': 'write_memory',
+  'memory.update': 'update_memory',
+  'memory.delete': 'delete_memory',
+};
+
+const UserMemoryView: React.FC<{
+  data: MemoryContext;
+  byVersion: Version[];
+  canWrite: boolean;
+  canDelete: boolean;
+  deleted: boolean;
+  onDelete: () => void;
+  onRelate: () => void;
+}> = ({ data, byVersion, canWrite, canDelete, deleted, onDelete, onRelate }) => {
+  const { me } = useApp();
+  const m = data.memory;
+  const [compare, setCompare] = useState(false);
+  const unresolved = data.contradictions.filter((c) => !c.resolved);
+  const you = (id: string | null | undefined) => (id && id === me?.username ? `${id} (you)` : id || '—');
+  const owner = m.scope === 'user' ? `Personal · ${you(m.owner_id)}` : `${scopeMeta(m.scope).label} ${m.scope_id ?? m.owner_id}`;
+  const latest = byVersion[byVersion.length - 1];
+  const previous = byVersion[byVersion.length - 2];
+  return (
+    <div className="row-wrap">
+      <div className="col-main">
+        {deleted && (
+          <div className="alert" role="note">
+            <div>
+              <b>Deleted {fmtRelative(m.deleted_at as string).toLowerCase()}.</b> Agents no longer receive it.
+            </div>
+          </div>
+        )}
+        <section className="card">
+          <div className="ch">
+            <h3>Content</h3>
+            <span className="sm muted">
+              {canWrite ? `You can edit this ${m.scope === 'user' ? 'personal' : scopeMeta(m.scope).label.toLowerCase()} memory` : 'Read only for you'}
+            </span>
+          </div>
+          <p style={{ margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{m.content}</p>
+          {m.domains.length > 0 && (
+            <div className="chips" style={{ marginTop: 12 }}>
+              {m.domains.map((d) => (
+                <a key={d} className="tag link-plain" href={buildHash('/memories', { domain: d })}>
+                  {d}
+                </a>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card">
+          <h3 style={{ marginBottom: 12 }}>Details</h3>
+          <dl className="kv wide">
+            <dt>Owner (scope)</dt>
+            <dd>{owner}</dd>
+            <dt>Actor</dt>
+            <dd>{you(m.actor_id)}</dd>
+            <dt>Driver</dt>
+            <dd>{you(m.driver_id)}</dd>
+            <dt>Relevant until</dt>
+            <dd>{m.relevant_until ? fmtDateTime(m.relevant_until) : 'No expiry'}</dd>
+            <dt>Status</dt>
+            <dd>
+              <span className={`lbl ${m.status === 'active' ? 'grn' : 'ylw'}`}>{m.status}</span>{' '}
+              <span className="hint">lifecycle: active / quarantined / soft_deleted / expired</span>
+            </dd>
+            <dt>Weight</dt>
+            <dd>
+              {fmtWeight(m.weight)} · {m.injection === 'full' ? 'agents get the full text' : 'agents get a stub'}
+            </dd>
+            <dt>Created / updated</dt>
+            <dd>
+              {fmtShortDateTime(byVersion[0]?.created_at ?? m.created_at)} · {fmtShortDateTime(m.updated_at)}
+            </dd>
+            <dt>Indexing</dt>
+            <dd>{m.embedding_dims ? <span className="ok">● Indexed · searchable</span> : <span className="muted">Not indexed — found by text only</span>}</dd>
+            <dt>Provenance</dt>
+            <dd>
+              <Provenance id={m.id} source={m.source} />
+            </dd>
+          </dl>
+        </section>
+
+        <section className="card">
+          <div className="ch">
+            <h3>Version history</h3>
+            {previous && (
+              <button type="button" className="btn bl sm" onClick={() => setCompare((c) => !c)}>
+                {compare ? 'Hide comparison' : 'Compare'}
+              </button>
+            )}
+          </div>
+          <div className="vlist">
+            {[...byVersion].reverse().map((v, i) => {
+              const prev = byVersion[byVersion.indexOf(v) - 1];
+              return (
+                <div key={v.id} className="vrow">
+                  <span className={`vbadge ${v.is_current ? 'cur' : ''}`}>v{v.version}</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div className={i === 0 ? 'b6' : ''}>{prev ? changeSummary(v, prev) : truncate(v.content, 90)}</div>
+                    <div className="hint">
+                      {fmtMonthDay(v.created_at)} · {who(v.actor_id, v.driver_id, v.owner_id)} · {v.is_current ? 'current' : 'superseded'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {compare && previous && latest && (
+            <div className="diff" style={{ marginTop: 12 }}>
+              {lineDiff(previous.content, latest.content).map((l, i) => (
+                <div key={i} className={l.kind}>
+                  {l.kind === 'del' ? '− ' : l.kind === 'add' ? '+ ' : '  '}
+                  {l.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <ReadersLog id={m.id} />
+      </div>
+
+      <aside className="col-side" style={{ flex: '1 1 300px' }}>
+        <section className="card">
+          <div className="ch">
+            <h3>Contradictions</h3>
+            {unresolved.length > 0 && <span className="lbl ylw">{unresolved.length} open</span>}
+          </div>
+          {unresolved.length === 0 ? (
+            <p className="sm muted" style={{ margin: 0 }}>
+              No open reports.
+            </p>
+          ) : (
+            unresolved.map((c) => (
+              <div key={c.id} className="side-item">
+                <div className="sm">“{c.observed_behavior}”</div>
+                <div className="hint">
+                  Reported by {c.reporter} · {fmtMonthDay(c.created_at)} · <a href={buildHash('/review')}>resolve in My requests</a>
+                </div>
+              </div>
+            ))
+          )}
+        </section>
+
+        <section className="card">
+          <div className="ch">
+            <h3>Relationships</h3>
+            {!deleted && canWrite && (
+              <button type="button" className="btn bl sm" onClick={onRelate}>
+                + Add
+              </button>
+            )}
+          </div>
+          {data.relationships.length === 0 && (
+            <p className="sm muted" style={{ margin: 0 }}>
+              No relationships yet.
+            </p>
+          )}
+          {data.relationships.map((r) => (
+            <div key={r.id} className="side-item row">
+              <span className="tag">{r.type}</span>
+              <MemoryLink id={r.other.id} className="sm">
+                {truncate(r.other.stub, 60)}
+              </MemoryLink>
+            </div>
+          ))}
+          {data.relationships_omitted > 0 && <p className="hint">{data.relationships_omitted} more point to memories you cannot read.</p>}
+        </section>
+
+        <section className="card">
+          <h3 style={{ marginBottom: 10 }}>Branches</h3>
+          {data.branches.length === 0 && (
+            <p className="sm muted" style={{ margin: 0 }}>
+              No branches yet.
+            </p>
+          )}
+          {data.branches.map((b) => (
+            <div key={b.id} className="side-item row">
+              <span className="tag">{b.branch_type ?? 'branch'}</span>
+              <span className="sm">{b.content}</span>
+            </div>
+          ))}
+        </section>
+
+        <section className="card">
+          <h3 style={{ marginBottom: 10 }}>Similar memories</h3>
+          {data.similar.length === 0 && (
+            <p className="sm muted" style={{ margin: 0 }}>
+              {m.embedding_dims ? 'No close neighbours.' : 'This memory has no embedding.'}
+            </p>
+          )}
+          {data.similar.map((x) => (
+            <div key={x.id} className="side-item row">
+              <span className="sm muted mono">{x.score.toFixed(2)}</span>
+              <a className="sm" href={memoryHref(x.id)}>
+                {truncate(x.stub, 60)}
+              </a>
+            </div>
+          ))}
+          <p className="hint" style={{ margin: '8px 0 0' }}>
+            Only memories you can read are compared.
+          </p>
+        </section>
+
+        <UsageCompact id={m.id} />
+
+        {canDelete && !deleted && (
+          <button type="button" className="btn bd outline" style={{ alignSelf: 'flex-start' }} onClick={onDelete}>
+            Delete memory…
+          </button>
+        )}
+      </aside>
+    </div>
+  );
+};
+
+const Provenance: React.FC<{ id: string; source: string | null | undefined }> = ({ id, source }) => {
+  const { data } = useApi<MemorySource>(() => api.memorySource(id), [id]);
+  return (
+    <>
+      {source || (data?.linked ? 'Document' : 'Not recorded')}
+      {data?.linked && data.document_id && !data.redacted && (
+        <>
+          {' · '}
+          <a href={buildHash(`/knowledge/documents/${data.document_id}`)}>open source</a>
+        </>
+      )}
+    </>
+  );
+};
+
+/** Who read this memory in the last 30 days: when, who, how and why. */
+const ReadersLog: React.FC<{ id: string }> = ({ id }) => {
+  const { data, error, loading, reload } = useApi<{ total: number; items: AuditEvent[] }>(() => api.memoryAccessLog(id, 1), [id]);
+  return (
+    <section className="card">
+      <div className="ch">
+        <h3>Access log</h3>
+        <span className="sm muted">Who read this memory · 30 days</span>
+      </div>
+      {error && !data ? (
+        <ErrorState error={error} onRetry={reload} compact />
+      ) : loading && !data ? (
+        <SkLines lines={4} />
+      ) : !data || data.items.length === 0 ? (
+        <p className="sm muted" style={{ margin: 0 }}>
+          Nobody read this memory in the last 30 days.
+        </p>
+      ) : (
+        <div className="scroll">
+          <table className="tbl" style={{ minWidth: 520 }}>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Reader</th>
+                <th>How</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.slice(0, 10).map((e) => {
+                const purpose = (e.metadata?.purpose as string) || (e.metadata?.reason as string) || (e.metadata?.origin as string) || '—';
+                const today = new Date(e.timestamp).toDateString() === new Date().toDateString();
+                return (
+                  <tr key={e.id}>
+                    <td className="mono muted">{today ? fmtShortDateTime(e.timestamp).split(' ').pop() : fmtMonthDay(e.timestamp)}</td>
+                    <td className="sm">
+                      {e.actor_id}
+                      {e.driver_id && e.driver_id !== e.actor_id && <span className="hint"> · for {e.driver_id}</span>}
+                    </td>
+                    <td className="mono sm">{HOW[e.operation] ?? e.operation}</td>
+                    <td className="sm">{String(purpose).replace(/_/g, ' ')}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+};
+
+const UsageCompact: React.FC<{ id: string }> = ({ id }) => {
+  const { data } = useApi<MemoryUsage>(() => api.memoryUsage(id, 30), [id]);
+  if (!data) return null;
+  const pct = data.use_rate === null ? null : Math.round(data.use_rate * 100);
+  return (
+    <section className="card">
+      <h3 style={{ marginBottom: 10 }}>Agent usage · 30 d</h3>
+      <dl className="kv">
+        <dt>Served in search</dt>
+        <dd>{data.served}</dd>
+        <dt>Acted on</dt>
+        <dd>
+          {data.used}
+          {pct !== null ? ` (${pct}%)` : ''}
+        </dd>
+      </dl>
+    </section>
   );
 };

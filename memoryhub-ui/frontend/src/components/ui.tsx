@@ -22,6 +22,11 @@ export const Icon = {
   Arrow: (p: IconProps) => svg(<path d="M5 12h14M13 6l6 6-6 6" />, { size: 16, ...p }),
   Plus: (p: IconProps) => svg(<path d="M12 5v14M5 12h14" />, { size: 14, width: 2.5, ...p }),
   Info: (p: IconProps) => svg(<><circle cx="12" cy="12" r="9" /><path d="M12 8h.01M11 12h1v5h1" /></>, p),
+  Clock: (p: IconProps) => svg(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>, { size: 14, ...p }),
+  Check: (p: IconProps) => svg(<path d="M5 12.5l4.5 4.5L19 7.5" />, { size: 13, width: 2.5, ...p }),
+  X: (p: IconProps) => svg(<path d="M6 6l12 12M18 6L6 18" />, { size: 12, width: 2.5, ...p }),
+  Lock: (p: IconProps) => svg(<><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 018 0v3" /></>, { size: 14, ...p }),
+  Shield: (p: IconProps) => svg(<path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z" />, { size: 15, ...p }),
   Warn: (p: IconProps) => svg(<><path d="M12 3l9 16H3z" /><path d="M12 10v4M12 17h.01" /></>, p),
   Mark: (p: IconProps) =>
     svg(
@@ -326,7 +331,6 @@ export const Modal: React.FC<{
           </button>
         </div>
         {children}
-        <div className="demo-modal-note">Demo only. This action changes local browser memory and resets when you refresh.</div>
         {actions && <div className="modal-actions">{actions}</div>}
       </div>
     </div>
@@ -349,7 +353,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [toasts, setToasts] = useState<Toast[]>([]);
   const push = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
     const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, text: `Demo only · ${text}`, kind }]);
+    setToasts((t) => [...t, { id, text, kind }]);
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'err' ? 8000 : 4000);
   }, []);
   return (

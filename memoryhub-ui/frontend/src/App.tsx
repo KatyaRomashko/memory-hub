@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
-import { AppProvider, canSee, isLabsPath, NAV, Shell, useApp } from '@/components/Shell';
+import React, { useEffect, useState } from 'react';
+import { api, AUTH_REQUIRED_EVENT } from '@/api/client';
+import { AppProvider, canSee, isLabsPath, NAV, Shell, USER_MOVED, useApp } from '@/components/Shell';
 import { Empty } from '@/components/ui';
 import { ToastProvider } from '@/components/ui';
 import { navigate, useHashRoute, type HashRoute } from '@/hooks/useHashRoute';
@@ -17,6 +18,7 @@ import Operations from '@/pages/Operations';
 import Quality from '@/pages/Quality';
 import Graph from '@/pages/Graph';
 import Identities from '@/pages/Identities';
+import Login from '@/pages/Login';
 import Memories from '@/pages/Memories';
 import MemoryDetail from '@/pages/MemoryDetail';
 import Overview from '@/pages/Overview';
@@ -27,6 +29,16 @@ import Settings from '@/pages/Settings';
 import Connect from '@/pages/Connect';
 import Verify from '@/pages/Verify';
 import Incident from '@/pages/Incident';
+import MyActivity from '@/pages/MyActivity';
+import MyAgents from '@/pages/MyAgents';
+import MyProjects from '@/pages/MyProjects';
+import MyRequests from '@/pages/MyRequests';
+
+/** Users get their own version of a few screens; everyone else the shared one. */
+const ByRole: React.FC<{ user: React.ReactNode; other: React.ReactNode }> = ({ user, other }) => {
+  const { role } = useApp();
+  return <>{role === 'user' ? user : other}</>;
+};
 
 interface Screen {
   nav: string;
@@ -46,14 +58,14 @@ const SCREENS: Record<string, Screen> = {
   '/quality': { nav: '/quality', title: 'Retrieval quality', render: (r) => <Quality route={r} /> },
   '/operations': { nav: '/operations', title: 'Operations', render: () => <Operations /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
-  '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <Projects route={r} /> },
-  '/hygiene': { nav: '/hygiene', title: 'Memory hygiene', render: () => <Dreaming /> },
+  '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <ByRole user={<MyProjects route={r} />} other={<Projects route={r} />} /> },
+  '/hygiene': { nav: '/hygiene', title: 'Dreaming', render: () => <Dreaming /> },
   '/reads': { nav: '/reads', title: 'Who read my memories', render: (r) => <WhoRead route={r} /> },
   '/preferences': { nav: '/preferences', title: 'Preferences & privacy', render: () => <Preferences /> },
-  '/review': { nav: '/review', title: 'Review queue', render: (r) => <Review route={r} /> },
+  '/review': { nav: '/review', title: 'Review queue', render: (r) => <ByRole user={<MyRequests route={r} />} other={<Review route={r} />} /> },
   '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },
-  '/audit': { nav: '/audit', title: 'Audit & forensics', render: (r) => <Audit route={r} /> },
-  '/identities': { nav: '/identities', title: 'Users & agents', render: (r) => <Identities route={r} /> },
+  '/audit': { nav: '/audit', title: 'Audit & forensics', render: (r) => <ByRole user={<MyActivity route={r} />} other={<Audit route={r} />} /> },
+  '/identities': { nav: '/identities', title: 'Users & agents', render: (r) => <ByRole user={<MyAgents route={r} />} other={<Identities route={r} />} /> },
   '/clients': { nav: '/clients', title: 'OAuth clients & keys', render: (r) => <Clients route={r} /> },
   '/connect': { nav: '/connect', title: 'Connect an agent', render: () => <Connect /> },
   '/verify': { nav: '/verify', title: 'Connection check', render: () => <Verify /> },
@@ -78,6 +90,16 @@ const AUTH_PATHS = ['/login', '/register', '/setup'];
 /** Screens a role may not open show a short explanation instead. */
 const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, children }) => {
   const { me, role, superuser } = useApp();
+  const route = useHashRoute();
+  const moved = role === 'user' ? USER_MOVED[nav] : undefined;
+  useEffect(() => {
+    if (!moved) return;
+    // A user screen that now lives inside a hub: keep its parameters, add the view.
+    const next = new URLSearchParams(route.params);
+    next.set('view', moved.view);
+    navigate(moved.path, next, { replace: true });
+  }, [moved, route.params]);
+  if (moved) return null;
   const listed = NAV.some((s) => s.items.some((i) => i.path === nav));
   if (me && isLabsPath(nav) && !me.labs) {
     return (
@@ -119,12 +141,23 @@ const screenKey = (path: string) => {
 
 const Routed: React.FC = () => {
   const route = useHashRoute();
+  const [authRequired, setAuthRequired] = useState(false);
+
+  useEffect(() => {
+    api
+      .authStatus()
+      .then((s) => setAuthRequired(!s.authenticated || s.setup_required))
+      .catch(() => undefined);
+    const onAuth = () => setAuthRequired(true);
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuth);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuth);
+  }, []);
 
   useEffect(() => {
     const legacy = LEGACY[route.path];
     if (legacy) navigate(legacy.path, legacy.params, { replace: true });
     else if (route.path.startsWith('/documents/') || route.path.startsWith('/packs/')) navigate(`/knowledge${route.path}`, undefined, { replace: true });
-    else if (route.path === '/' || AUTH_PATHS.includes(route.path) || !SCREENS[screenKey(route.path)]) {
+    else if (route.path === '/' || (!SCREENS[screenKey(route.path)] && !AUTH_PATHS.includes(route.path))) {
       navigate('/overview', undefined, { replace: true });
     }
   }, [route.path]);
@@ -138,6 +171,17 @@ const Routed: React.FC = () => {
     document.title = title ? `MemoryHub · ${title}` : 'MemoryHub';
   }, [screen, route.path]);
 
+  if (AUTH_PATHS.includes(route.path) || authRequired) {
+    const view = route.path === '/register' ? 'register' : route.path === '/setup' ? 'setup' : 'login';
+    return (
+      <Login
+        view={view}
+        invite={route.params.get('invite') ?? undefined}
+        signedOut={route.params.get('signed_out') === '1'}
+        onLoggedIn={() => setAuthRequired(false)}
+      />
+    );
+  }
   if (!screen) return null;
   const known = NAV.some((s) => s.items.some((i) => i.path === screen.nav));
   return (

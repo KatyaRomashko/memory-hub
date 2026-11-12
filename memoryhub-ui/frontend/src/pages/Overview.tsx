@@ -7,7 +7,9 @@ import { buildHash } from '@/hooks/useHashRoute';
 import type { Onboarding, UsageSummary, Overview as OverviewData, OverviewRange } from '@/types';
 import { fmtInt, fmtTime, scopeMeta } from '@/utils/format';
 import { ACTIVITY_RANGES, ActivityChart, PIE_COLORS, PieChart } from '@/components/charts';
-import { actorKind, actorName, decisionOf, EventTarget, WriteMemoryModal } from './common';
+import { actorKind, actorName, decisionOf, EventTarget, memoryHref, WriteMemoryModal } from './common';
+import { RequestSentence, RequestStatus } from './requests';
+import type { MyRequestsResponse } from '@/types';
 
 /** A KPI tile. With an href the whole tile is a link to the records behind the number. */
 const KpiCard: React.FC<{ label: string; href?: string; loading: boolean; value?: React.ReactNode; sub?: React.ReactNode }> = ({
@@ -110,7 +112,7 @@ const Overview: React.FC = () => {
             </a>
           </div>
         )}
-        {!empty && data && data.approvals.enterprise_pending > 0 && (
+        {!empty && role !== 'user' && data && data.approvals.enterprise_pending > 0 && (
           <div className="alert">
             <Icon.Info stroke="#0066cc" style={{ flex: 'none', marginTop: 1 }} />
             <div style={{ flex: 1 }}>
@@ -231,6 +233,12 @@ const Overview: React.FC = () => {
               </>
             )}
           </div>
+          {role === 'user' ? (
+            <div className="stack">
+              <MyScopes data={data} loading={first} empty={empty} />
+              <CategoryChips data={data} loading={first} empty={empty} />
+            </div>
+          ) : (
           <div className="card">
             <div className="ch">
               <h3>Memories by scope</h3>
@@ -266,8 +274,10 @@ const Overview: React.FC = () => {
               </div>
             )}
           </div>
+          )}
         </div>
 
+        {role !== 'user' && (
         <div className="card">
           <div className="ch">
             <div>
@@ -299,6 +309,7 @@ const Overview: React.FC = () => {
             </p>
           )}
         </div>
+        )}
 
         <div className="grid-2-1">
           <div className="card span-2">
@@ -354,6 +365,12 @@ const Overview: React.FC = () => {
               </div>
             )}
           </div>
+          {role === 'user' ? (
+            <div className="stack">
+              <MyContradictions data={data} loading={first} />
+              <MyOpenRequests />
+            </div>
+          ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div className="card">
               <div className="ch">
@@ -421,6 +438,7 @@ const Overview: React.FC = () => {
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
       {writeOpen && (
@@ -549,6 +567,154 @@ const AgentUsage: React.FC = () => {
           )}
         </div>
       </div>
+    </section>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* User overview: the right-hand column                                */
+/* ------------------------------------------------------------------ */
+
+type OverviewCardProps = { data: OverviewData | null | undefined; loading: boolean; empty?: boolean };
+
+/** Personal, each project and the shared scopes the user reads, with their counts. */
+const MyScopes: React.FC<OverviewCardProps> = ({ data, loading, empty }) => {
+  const rows =
+    data?.my_scopes ??
+    (data?.scopes ?? [])
+      .filter((s) => s.count > 0)
+      .map((s) => ({ scope: s.scope, scope_id: null, label: scopeMeta(s.scope).label, count: s.count, access: s.scope === 'user' || s.scope === 'project' ? ('write' as const) : ('read' as const) }));
+  const max = Math.max(1, ...rows.map((r) => r.count));
+  return (
+    <section className="card">
+      <div className="ch">
+        <h3>My memories by scope</h3>
+        <a className="sm" href={buildHash('/memories')}>
+          View all
+        </a>
+      </div>
+      {loading ? (
+        <SkLines lines={6} gap={22} />
+      ) : empty || rows.length === 0 ? (
+        <Standby>Your personal, project and shared memories are counted here.</Standby>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {rows.map((r) => (
+            <a
+              key={`${r.scope}:${r.scope_id ?? ''}`}
+              className="link-plain"
+              style={{ display: 'flex', flexDirection: 'column', gap: 6, color: 'inherit' }}
+              href={buildHash('/memories', r.scope === 'project' && r.scope_id ? { project: r.scope_id } : { scope: r.scope })}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <ScopeLabel scope={r.scope}>{r.access === 'read' ? `${r.label} · read` : r.label}</ScopeLabel>
+                <b>{fmtInt(r.count)}</b>
+              </div>
+              <div className="bar">
+                <span style={{ width: `${Math.max(1, Math.round((r.count / max) * 100))}%`, background: scopeMeta(r.scope).color }} />
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+};
+
+/** Categories as a compact list of tags with counts; each opens the browser filtered by it. */
+const CategoryChips: React.FC<OverviewCardProps> = ({ data, loading, empty }) => (
+  <section className="card">
+    <h3 style={{ marginBottom: 12 }}>Memory categories</h3>
+    {loading ? (
+      <SkLines lines={2} />
+    ) : empty || !data?.categories.length ? (
+      <p className="sm muted" style={{ margin: 0 }}>
+        No categories yet. Add domain tags in the Memory browser.
+      </p>
+    ) : (
+      <div className="chips">
+        {data.categories.map((c) => (
+          <a key={c.name} className="tag link-plain" href={buildHash('/memories', { domain: c.name })}>
+            {c.name} {fmtInt(c.memory_count)}
+          </a>
+        ))}
+      </div>
+    )}
+  </section>
+);
+
+/** Open contradictions on records the user can read. */
+const MyContradictions: React.FC<OverviewCardProps> = ({ data, loading }) => {
+  const items = data?.contradictions.items;
+  return (
+    <section className="card">
+      <div className="ch">
+        <h3>Contradictions</h3>
+        <span className="lbl blue">Readable records only</span>
+      </div>
+      {loading ? (
+        <SkLines lines={4} />
+      ) : items && items.length > 0 ? (
+        <div className="dotlist">
+          {items.slice(0, 4).map((c) => (
+            <div key={c.id}>
+              <span className="dot-amber" aria-hidden="true" />
+              <div style={{ minWidth: 0 }}>
+                <a href={memoryHref(c.memory_id)}>{c.title}</a>
+                <div className="sm muted">
+                  {c.scope === 'user' ? 'Personal' : c.scope_label ?? c.scope_id ?? scopeMeta(c.scope).label} · {c.memories} {c.memories === 1 ? 'memory' : 'memories'}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : data && data.contradictions.open > 0 ? (
+        <p className="sm" style={{ margin: 0 }}>
+          <b>{fmtInt(data.contradictions.open)}</b> open on memories you can read. <a href={buildHash('/memories', { flag: 'contradicted' })}>Show them</a>
+        </p>
+      ) : (
+        <p className="sm muted" style={{ margin: 0 }}>
+          No open contradictions on memories you can read.
+        </p>
+      )}
+    </section>
+  );
+};
+
+/** The user's requests that are still waiting. */
+const MyOpenRequests: React.FC = () => {
+  const { data, error, loading } = useApi<MyRequestsResponse>(() => api.myRequests(), [], 60000);
+  const open = (data?.items ?? []).filter((r) => r.state === 'open');
+  return (
+    <section className="card">
+      <div className="ch">
+        <h3>My open requests</h3>
+        <a className="sm" href={buildHash('/review')}>
+          My requests
+        </a>
+      </div>
+      {loading && !data ? (
+        <SkLines lines={3} />
+      ) : error && !data ? (
+        <p className="sm muted" style={{ margin: 0 }}>
+          Requests could not be loaded.
+        </p>
+      ) : open.length === 0 ? (
+        <p className="sm muted" style={{ margin: 0 }}>
+          Nothing waiting for a decision.
+        </p>
+      ) : (
+        <div className="dotlist">
+          {open.slice(0, 4).map((r) => (
+            <div key={r.id} style={{ alignItems: 'center' }}>
+              <RequestStatus r={r} short />
+              <span className="sm" style={{ minWidth: 0 }}>
+                <RequestSentence r={r} />
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 };

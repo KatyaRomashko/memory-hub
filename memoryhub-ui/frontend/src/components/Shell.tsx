@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api, AUTHORIZATION_CHANGED_EVENT } from '@/api/client';
 import type { BreakGlassGrant, Me, NavFeatures, NotificationsResponse, Role, SwitchTargets } from '@/types';
-import { buildHash } from '@/hooks/useHashRoute';
+import { buildHash, navigate } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
 const REPO_URL = 'https://github.com/redhat-ai-americas/memory-hub';
@@ -206,7 +206,7 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
       // QA 2026-11-10 BR-PA-05: the backend serves admins (admin-readable scopes,
       // never personal memories without an incident grant), so the screen is open to them.
       { path: '/search', label: 'Search playground', roles: [...USER, 'admin'] },
-      { path: '/hygiene', label: 'Memory hygiene', roles: USER, labs: true },
+      { path: '/hygiene', label: 'Dreaming', roles: USER, labs: true },
       { path: '/projects', label: 'Projects & teams' },
     ],
   },
@@ -250,8 +250,55 @@ export const NAV: { group?: string; groupFor?: Partial<Record<Role, string>>; it
   },
 ];
 
+/**
+ * The user's menu. Screens that used to have their own item live inside a
+ * hub now: My activity collects the log, readers, connections, requests, jobs,
+ * Dreaming and retrieval checks; My agents & API keys joins agents and keys.
+ */
+export const USER_NAV: { group?: string; items: NavItem[] }[] = [
+  { items: [{ path: '/overview', label: 'Overview' }] },
+  {
+    group: 'My memory',
+    items: [
+      { path: '/memories', label: 'Memory browser' },
+      { path: '/search', label: 'Search playground' },
+      { path: '/knowledge', label: 'Knowledge', labs: true },
+      { path: '/entities', label: 'Entities' },
+    ],
+  },
+  {
+    group: 'Work',
+    items: [
+      { path: '/audit', label: 'My activity' },
+      { path: '/review', label: 'My requests' },
+      { path: '/projects', label: 'Projects & teams' },
+    ],
+  },
+  {
+    group: 'Agents',
+    items: [
+      { path: '/identities', label: 'My agents & API keys' },
+      { path: '/curation', label: 'My curation rules' },
+    ],
+  },
+  { group: 'Account', items: [{ path: '/preferences', label: 'Preferences & privacy' }] },
+];
+
+/** Old user screens and where they live now (the hub path and its view). */
+export const USER_MOVED: Record<string, { path: string; view: string }> = {
+  '/reads': { path: '/audit', view: 'reads' },
+  '/connect': { path: '/audit', view: 'connections' },
+  '/verify': { path: '/audit', view: 'connections' },
+  '/operations': { path: '/audit', view: 'jobs' },
+  '/hygiene': { path: '/audit', view: 'dreaming' },
+  '/quality': { path: '/audit', view: 'checks' },
+  '/clients': { path: '/identities', view: 'keys' },
+};
+
 export const canSee = (path: string, role: Role, superuser = false) =>
-  NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role)) && (!i.superuser || superuser)));
+  role === 'user'
+    ? USER_NAV.some((s) => s.items.some((i) => i.path === path)) || path in USER_MOVED
+    : NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role)) && (!i.superuser || superuser)));
 
 const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => {
   const keys = item.feature?.[role];
@@ -259,10 +306,12 @@ const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => 
   return !!features && keys.some((k) => (features[k] ?? 0) > 0);
 };
 
-export const isLabsPath = (path: string) => NAV.some((s) => s.items.some((i) => i.path === path && i.labs));
+export const isLabsPath = (path: string) => [...NAV, ...USER_NAV].some((s) => s.items.some((i) => i.path === path && i.labs));
 
 export const navFor = (role: Role, features: NavFeatures | null = null, labs = false, superuser = false) =>
-  NAV.map((s) => ({
+  role === 'user'
+    ? USER_NAV.map((s) => ({ group: s.group, items: s.items.filter((i) => labs || !i.labs) })).filter((s) => s.items.length > 0)
+    : NAV.map((s) => ({
     group: s.groupFor?.[role] ?? s.group,
     items: s.items
       .filter((i) => !i.roles || i.roles.includes(role))
@@ -272,7 +321,7 @@ export const navFor = (role: Role, features: NavFeatures | null = null, labs = f
       .map((i) => ({ ...i, label: i.labelFor?.[role] ?? i.label })),
   })).filter((s) => s.items.length > 0);
 
-export const ROLE_LABEL: Record<Role | 'superuser', string> = { admin: 'Platform Admin', superuser: 'Super Admin', user: 'User', operator: 'Open mode' };
+export const ROLE_LABEL: Record<Role | 'superuser', string> = { admin: 'Platform admin', superuser: 'Super-user', user: 'User', operator: 'Open mode' };
 
 const NAV_PREF = 'memoryhub.navOpen';
 const readNavPref = () => {
@@ -306,14 +355,79 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
     });
   };
 
+  /** Ends the session completely, then lands on the sign-in page (or the OpenShift logout). */
+  const onLogout = async () => {
+    let res: Awaited<ReturnType<typeof api.logout>> | null = null;
+    try {
+      res = await api.logout();
+    } catch {
+      /* still leave the app */
+    }
+    try {
+      window.sessionStorage.clear();
+    } catch {
+      /* storage unavailable */
+    }
+    const target = res?.redirect || '/#/login?signed_out=1';
+    if (res?.method === 'POST') {
+      // The OpenShift OAuth server's /logout only accepts a form POST and
+      // responds with an empty 200 page. Submit it into a hidden frame so the
+      // user never lands on that blank page, then clear oauth-proxy's cookie
+      // and replace the current history entry with our sign-in screen.
+      const frame = document.createElement('iframe');
+      const frameName = `memoryhub-logout-${Date.now()}`;
+      frame.name = frameName;
+      frame.title = 'Signing out';
+      frame.setAttribute('aria-hidden', 'true');
+      frame.style.display = 'none';
+      document.body.appendChild(frame);
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = target;
+      form.target = frameName;
+      form.style.display = 'none';
+      Object.entries(res.fields ?? {}).forEach(([name, value]) => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        frame.remove();
+        form.remove();
+        window.location.replace('/#/login?signed_out=1');
+      };
+      // Give the cross-origin POST time to clear the OpenShift session before
+      // asking the local oauth-proxy to clear its session cookie as well.
+      window.setTimeout(() => {
+        fetch('/oauth/sign_out', { credentials: 'same-origin', redirect: 'manual' })
+          .catch(() => undefined)
+          .finally(finish);
+      }, 400);
+      // Network failures must still leave the app on a usable sign-in route.
+      window.setTimeout(finish, 2500);
+      return;
+    }
+    window.location.replace(target);
+  };
+
   const [switchable, setSwitchable] = useState<SwitchTargets | null>(null);
   const loadTargets = () => {
     if (me?.test_mode && !switchable) api.switchTargets().then(setSwitchable).catch(() => undefined);
   };
   const switchTo = async (username: string | null, toRole: string | null) => {
-    await api.switchAccount(username, toRole);
-    window.location.hash = '#/overview';
-    setSwitchable(null);
+    try {
+      await api.switchAccount(username, toRole);
+    } finally {
+      window.location.hash = '#/overview';
+      window.location.reload();
+    }
   };
 
   return (
@@ -381,7 +495,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
               <button
                 type="button"
                 className="who"
-                aria-label={me?.test_mode ? 'Choose demo role' : 'Account'}
+                aria-label={me?.test_mode ? 'Account and test-mode account switcher' : 'Account'}
                 {...p}
                 onClick={() => {
                   loadTargets();
@@ -397,7 +511,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
             {() => (
               <>
                 <div className="mh">
-                  {me ? `Demo persona: ${me.name}` : 'Demo persona'}
+                  {me ? `${me.real_username ? 'Viewing as' : 'Signed in as'} ${me.username}` : 'Not signed in'}
                   <br />
                   <span className="muted sm">{ROLE_LABEL[superuser ? 'superuser' : role]}</span>
                   {me?.real_username && (
@@ -410,7 +524,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
                 {me?.test_mode && (
                   <>
                     <hr />
-                    <div className="mh">Choose demo role</div>
+                    <div className="mh">Switch account · test mode</div>
                     {!switchable ? (
                       <div className="mh muted">Loading…</div>
                     ) : (
@@ -447,14 +561,16 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
                     <hr />
                   </>
                 )}
+                {me && me.source !== 'anonymous' && (
+                  <button type="button" onClick={onLogout}>
+                    Log out
+                  </button>
+                )}
               </>
             )}
           </Dropdown>
         </div>
       </header>
-      <div className="demo-banner" role="status">
-        <b>Interactive demo</b> · Synthetic data · No backend or agent is connected · Changes stay in browser memory and reset on refresh.
-      </div>
       {me?.access?.break_glass && <IncidentBanner grant={me.access.break_glass} />}
       {me?.real_username && (
         <div className="viewing-as" role="status">
@@ -497,7 +613,26 @@ export const PageHeader: React.FC<{
   long?: boolean;
   topAlign?: boolean;
   below?: React.ReactNode;
-}> = ({ title, crumbs, description, actions, tabs, long, topAlign, below }) => (
+}> = ({ title, crumbs, description, actions, tabs, long, topAlign, below }) => {
+  const embed = useContext(EmbedContext);
+  if (embed) {
+    // Inside a hub (My activity, My agents & API keys): the hub owns the page
+    // title and crumbs; the screen keeps its own description, actions and tabs.
+    return (
+      <div className={`ph-sub ${tabs ? 'has-tabs' : ''}`}>
+        <div className="ph-row">
+          <div style={{ minWidth: 0, flex: '1 1 420px' }}>
+            {embed.showTitle && <h2>{title}</h2>}
+            {description && <p className="desc">{description}</p>}
+            {below}
+          </div>
+          {actions && <div className="ph-actions">{actions}</div>}
+        </div>
+        {tabs}
+      </div>
+    );
+  }
+  return (
   <div className={`ph ${tabs ? 'has-tabs' : ''}`}>
     <div className="crumbs">
       <a href={buildHash('/overview')}>MemoryHub</a>
@@ -518,7 +653,51 @@ export const PageHeader: React.FC<{
     </div>
     {tabs}
   </div>
-);
+  );
+};
+
+/** Set by a hub around the screens it embeds. */
+export const EmbedContext = createContext<{ showTitle: boolean } | null>(null);
+
+/**
+ * A hub page: one menu item that holds several screens as views. The view is
+ * kept in the `view` URL parameter so every screen keeps its own parameters.
+ */
+export function Hub<T extends string>({
+  title,
+  description,
+  actions,
+  route,
+  views,
+  fallback,
+}: {
+  title: string;
+  description: React.ReactNode;
+  actions?: React.ReactNode;
+  route: { path: string; params: URLSearchParams };
+  views: { value: T; label: string; count?: number | string | null; render: () => React.ReactNode; showTitle?: boolean }[];
+  fallback: T;
+}) {
+  const requested = route.params.get('view') as T | null;
+  const current = views.find((v) => v.value === requested) ?? views.find((v) => v.value === fallback)!;
+  const go = (v: T) => {
+    // Each view starts clean: its own filters and tabs belong to it.
+    navigate(route.path, v === fallback ? undefined : { view: v });
+  };
+  return (
+    <>
+      <PageHeader
+        title={title}
+        description={description}
+        actions={actions}
+        tabs={<Tabs label={title} value={current.value} onChange={go} tabs={views.map(({ value, label, count }) => ({ value, label, count }))} />}
+      />
+      <EmbedContext.Provider value={{ showTitle: Boolean(current.showTitle) }}>
+        <React.Fragment key={current.value}>{current.render()}</React.Fragment>
+      </EmbedContext.Provider>
+    </>
+  );
+}
 
 export function Tabs<T extends string>({
   value,

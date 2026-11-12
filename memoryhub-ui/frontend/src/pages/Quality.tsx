@@ -28,7 +28,13 @@ const STAGE: Record<string, string> = {
 const Quality: React.FC<{ route: HashRoute }> = ({ route }) => {
   const { role } = useApp();
   const tab = route.params.get('tab') || (role === 'admin' ? 'health' : 'checks');
-  const setTab = (t: string) => navigate('/quality', t === 'checks' ? undefined : { tab: t }, { replace: true });
+  // Keeps the hub view (My activity › Retrieval checks) when embedded.
+  const setTab = (t: string) => {
+    const next = new URLSearchParams(route.params);
+    if (t === 'checks') next.delete('tab');
+    else next.set('tab', t);
+    navigate(route.path, next, { replace: true });
+  };
   return (
     <>
       <PageHeader

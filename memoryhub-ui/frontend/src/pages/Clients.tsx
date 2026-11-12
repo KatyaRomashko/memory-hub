@@ -62,7 +62,13 @@ const Clients: React.FC<{ route: HashRoute }> = ({ route }) => {
   const [editing, setEditing] = useState<CredentialRow | null>(null);
   const [confirm, setConfirm] = useState<null | { kind: 'secret' | 'key' | 'revoke' | 'restore'; row: CredentialRow }>(null);
 
-  const setTab = (t: string) => navigate('/clients', t === 'clients' ? undefined : { tab: t }, { replace: true });
+  // Keeps the hub view (My agents & API keys › …) when embedded.
+  const setTab = (t: string) => {
+    const next = new URLSearchParams(route.params);
+    if (t === 'clients') next.delete('tab');
+    else next.set('tab', t);
+    navigate(route.path, next, { replace: true });
+  };
   // QA 2026-11-10 BR-PA2-04: show the confirmed revoke/re-activate at once,
   // without waiting for (or trusting a stale) list refresh.
   const [applied, setApplied] = useState<Record<string, boolean>>({});

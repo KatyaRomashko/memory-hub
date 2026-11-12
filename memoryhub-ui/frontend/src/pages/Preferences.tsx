@@ -129,7 +129,7 @@ const Preferences: React.FC = () => {
 
                 {me?.labs && (
                 <section className="card">
-                  <h3>Memory hygiene</h3>
+                  <h3>Dreaming</h3>
                   <div className="f" style={{ marginTop: 12, maxWidth: 320 }}>
                     <label htmlFor="fd">Suggest fading a memory after</label>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -147,7 +147,7 @@ const Preferences: React.FC = () => {
                     </div>
                   </div>
                   <p className="sm muted" style={{ margin: '12px 0 0' }}>
-                    Schedule and automatic actions live on the <a href={buildHash('/hygiene')}>Memory hygiene</a> page.
+                    Schedule and automatic actions live in <a href={buildHash('/audit', { view: 'dreaming' })}>My activity › Dreaming</a>.
                   </p>
                 </section>
                 )}

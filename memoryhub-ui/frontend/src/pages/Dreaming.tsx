@@ -9,7 +9,7 @@ import { errorMessage, fmtInt, fmtRelative, fmtWeight, shortId } from '@/utils/f
 import { WriteMemoryModal } from './common';
 
 /**
- * Memory hygiene (MemoryHub Labs) — the dashboard reviews the memories you can
+ * Dreaming (MemoryHub Labs) — the dashboard reviews the memories you can
  * read and spots duplicates, missing links, memories nobody uses any more,
  * contradictions and themes worth one consolidated memory. Nothing changes
  * without your OK, except the safe kinds you let run alone.
@@ -81,7 +81,7 @@ const Dreaming: React.FC = () => {
     setBusy(true);
     try {
       const res = await api.dreamNow(trigger);
-      toast(`Hygiene run finished: ${fmtInt(res.reviewed)} memories reviewed, ${res.insights.length} insights.`);
+      toast(`Dreaming run finished: ${fmtInt(res.reviewed)} memories reviewed, ${res.insights.length} insights.`);
       reload();
     } catch (e) {
       toast(errorMessage(e), 'err');
@@ -124,8 +124,8 @@ const Dreaming: React.FC = () => {
   return (
     <>
       <PageHeader
-        title="Memory hygiene"
-        description="Housekeeping for the memories you can read: duplicates, missing links, memories nobody uses, contradictions and themes. Nothing changes without your OK. Separate from MemoryHub Dreaming, which extracts memories from conversations."
+        title="Dreaming"
+        description="Housekeeping for the memories you can read: duplicates, missing links, memories nobody uses, contradictions and themes. Nothing changes without your OK."
         actions={
           <button type="button" className="btn bp" disabled={busy || !data} onClick={() => dreamNow()}>
             <MoonIcon />
@@ -198,7 +198,7 @@ const Dreaming: React.FC = () => {
               {!report ? (
                 <section className="card">
                   <Empty
-                    title="No hygiene runs yet"
+                    title="No Dreaming runs yet"
                     action={
                       <button type="button" className="btn bp" disabled={busy} onClick={() => dreamNow()}>
                         Run now
@@ -223,7 +223,7 @@ const Dreaming: React.FC = () => {
               {data && (
                 <section className="card">
                   <h3>Schedule</h3>
-                  <div className="seg full" role="group" aria-label="Hygiene schedule" style={{ marginTop: 14 }}>
+                  <div className="seg full" role="group" aria-label="Dreaming schedule" style={{ marginTop: 14 }}>
                     {(['nightly', 'weekly', 'off'] as const).map((s) => (
                       <button key={s} type="button" className={data.settings.schedule === s ? 'on' : ''} aria-pressed={data.settings.schedule === s} onClick={() => saveSettings({ schedule: s })}>
                         {s === 'nightly' ? 'Nightly' : s === 'weekly' ? 'Weekly' : 'Off'}

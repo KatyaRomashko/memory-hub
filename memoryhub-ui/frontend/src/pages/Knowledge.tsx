@@ -3,11 +3,11 @@ import { api } from '@/api/client';
 import { PageHeader, Tabs } from '@/components/Shell';
 import { DocumentsSection } from './Documents';
 import { PacksSection } from './Packs';
-import { Empty, ErrorState, ScopeLabel, SkLines, useToast } from '@/components/ui';
+import { Empty, ErrorState, Icon, ScopeLabel, SkLines, SkTable, useToast } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash, navigate, type HashRoute } from '@/hooks/useHashRoute';
-import type { KnowledgeFact, KnowledgeIndexItem, KnowledgePage } from '@/types';
-import { errorMessage, fmtInt, fmtRelative } from '@/utils/format';
+import type { ContextPack, DocumentRow, KnowledgeFact, KnowledgeIndexItem, KnowledgePage, NavFeatures, SharedKnowledgeResponse } from '@/types';
+import { errorMessage, fmtInt, fmtMonthDay, fmtRelative } from '@/utils/format';
 import { memoryHref } from './common';
 
 /**
@@ -18,23 +18,29 @@ const Knowledge: React.FC<{ route: HashRoute }> = ({ route }) => {
   const [, , kind, id] = route.path.split('/');
   if (kind === 'documents') return <DocumentsSection id={id} />;
   if (kind === 'packs') return <PacksSection id={id} />;
+  if (kind === 'shared') return <SharedKnowledge route={route} />;
   if (kind === 'me' || (kind === 'project' && id)) return <Page kind={kind} id={kind === 'me' ? 'me' : decodeURIComponent(id)} />;
   return <Index />;
 };
 
-/** Knowledge: the living pages, the documents memories are written from, and context packs. */
-export const KnowledgeTabs: React.FC<{ value: 'pages' | 'documents' | 'packs' }> = ({ value }) => (
-  <Tabs
-    label="Knowledge"
-    value={value}
-    onChange={(v) => navigate(v === 'pages' ? '/knowledge' : `/knowledge/${v}`)}
-    tabs={[
-      { value: 'pages', label: 'Pages' },
-      { value: 'documents', label: 'Documents' },
-      { value: 'packs', label: 'Context packs' },
-    ]}
-  />
-);
+/** Knowledge: the living pages, the documents memories are written from, context packs and shared knowledge. */
+export const KnowledgeTabs: React.FC<{ value: 'pages' | 'documents' | 'packs' | 'shared' }> = ({ value }) => {
+  const { data: f } = useApi<NavFeatures>(() => api.navFeatures(), []);
+  const { data: shared } = useApi<SharedKnowledgeResponse>(() => api.sharedKnowledge(), []);
+  return (
+    <Tabs
+      label="Knowledge"
+      value={value}
+      onChange={(v) => navigate(v === 'pages' ? '/knowledge' : `/knowledge/${v}`)}
+      tabs={[
+        { value: 'pages', label: 'Pages', count: f?.knowledge ?? null },
+        { value: 'documents', label: 'Documents', count: f?.documents ?? null },
+        { value: 'packs', label: 'Context packs', count: f?.packs ?? null },
+        { value: 'shared', label: 'Shared knowledge', count: shared ? shared.total : null },
+      ]}
+    />
+  );
+};
 
 const pageHref = (kind: string, id: string) => buildHash(kind === 'me' ? '/knowledge/me' : `/knowledge/project/${encodeURIComponent(id)}`);
 
@@ -310,7 +316,7 @@ const Page: React.FC<{ kind: 'me' | 'project'; id: string }> = ({ kind, id }) =>
                     <section className="card">
                       <h3>Going stale</h3>
                       <p className="hint" style={{ margin: '4px 0 8px' }}>
-                        Not changed for a while. Memory hygiene can suggest fading them.
+                        Not changed for a while. Dreaming can suggest fading them.
                       </p>
                       <ul className="kfacts">
                         {k.stale.slice(0, 5).map((f) => (
@@ -327,6 +333,205 @@ const Page: React.FC<{ kind: 'me' | 'project'; id: string }> = ({ kind, id }) =>
             </>
           )
         )}
+      </div>
+    </>
+  );
+};
+
+/**
+ * Shared knowledge: a view over published project, organizational and
+ * campaign records with their source, version and audience. Not a new scope.
+ */
+const SharedKnowledge: React.FC<{ route: HashRoute }> = ({ route }) => {
+  const q = route.params.get('q') ?? '';
+  const scope = route.params.get('scope') ?? '';
+  const audience = route.params.get('audience') === 'all' ? 'all' : 'mine';
+  const sort = route.params.get('sort') === 'title' ? 'title' : 'updated';
+  const [text, setText] = useState(q);
+  const { data, error, loading, reload } = useApi<SharedKnowledgeResponse>(
+    () => api.sharedKnowledge({ q: q || undefined, scope: scope || undefined, audience, sort }),
+    [q, scope, audience, sort],
+  );
+  const pages = useApi<{ items: KnowledgeIndexItem[] }>(() => api.knowledge(), []);
+  const docs = useApi<{ items: DocumentRow[] }>(() => api.documents(), []);
+  const packs = useApi<{ items: ContextPack[] }>(() => api.packs(), []);
+  const set = (k: string, v: string | undefined) => {
+    const next = new URLSearchParams(route.params);
+    if (v) next.set(k, v);
+    else next.delete(k);
+    navigate('/knowledge/shared', next, { replace: true });
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="Knowledge"
+        crumbs={[{ label: 'Knowledge' }]}
+        tabs={<KnowledgeTabs value="shared" />}
+        description="Summary pages, documents and context packs built from memories you can read, plus shared knowledge: published project, organizational and campaign records with their source, version and audience."
+        actions={
+          <>
+            <a className="btn bs" href={buildHash('/knowledge/documents')}>
+              Add a document
+            </a>
+            <a className="btn bp" href={buildHash('/knowledge/packs')}>
+              <Icon.Plus />
+              New context pack
+            </a>
+          </>
+        }
+      />
+      <div className="body">
+        <form
+          className="filters"
+          onSubmit={(e) => {
+            e.preventDefault();
+            set('q', text.trim() || undefined);
+          }}
+        >
+          <label htmlFor="sk-q" className="vh">
+            Search shared knowledge
+          </label>
+          <span className="in-icon">
+            <Icon.Search size={15} />
+            <input id="sk-q" className="in" placeholder="Search shared knowledge" value={text} onChange={(e) => setText(e.target.value)} onBlur={() => set('q', text.trim() || undefined)} />
+          </span>
+          <label htmlFor="sk-scope" className="vh">
+            Scope
+          </label>
+          <select id="sk-scope" className="in auto" value={scope} onChange={(e) => set('scope', e.target.value || undefined)}>
+            <option value="">Scope: Project · Org · Campaign</option>
+            <option value="project">Scope: Project</option>
+            <option value="organizational">Scope: Organizational</option>
+            <option value="campaign">Scope: Campaign</option>
+          </select>
+          <label htmlFor="sk-aud" className="vh">
+            Audience
+          </label>
+          <select id="sk-aud" className="in auto" value={audience} onChange={(e) => set('audience', e.target.value === 'mine' ? undefined : e.target.value)}>
+            <option value="mine">Audience: mine</option>
+            <option value="all">Audience: all I can read</option>
+          </select>
+          <label htmlFor="sk-sort" className="vh">
+            Sort
+          </label>
+          <select id="sk-sort" className="in auto" value={sort} onChange={(e) => set('sort', e.target.value === 'updated' ? undefined : e.target.value)}>
+            <option value="updated">Sort: Updated</option>
+            <option value="title">Sort: Title</option>
+          </select>
+        </form>
+
+        <section className="card" style={{ padding: 0 }}>
+          {error && !data ? (
+            <ErrorState error={error} onRetry={reload} title="Shared knowledge could not be loaded" />
+          ) : loading && !data ? (
+            <SkTable rows={4} cols={7} />
+          ) : !data || data.items.length === 0 ? (
+            <Empty compact title={q || scope ? 'Nothing matches' : 'No shared knowledge yet'}>
+              {q || scope ? 'Try another search or scope.' : 'Published project, organizational and campaign records you can read appear here with their source and audience.'}
+            </Empty>
+          ) : (
+            <div className="scroll">
+              <table className="tbl" style={{ minWidth: 860 }}>
+                <thead>
+                  <tr>
+                    <th>Knowledge</th>
+                    <th>Scope</th>
+                    <th>Source</th>
+                    <th>Version</th>
+                    <th>Audience</th>
+                    <th>Relevant until</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.items.map((k) => (
+                    <tr key={k.id}>
+                      <td style={{ maxWidth: 280 }}>
+                        <a href={memoryHref(k.memory_id)}>{k.title}</a>
+                        {k.subtitle && <div className="hint">{k.subtitle}</div>}
+                      </td>
+                      <td>
+                        <ScopeLabel scope={k.scope}>{k.scope_label || undefined}</ScopeLabel>
+                      </td>
+                      <td className="sm">{k.source}</td>
+                      <td className="sm">v{k.version}</td>
+                      <td className="sm">{k.audience}</td>
+                      <td className="sm">{k.relevant_until ? fmtMonthDay(k.relevant_until) : '—'}</td>
+                      <td className="sm">{fmtMonthDay(k.updated_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <div className="grid-3">
+          <section className="card">
+            <div className="ch">
+              <h3>Pages</h3>
+              <a className="sm" href={buildHash('/knowledge')}>
+                All pages
+              </a>
+            </div>
+            {(pages.data?.items ?? []).slice(0, 4).map((k) => (
+              <div key={`${k.kind}:${k.id}`} className="evrow" style={{ justifyContent: 'space-between' }}>
+                <a className="sm" href={pageHref(k.kind, k.id)}>
+                  {k.title}
+                </a>
+                <span className="hint">{fmtInt(k.source_count)} memories</span>
+              </div>
+            ))}
+            <p className="hint" style={{ margin: '10px 0 0' }}>
+              Pages summarise only readable memories and link each sentence to its source memory.
+            </p>
+          </section>
+          <section className="card">
+            <div className="ch">
+              <h3>Documents</h3>
+              <a className="sm" href={buildHash('/knowledge/documents')}>
+                All documents
+              </a>
+            </div>
+            {(docs.data?.items ?? []).slice(0, 4).map((d) => (
+              <div key={d.id} className="evrow" style={{ justifyContent: 'space-between' }}>
+                <a className="sm ellipsis" href={buildHash(`/knowledge/documents/${d.id}`)}>
+                  {d.title}
+                </a>
+                <span className="hint">{fmtInt(d.memories)} memories</span>
+              </div>
+            ))}
+            {docs.data && docs.data.items.length === 0 && <p className="sm muted">No documents yet.</p>}
+          </section>
+          <section className="card">
+            <div className="ch">
+              <h3>Context packs</h3>
+              <a className="sm" href={buildHash('/knowledge/packs')}>
+                All packs
+              </a>
+            </div>
+            {(packs.data?.items ?? []).slice(0, 4).map((p) => (
+              <div key={p.id} className="evrow" style={{ justifyContent: 'space-between' }}>
+                <a className="sm" href={buildHash(`/knowledge/packs/${p.id}`)}>
+                  {p.name}
+                </a>
+                <span className="hint">
+                  {p.pinned.length} pinned · {p.agents.length ? `${p.agents.length} agents` : p.visibility === 'private' ? 'personal' : 'project'}
+                </span>
+              </div>
+            ))}
+            {packs.data && packs.data.items.length === 0 && <p className="sm muted">No context packs yet.</p>}
+          </section>
+        </div>
+
+        <div className="alert" role="note">
+          <Icon.Info stroke="#0066cc" style={{ flex: 'none', marginTop: 1 }} />
+          <div>
+            Shared knowledge is a view over existing published scopes — not a new scope anyone can read. Each record shows who it reaches; you only see records whose audience
+            includes you.
+          </div>
+        </div>
       </div>
     </>
   );

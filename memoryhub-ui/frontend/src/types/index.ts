@@ -172,7 +172,15 @@ export interface Overview {
   memories: { current: number; new_7d: number; growth_pct: number | null };
   agents: { total: number; active_now: number; source: 'auth' | 'memory' };
   searches: { last_24h: number; p95_latency_ms: number | null };
-  contradictions: { open: number; over_threshold: number; threshold: number };
+  contradictions: {
+    open: number;
+    over_threshold: number;
+    threshold: number;
+    /** Open contradictions on records the viewer can read (newest first). */
+    items?: OverviewContradiction[];
+  };
+  /** Per-container breakdown for the viewer: personal, each project, organizational… */
+  my_scopes?: OverviewScopeRow[];
   approvals: { enterprise_pending: number; pending_total: number };
   scopes: { scope: Scope; count: number; pending: number }[];
   categories: { name: string; memory_count: number }[];
@@ -185,6 +193,26 @@ export interface Overview {
   recent_source: 'audit' | 'memory';
   health: HealthItem[];
   context_assembly: { avg_tokens: number | null; prefix_hit_rate: number | null };
+}
+
+export interface OverviewContradiction {
+  id: string;
+  title: string;
+  memory_id: string;
+  scope: Scope;
+  scope_id: string | null;
+  /** Display name of the project or campaign, when there is one. */
+  scope_label?: string | null;
+  memories: number;
+}
+
+export interface OverviewScopeRow {
+  scope: Scope;
+  scope_id: string | null;
+  label: string;
+  count: number;
+  /** read: the viewer reads this container but cannot write to it. */
+  access: 'write' | 'read';
 }
 
 export type EntityType = 'person' | 'organization' | 'location' | 'object' | 'event';
@@ -540,7 +568,16 @@ export interface ProjectDetail extends ProjectRow {
   focus_history: { focus: string; count: number }[] | null;
   focus_available: boolean;
   loading_policy: string;
+  /** Named project roles (Owner, Project Manager, Contributor, Viewer), when the backend provides them. */
+  owner?: string | null;
+  managers?: string[];
+  my_project_role?: ProjectRole | null;
+  written_by_me?: number | null;
+  open_contradictions?: number | null;
+  loading?: { session_start: string; always_include: string; superseded: string } | null;
 }
+
+export type ProjectRole = 'owner' | 'manager' | 'contributor' | 'viewer';
 
 export interface BehaviorProfile {
   schema: string;
@@ -588,11 +625,27 @@ export interface MyPrefsResponse {
 }
 
 export interface MyReads {
+  /** Headline counts for the period; optional on older backends. */
+  summary?: { reads_by_others: number; personal_by_others: number; admin_without_workflow: number; incident_grants: number };
   days: number;
   who: 'others' | 'all';
   identities: string[];
   total: number;
-  readers: { actor_id: string; driver_id: string | null; count: number; last: string; kinds: string[]; denied: number; yours: boolean; via_dashboard: boolean }[];
+  readers: {
+    actor_id: string;
+    driver_id: string | null;
+    count: number;
+    last: string;
+    kinds: string[];
+    denied: number;
+    yours: boolean;
+    via_dashboard: boolean;
+    /** Distinct memories read. */
+    memories?: number;
+    /** Why the read was allowed: project member, project owner, review workflow, incident… */
+    reason?: string | null;
+    reason_kind?: 'project' | 'review' | 'incident' | 'own' | null;
+  }[];
   top_memories: { id: string; stub: string; scope: string; count: number }[];
   events: {
     id: number | string;
@@ -1400,4 +1453,72 @@ export interface DirectoryEntry {
   kind: 'person' | 'agent' | 'service';
   /** For agents: the person they belong to. */
   owner: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* My requests (user): what the viewer submitted and where it stands   */
+/* ------------------------------------------------------------------ */
+
+export type MyRequestKind = 'promotion' | 'shared_knowledge' | 'project_access' | 'restore' | 'contradiction';
+
+export interface MyRequest {
+  id: string;
+  kind: MyRequestKind;
+  title: string;
+  memory_id: string | null;
+  /** Scope chain shown as from → to. */
+  from_scope?: string | null;
+  from_label?: string | null;
+  to_scope?: string | null;
+  to_label?: string | null;
+  project?: string | null;
+  project_role?: string | null;
+  submitted_at: string;
+  submitted_via?: string | null;
+  state: 'open' | 'decided' | 'withdrawn';
+  waiting_for?: 'review' | 'project_owner' | null;
+  queue_position?: number | null;
+  sla?: string | null;
+  note?: string | null;
+  outcome?: 'approved' | 'rejected' | null;
+  decided_by?: string | null;
+  decided_by_role?: string | null;
+  decided_at?: string | null;
+  reason?: string | null;
+  withdrawn_at?: string | null;
+}
+
+export interface MyRequestsResponse {
+  items: MyRequest[];
+  counts: { open: number; decided: number; withdrawn: number };
+}
+
+export interface NewRequestPayload {
+  kind: MyRequestKind;
+  memory_id?: string;
+  target_scope?: string;
+  project?: string;
+  project_role?: string;
+  reason?: string;
+}
+
+/* Shared knowledge: published project, organizational and campaign records the viewer can read. */
+export interface SharedKnowledgeRecord {
+  id: string;
+  memory_id: string;
+  title: string;
+  subtitle?: string | null;
+  scope: Scope;
+  scope_id: string | null;
+  scope_label?: string | null;
+  source: string;
+  version: number;
+  audience: string;
+  relevant_until: string | null;
+  updated_at: string;
+}
+
+export interface SharedKnowledgeResponse {
+  items: SharedKnowledgeRecord[];
+  total: number;
 }

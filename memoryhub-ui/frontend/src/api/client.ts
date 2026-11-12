@@ -29,6 +29,10 @@ import type {
   BreakGlassState,
   VerifyResult,
   MyReads,
+  MyRequest,
+  MyRequestsResponse,
+  NewRequestPayload,
+  SharedKnowledgeResponse,
   DreamInsight,
   DreamReport,
   DreamSettings,
@@ -81,7 +85,7 @@ import type {
   OverviewRange,
 } from '@/types';
 
-import { demoRequest, demoDownload } from './demo';
+const BASE = '/api';
 
 export class ApiError extends Error {
   status: number;
@@ -93,7 +97,7 @@ export class ApiError extends Error {
   }
 }
 
-/** Kept for the existing UI event contract; the demo never requires authentication. */
+/** Fired when the BFF says the dev API-key session is missing or expired. */
 export const AUTH_REQUIRED_EVENT = 'memoryhub:auth-required';
 export const AUTHORIZATION_CHANGED_EVENT = 'memoryhub:authorization-changed';
 
@@ -104,7 +108,38 @@ function authorizationChanged<T>(result: T): T {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  return demoRequest(method, path, body) as Promise<T>;
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      method,
+      credentials: 'same-origin',
+      // QA 2026-11-10: GETs are the dashboard loading a page. The marker only
+      // categorises a denied call in the audit log (dashboard check vs user
+      // action); it never grants or hides anything.
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(method === 'GET' ? { 'X-MemoryHub-Request': 'background' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new ApiError(0, 'The dashboard backend is not reachable.');
+  }
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const data = await response.json();
+      detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
+    } catch {
+      detail = await response.text().catch(() => '');
+    }
+    if (response.status === 401 && !path.startsWith('/auth/')) {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    }
+    throw new ApiError(response.status, detail || response.statusText);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
 }
 
 const get = <T,>(path: string) => request<T>('GET', path);
@@ -154,7 +189,7 @@ export const api = {
   entities: (params: { q?: string; type?: EntityType | 'all'; project?: string; page?: number; per_page?: number } = {}) =>
     get<EntitiesResponse>(`/entities${qs(params)}`),
   browse: (params: BrowseParams) => get<BrowseResponse>(`/memories/browse${qs(params as Record<string, unknown>)}`),
-  exportUrl: (params: BrowseParams = {}) => demoDownload('memories', params as Record<string, unknown>),
+  exportUrl: (params: BrowseParams = {}) => `${BASE}/memories/export${qs(params as Record<string, unknown>)}`,
   memoryContext: (id: string) => get<MemoryContext>(`/memory/${enc(id)}/context`),
   memoryAccessLog: (id: string, page = 1) =>
     get<{ total: number; items: AuditEvent[] }>(`/memory/${enc(id)}/access-log${qs({ page })}`),
@@ -200,7 +235,12 @@ export const api = {
   myPrefs: () => get<MyPrefsResponse>('/me/prefs'),
   saveMyPrefs: (body: Partial<MyPrefs>) => put<{ prefs: MyPrefs }>('/me/prefs', body),
   myReads: (days = 30, who: 'others' | 'all' = 'others') => get<MyReads>(`/me/reads${qs({ days, who })}`),
-  exportMineUrl: () => demoDownload('memories', { mine: true }),
+  myRequests: () => get<MyRequestsResponse>('/me/requests'),
+  createMyRequest: (body: NewRequestPayload) => post<MyRequest>('/me/requests', body),
+  withdrawMyRequest: (id: string) => post<MyRequest>(`/me/requests/${enc(id)}/withdraw`),
+  sharedKnowledge: (params: { q?: string; scope?: string; audience?: 'mine' | 'all'; sort?: 'updated' | 'title' } = {}) =>
+    get<SharedKnowledgeResponse>(`/knowledge/shared${qs(params)}`),
+  exportMineUrl: () => `${BASE}/memories/export${qs({ mine: true })}`,
   teams: () => get<TeamsResponse>('/teams'),
   createTeam: (body: { name: string; description?: string; members: string[]; projects: string[] }) =>
     post<{ id: string; name: string; added: number; removed: number }>('/teams', body),
@@ -261,7 +301,7 @@ export const api = {
   // Context packs
   packs: () => get<{ items: ContextPack[] }>('/context-packs'),
   pack: (id: string) => get<ContextPackDetail>(`/context-packs/${enc(id)}`),
-  packMarkdownUrl: (id: string) => demoDownload('pack', { id }),
+  packMarkdownUrl: (id: string) => `${BASE}/context-packs/${enc(id)}/markdown`,
   createPack: (body: { name: string; description?: string; pinned?: string[]; queries?: PackQuery[]; token_budget?: number }) =>
     post<{ id: string }>('/context-packs', body),
   updatePack: (id: string, body: Partial<Omit<ContextPack, 'id' | 'owner' | 'created_at' | 'updated_at' | 'last_render' | 'mine' | 'can_edit'>>) =>
