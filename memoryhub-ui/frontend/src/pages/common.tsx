@@ -75,20 +75,21 @@ export const EventTarget: React.FC<{ e: AuditEvent; max?: number }> = ({ e, max 
 /* Write memory dialog (Overview, Memory browser)                      */
 /* ------------------------------------------------------------------ */
 
-export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: string) => void; initialContent?: string; title?: string }> = ({
+export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: string) => void; initialContent?: string; title?: string; initialScope?: string }> = ({
   onClose,
   onSaved,
   initialContent,
   title,
+  initialScope,
 }) => {
   const toast = useToast();
   const { me, refreshCounts, role } = useApp();
   const restricted = role === 'user';
   const allowedScopes = me?.write?.scopes ?? (role === 'operator' ? [...SCOPE_ORDER] : []);
   const [content, setContent] = useState(initialContent ?? '');
-  const [scope, setScopeState] = useState('user');
+  const [scope, setScopeState] = useState(initialScope ?? 'user');
   // Saved defaults load asynchronously; they must not undo a choice the person already made.
-  const touched = useRef({ scope: false, weight: false });
+  const touched = useRef({ scope: Boolean(initialScope), weight: false });
   const setScope = (next: string) => {
     touched.current.scope = true;
     setScopeState(next);
@@ -166,7 +167,7 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
         <div className="f">
           <label htmlFor="wm-content">Content</label>
           <textarea id="wm-content" className="in" required value={content} onChange={(e) => setContent(e.target.value)} />
-          <span className="hint">Adds a synthetic memory to this browser session. No curation or agent service runs.</span>
+          <span className="hint">Runs through the same curation rules as an agent’s write_memory call.</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div className="f">

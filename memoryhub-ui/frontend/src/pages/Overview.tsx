@@ -4,8 +4,8 @@ import { PageHeader, useApp } from '@/components/Shell';
 import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby, Status, TOKEN_ESTIMATE_NOTE } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash } from '@/hooks/useHashRoute';
-import type { Onboarding, UsageSummary, Overview as OverviewData, OverviewRange } from '@/types';
-import { fmtInt, fmtTime, scopeMeta } from '@/utils/format';
+import type { AuditEvent, Onboarding, UsageSummary, Overview as OverviewData, OverviewRange } from '@/types';
+import { fmtCompact, fmtInt, fmtTime, scopeMeta, shortId } from '@/utils/format';
 import { ACTIVITY_RANGES, ActivityChart, PIE_COLORS, PieChart } from '@/components/charts';
 import { actorKind, actorName, decisionOf, EventTarget, memoryHref, WriteMemoryModal } from './common';
 import { RequestSentence, RequestStatus } from './requests';
@@ -48,7 +48,9 @@ const KpiCard: React.FC<{ label: string; href?: string; loading: boolean; value?
 };
 
 const Overview: React.FC = () => {
-  const { tenant, role, standby, refreshCounts } = useApp();
+  const { tenant, role, standby, refreshCounts, me } = useApp();
+  // Personal records stay metadata-only for admins unless incident access is on.
+  const grant = me?.access?.break_glass ?? null;
   // While the tenant has no memories the page polls every 5 s until the
   // first write_memory arrives, then switches to the live layout.
   const [activityRange, setActivityRange] = useState<OverviewRange>('7d');
@@ -62,7 +64,7 @@ const Overview: React.FC = () => {
   if (error && !data) {
     return (
       <>
-        <Header tenant={tenant} onWrite={() => setWriteOpen(true)} />
+        <Header tenant={tenant} role={role} onWrite={() => setWriteOpen(true)} onRefresh={reload} />
         <div className="body">
           <div className="card">
             <ErrorState error={error} onRetry={reload} title="The overview could not be loaded" />
@@ -98,7 +100,7 @@ const Overview: React.FC = () => {
 
   return (
     <>
-      <Header tenant={data?.tenant_id || tenant} onWrite={() => setWriteOpen(true)} />
+      <Header tenant={data?.tenant_id || tenant} role={role} onWrite={() => setWriteOpen(true)} onRefresh={reload} />
       <div className="body">
         {empty && !first && (
           <div className="alert" role="status">
@@ -230,6 +232,7 @@ const Overview: React.FC = () => {
               <>
                 <ActivityChart data={data!.activity} bucketSeconds={data!.activity_bucket_seconds} range={activityRange} />
                 {data!.activity_source === 'memory' && <p className="ops-foot">No audit events yet — showing memory writes only.</p>}
+                {role === 'admin' && <ActorActivity range={activityRange} />}
               </>
             )}
           </div>
@@ -283,7 +286,7 @@ const Overview: React.FC = () => {
             <div>
               <h3>Memory categories</h3>
               <p className="sm muted" style={{ margin: '4px 0 0' }}>
-                Category mix across all memories, by domain tag. A memory can have more than one category.
+                Category mix across all memories, by domain tag. A memory can have more than one category, so shares are of all assignments.
               </p>
             </div>
           </div>
@@ -296,6 +299,8 @@ const Overview: React.FC = () => {
             </div>
           ) : empty ? (
             <Standby>The mix of domain tags across memories appears here.</Standby>
+          ) : role === 'admin' && data && data.categories.length ? (
+            <CategoryTable data={data} />
           ) : categorySlices.length ? (
             <>
               <PieChart slices={categorySlices} label={`Memory categories: ${categorySlices.map((c) => `${c.label} ${c.value}`).join(', ')}`} />
@@ -312,7 +317,8 @@ const Overview: React.FC = () => {
         )}
 
         <div className="grid-2-1">
-          <div className="card span-2">
+          <div className="span-2 stack">
+          <div className="card">
             <div className="ch">
               <h3>Recent activity</h3>
               <a className="sm" href={buildHash('/audit', { tab: 'log' })}>
@@ -348,12 +354,12 @@ const Overview: React.FC = () => {
                             <div style={{ fontWeight: 500 }}>{actorName(e)}</div>
                             <div className="sm muted">{actorKind(e)}</div>
                           </td>
-                          <td className="mono">{e.operation}</td>
+                          <td className="mono">{role === 'admin' ? toolName(e) : e.operation}</td>
                           <td style={{ maxWidth: 360 }}>
-                            <EventTarget e={e} />
+                            {role === 'admin' && !grant && e.scope === 'user' && e.event_type !== 'memory.search' ? <HiddenPersonal id={e.memory_id} /> : <EventTarget e={e} />}
                           </td>
                           <td>{e.scope && e.scope !== 'all' && e.scope !== 'session' ? <ScopeLabel scope={e.scope} /> : <span className="muted">—</span>}</td>
-                          <td className={d.cls} style={{ fontWeight: 500 }}>
+                          <td className={d.cls} style={{ fontWeight: 600 }}>
                             {d.label}
                           </td>
                         </tr>
@@ -364,6 +370,8 @@ const Overview: React.FC = () => {
                 {data.recent_source === 'memory' && <p className="sm muted">No audit events yet — showing the latest memory writes.</p>}
               </div>
             )}
+          </div>
+          {role === 'admin' && !empty && <AgentUsage tenantWide />}
           </div>
           {role === 'user' ? (
             <div className="stack">
@@ -438,6 +446,7 @@ const Overview: React.FC = () => {
                 </>
               )}
             </div>
+            {role === 'admin' && <QuotasGovernance data={data} loading={first} />}
           </div>
           )}
         </div>
@@ -455,7 +464,31 @@ const Overview: React.FC = () => {
   );
 };
 
-const Header: React.FC<{ tenant: string; onWrite: () => void }> = ({ tenant, onWrite }) => (
+const Header: React.FC<{ tenant: string; role: string; onWrite: () => void; onRefresh: () => void }> = ({ tenant, role, onWrite, onRefresh }) =>
+  role === 'admin' ? (
+    <PageHeader
+      title="Tenant overview"
+      crumbs={[{ label: 'Tenant overview' }]}
+      description={
+        <>
+          Health and activity of governed agent memory for <b>{tenant || '…'}</b>. Every number links to the records behind it; personal records open as metadata.
+        </>
+      }
+      actions={
+        <>
+          <button type="button" className="btn bs" onClick={onRefresh}>
+            Refresh
+          </button>
+          <a className="btn bs" href={buildHash('/accounts', { invite: '1' })}>
+            Invite users
+          </a>
+          <a className="btn bp" href={buildHash('/review')}>
+            Open review queue
+          </a>
+        </>
+      }
+    />
+  ) : (
   <PageHeader
     title="Overview"
     description={
@@ -478,6 +511,278 @@ const Header: React.FC<{ tenant: string; onWrite: () => void }> = ({ tenant, onW
 );
 
 export default Overview;
+
+/* ------------------------------------------------------------------ */
+/* Tenant overview (platform admin)                                    */
+/* ------------------------------------------------------------------ */
+
+const RANGE_HOURS: Record<OverviewRange, number | undefined> = { all: undefined, '1h': 1, '12h': 12, '1d': 24, '7d': 168, '30d': 720 };
+
+/** MCP tool names, as agents call them. */
+const TOOL_NAME: Record<string, string> = {
+  'memory.write': 'write_memory',
+  'memory.update': 'update_memory',
+  'memory.read': 'read_memory',
+  'memory.search': 'search_memory',
+  'memory.delete': 'delete_memory',
+  'memory.restore': 'restore_memory',
+  'memory.promote': 'promote',
+  'review.promotion_proposed': 'promote',
+  'memory.set_weight': 'set_weight',
+  'memory.weight': 'set_weight',
+  'memory.relationship_created': 'create_relationship',
+  'memory.contradiction_reported': 'report_contradiction',
+};
+export const toolName = (e: AuditEvent) => TOOL_NAME[e.event_type] ?? TOOL_NAME[e.operation] ?? e.operation.replace(/^memory\./, '');
+
+const KIND_LABEL: Record<string, string> = { human: 'People (dashboard)', user_agent: 'User agents', service_agent: 'Service agents' };
+const kindOf = (e: AuditEvent): 'human' | 'user_agent' | 'service_agent' => {
+  const k = actorKind(e);
+  if (k.startsWith('human') || k === 'user') return 'human';
+  if (k === 'user agent') return 'user_agent';
+  return 'service_agent';
+};
+
+/** Who did the work in the selected range: writes and updates, searches and reads, per actor and per kind of actor. */
+const ActorActivity: React.FC<{ range: OverviewRange }> = ({ range }) => {
+  const { data, loading } = useApi<AuditEvent[]>(async () => {
+    const all: AuditEvent[] = [];
+    for (let page = 1; page <= 5; page += 1) {
+      const res = await api.audit({ hours: RANGE_HOURS[range], page, per_page: 200 });
+      all.push(...res.items);
+      if (all.length >= res.total || res.items.length === 0) break;
+    }
+    return all;
+  }, [range]);
+  if (loading && !data) return <SkLines lines={4} />;
+  const events = (data ?? []).filter((e) => e.decision !== 'denied');
+  type Row = { actor: string; kind: 'human' | 'user_agent' | 'service_agent'; writes: number; searches: number };
+  const rows = new Map<string, Row>();
+  const kinds: Record<Row['kind'], { writes: number; searches: number; actors: Set<string> }> = {
+    human: { writes: 0, searches: 0, actors: new Set() },
+    user_agent: { writes: 0, searches: 0, actors: new Set() },
+    service_agent: { writes: 0, searches: 0, actors: new Set() },
+  };
+  events.forEach((e) => {
+    const isWrite = ['memory.write', 'memory.update'].includes(e.operation);
+    const isSearch = ['memory.search', 'memory.read'].includes(e.operation);
+    if (!isWrite && !isSearch) return;
+    const kind = kindOf(e);
+    const r = rows.get(e.actor_id) ?? { actor: e.actor_id, kind, writes: 0, searches: 0 };
+    if (isWrite) r.writes += 1;
+    else r.searches += 1;
+    rows.set(e.actor_id, r);
+    kinds[kind].actors.add(e.actor_id);
+    if (isWrite) kinds[kind].writes += 1;
+    else kinds[kind].searches += 1;
+  });
+  const top = [...rows.values()].sort((a, b) => b.writes + b.searches - (a.writes + a.searches)).slice(0, 6);
+  const max = Math.max(1, ...top.map((r) => r.writes + r.searches));
+  if (top.length === 0) return <p className="sm muted" style={{ margin: '12px 0 0' }}>No writes or searches by users or agents in this range.</p>;
+  return (
+    <div className="actor-act">
+      <div className="kind-tiles">
+        {(Object.keys(kinds) as Row['kind'][]).map((k) => (
+          <div key={k}>
+            <div className="sm muted">{KIND_LABEL[k]}</div>
+            <div className="b6">
+              {fmtInt(kinds[k].writes)} <span className="sm muted">writes</span> · {fmtInt(kinds[k].searches)} <span className="sm muted">searches</span>
+            </div>
+            <div className="hint">{kinds[k].actors.size} active</div>
+          </div>
+        ))}
+      </div>
+      <table className="tbl actor-tbl">
+        <thead>
+          <tr>
+            <th>Most active</th>
+            <th>Kind</th>
+            <th style={{ width: '40%' }}>
+              <span className="legend-dot w" /> Writes &amp; updates <span className="legend-dot s" /> Searches
+            </th>
+            <th style={{ textAlign: 'right' }}>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {top.map((r) => (
+            <tr key={r.actor}>
+              <td>
+                <a href={buildHash('/audit', { tab: 'log', actor: r.actor })}>{r.actor}</a>
+              </td>
+              <td className="sm muted">{KIND_LABEL[r.kind]}</td>
+              <td>
+                <div className="stackbar" title={`${r.writes} writes & updates, ${r.searches} searches`}>
+                  <span className="w" style={{ width: `${(r.writes / max) * 100}%` }} />
+                  <span className="s" style={{ width: `${(r.searches / max) * 100}%` }} />
+                </div>
+              </td>
+              <td className="sm" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                {fmtInt(r.writes)} · {fmtInt(r.searches)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {(data?.length ?? 0) >= 1000 && <p className="hint">Counted from the latest 1,000 audit events in this range.</p>}
+    </div>
+  );
+};
+
+/** Categories as a ranked list with each category's share of all assignments. */
+const CategoryTable: React.FC<{ data: OverviewData }> = ({ data }) => {
+  const cats = [...data.categories].sort((a, b) => b.memory_count - a.memory_count);
+  const totalAssign = cats.reduce((a, c) => a + c.memory_count, 0) || 1;
+  const top = cats.slice(0, 10);
+  const rest = cats.slice(10);
+  const max = Math.max(1, ...top.map((c) => c.memory_count));
+  const rows = rest.length ? [...top, { name: `Other · ${rest.length} categories`, memory_count: rest.reduce((a, c) => a + c.memory_count, 0), other: true }] : top;
+  return (
+    <div className="cat-table">
+      <div className="cat-head sm muted">
+        <span>Category</span>
+        <span />
+        <span style={{ textAlign: 'right' }}>Memories</span>
+        <span style={{ textAlign: 'right' }}>Share</span>
+      </div>
+      {rows.map((c, i) => {
+        const share = Math.round((c.memory_count / totalAssign) * 1000) / 10;
+        const other = 'other' in c;
+        const body = (
+          <>
+            <span className="cat-name">
+              <span className="cat-rank">{other ? '' : i + 1}</span>
+              {c.name}
+            </span>
+            <span className="bar thin">
+              <span style={{ width: `${Math.max(1, (c.memory_count / max) * 100)}%`, background: other ? '#8a8d90' : undefined }} />
+            </span>
+            <span className="mono" style={{ textAlign: 'right' }}>
+              {fmtInt(c.memory_count)}
+            </span>
+            <span className="mono muted" style={{ textAlign: 'right' }}>
+              {share}%
+            </span>
+          </>
+        );
+        return other ? (
+          <div key="other" className="cat-row">
+            {body}
+          </div>
+        ) : (
+          <a key={c.name} className="cat-row link-plain" href={buildHash('/memories', { domain: c.name })}>
+            {body}
+          </a>
+        );
+      })}
+    </div>
+  );
+};
+
+/** The tenant's limits and the governance work waiting. Each number opens the records behind it. */
+const QuotasGovernance: React.FC<{ data: OverviewData | null | undefined; loading: boolean }> = ({ data, loading }) => {
+  const { superuser } = useApp();
+  const counts = useApi(() => api.browse({ per_page: 1 }), []);
+  const blocks = useApi(() => api.audit({ decision: 'denied', operation: ['memory.write'], hours: 168, per_page: 1 }), []);
+  const g = data?.governance;
+  const quarantined = g?.quarantined ?? counts.data?.tab_counts.quarantined;
+  const policyBlocks = g?.policy_blocks_7d ?? blocks.data?.total;
+  const review = data?.approvals.pending_total;
+  const row = (label: string, value: React.ReactNode) => (
+    <>
+      <dt>{label}</dt>
+      <dd>{value === undefined || value === null ? <span className="muted">—</span> : value}</dd>
+    </>
+  );
+  return (
+    <section className="card">
+      <h3 style={{ marginBottom: 12 }}>Quotas &amp; governance</h3>
+      {loading ? (
+        <SkLines lines={6} />
+      ) : (
+        <dl className="kv gov">
+          {row('Storage quota', g?.storage_quota_pct !== undefined && g?.storage_quota_pct !== null ? `${g.storage_quota_pct}%${g.storage_quota_limit ? ` of ${fmtCompact(g.storage_quota_limit)}` : ''}` : null)}
+          {row('Indexing backlog', g?.indexing_backlog !== undefined && g?.indexing_backlog !== null ? `${fmtInt(g.indexing_backlog)}${g.indexing_failed ? ` · ${fmtInt(g.indexing_failed)} failed` : ''}` : null)}
+          {row('Policy blocks · 7 d', policyBlocks !== undefined ? <a href={buildHash('/audit', { tab: 'log', decision: 'denied', op: 'memory.write' })}>{fmtInt(policyBlocks)}</a> : null)}
+          {row('Review queue', review !== undefined ? <a href={buildHash('/review')}>{fmtInt(review)} open</a> : null)}
+          {row('Quarantined', quarantined !== undefined ? <a href={buildHash('/memories', { tab: 'quarantined' })}>{fmtInt(quarantined)}</a> : null)}
+          {row('Pending hard deletes', g?.pending_hard_deletes !== undefined && g?.pending_hard_deletes !== null ? `${fmtInt(g.pending_hard_deletes)}${g.pending_hard_deletes ? ' · 2nd approver' : ''}` : null)}
+          {row(
+            'Incident grants on tenant',
+            g?.incident_grants !== undefined && g?.incident_grants !== null ? (
+              superuser ? <a href={buildHash('/incident')}>{fmtInt(g.incident_grants)} active</a> : `${fmtInt(g.incident_grants)} active`
+            ) : null,
+          )}
+        </dl>
+      )}
+    </section>
+  );
+};
+
+/** Personal records open as metadata for admins: the content is never drawn. */
+const HiddenPersonal: React.FC<{ id: string | null }> = ({ id }) => (
+  <span className="hidden-box" title="Personal content hidden — metadata only">
+    <Icon.EyeOff />
+    <span className="mono">{id ? shortId(id) : 'personal memory'}</span>
+  </span>
+);
+
+/** Tenant-wide: how often agents act on what search hands them, by kind of agent. */
+const TenantUsage: React.FC<{ data: UsageSummary }> = ({ data }) => {
+  const pct = data.use_rate === null ? null : Math.round(data.use_rate * 100);
+  const kinds = data.by_kind ?? null;
+  return (
+    <section className="card" aria-label="Agent usage">
+      <div className="ch">
+        <h3>Do agents use what they get?</h3>
+        <span className="sm muted">Last 30 days · tenant</span>
+      </div>
+      <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ flex: '0 1 300px' }}>
+          <div className="statv">{pct === null ? '—' : `${pct}%`}</div>
+          <div className="sm muted">
+            of {fmtInt(data.used + data.skipped)} measured search hits were acted on within 30 minutes. {fmtInt(data.full)} more delivered in full.
+          </div>
+        </div>
+        <div style={{ flex: '1 1 320px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {kinds ? (
+            ([['User agents', kinds.user_agents], ['Service agents', kinds.service_agents]] as [string, number | null][]).map(([label, rate]) => (
+              <div key={label}>
+                <div className="sm" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>{label}</span>
+                  <span>{rate === null ? '—' : `${Math.round(rate * 100)}%`}</span>
+                </div>
+                <div className="bar thin">
+                  <span style={{ width: `${rate === null ? 0 : Math.round(rate * 100)}%` }} />
+                </div>
+              </div>
+            ))
+          ) : (
+            <>
+              <div className="sm b6">Skipped most often</div>
+              {data.skipped_most.length === 0 ? (
+                <p className="sm muted" style={{ margin: 0 }}>
+                  Nothing stands out — agents act on what they get.
+                </p>
+              ) : (
+                data.skipped_most.slice(0, 4).map((m) => (
+                  <a key={m.id} className="conn link-plain" href={buildHash(`/memory/${m.id}`)}>
+                    <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>
+                      {m.redacted ? 'Personal memory (metadata only)' : m.stub}
+                    </span>
+                    <span className="hint" style={{ whiteSpace: 'nowrap' }}>
+                      skipped {m.skipped} of {m.served}
+                    </span>
+                  </a>
+                ))
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 
 /** Getting started: what a new user still has to do. Hidden once done or dismissed. */
 const GettingStarted: React.FC = () => {
@@ -524,9 +829,10 @@ const GettingStarted: React.FC = () => {
 };
 
 /** Do agents act on what search returns? The memories they keep skipping. */
-const AgentUsage: React.FC = () => {
+const AgentUsage: React.FC<{ tenantWide?: boolean }> = ({ tenantWide }) => {
   const { data } = useApi<UsageSummary>(() => api.usageSummary(30), []);
   if (!data || !data.served || !data.skipped_most) return null;
+  if (tenantWide) return <TenantUsage data={data} />;
   const pct = data.use_rate === null ? null : Math.round(data.use_rate * 100);
   return (
     <section className="card" aria-label="Agent usage">

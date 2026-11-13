@@ -1091,3 +1091,4 @@ const SaveQueryModal: React.FC<{ form: SearchRequest; projects: string[]; onClos
 };
 
 export default Search;
+

@@ -22,7 +22,9 @@ export const TeamsTable: React.FC<{
   onSelect: (id: string) => void;
   onCreate: () => void;
   filter: string;
-}> = ({ teams, loading, active, onSelect, onCreate, filter }) => {
+  /** Double-click: the team's summary card (platform admin). */
+  onOpen?: (id: string) => void;
+}> = ({ teams, loading, active, onSelect, onCreate, filter, onOpen }) => {
   const rows = teams.filter((t) => t.name.toLowerCase().includes(filter.toLowerCase()) || t.members.some((m) => m.user_id.includes(filter.toLowerCase())));
   if (loading) return <SkTable rows={4} cols={4} />;
   if (rows.length === 0)
@@ -55,7 +57,7 @@ export const TeamsTable: React.FC<{
           {rows.map((t) => {
             const lead = t.members.find((m) => m.role === 'lead');
             return (
-              <tr key={t.id} className={`clickable ${t.id === active ? 'is-sel' : ''}`} onClick={() => onSelect(t.id)}>
+              <tr key={t.id} className={`clickable ${t.id === active ? 'is-sel' : ''}`} onClick={() => onSelect(t.id)} onDoubleClick={() => onOpen?.(t.id)}>
                 <td>
                   <span style={{ fontWeight: 600, color: '#0066cc' }}>{t.name}</span>
                   <div className="sm muted">{t.description || '—'}</div>

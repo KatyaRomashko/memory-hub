@@ -123,8 +123,8 @@ const Curation: React.FC<{ route: HashRoute }> = ({ route }) => {
   return (
     <>
       <PageHeader
-        title={isUser ? 'My curation rules' : 'Curation rules'}
-        crumbs={[{ label: isUser ? 'My curation rules' : 'Curation rules' }]}
+        title={isUser ? 'My curation rules' : 'Curation & compaction'}
+        crumbs={[{ label: isUser ? 'My curation rules' : 'Curation & compaction' }]}
         description={
           isUser
             ? 'Personal rules check what your agents write to your memories — block secrets, quarantine sensitive text or flag near-duplicates. System and organization rules always apply and are shown read-only.'

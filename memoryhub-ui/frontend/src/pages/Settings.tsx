@@ -49,7 +49,7 @@ const Settings: React.FC = () => {
     try {
       const res = await api.saveSettings(values);
       setData(res);
-      toast('Settings changed for this browser session.');
+      toast('Settings saved. The change is recorded in the audit log.');
     } catch (e) {
       toast(errorMessage(e), 'err');
     } finally {
@@ -67,7 +67,7 @@ const Settings: React.FC = () => {
   return (
     <>
       <PageHeader
-        title="Settings"
+        title="Tenant settings"
         description={
           <>
             Tenant-wide defaults. Agents can narrow these per request; project <span className="mono">.memoryhub.yaml</span> files override retrieval defaults.

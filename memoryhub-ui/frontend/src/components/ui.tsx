@@ -22,6 +22,7 @@ export const Icon = {
   Arrow: (p: IconProps) => svg(<path d="M5 12h14M13 6l6 6-6 6" />, { size: 16, ...p }),
   Plus: (p: IconProps) => svg(<path d="M12 5v14M5 12h14" />, { size: 14, width: 2.5, ...p }),
   Info: (p: IconProps) => svg(<><circle cx="12" cy="12" r="9" /><path d="M12 8h.01M11 12h1v5h1" /></>, p),
+  EyeOff: (p: IconProps) => svg(<><path d="M3 3l18 18" /><path d="M10.6 6.1A9.8 9.8 0 0112 6c5 0 9 6 9 6a17 17 0 01-3.2 3.7M6.6 6.6C4.2 8.2 3 12 3 12s4 6 9 6a8.8 8.8 0 004.4-1.2" /><path d="M9.9 9.9a3 3 0 004.2 4.2" /></>, { size: 15, ...p }),
   Clock: (p: IconProps) => svg(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>, { size: 14, ...p }),
   Check: (p: IconProps) => svg(<path d="M5 12.5l4.5 4.5L19 7.5" />, { size: 13, width: 2.5, ...p }),
   X: (p: IconProps) => svg(<path d="M6 6l12 12M18 6L6 18" />, { size: 12, width: 2.5, ...p }),

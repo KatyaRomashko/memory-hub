@@ -296,8 +296,50 @@ export const USER_MOVED: Record<string, { path: string; view: string }> = {
   '/clients': { path: '/identities', view: 'keys' },
 };
 
+/** The platform admin's menu (super-users get Incident access as well). */
+export const ADMIN_NAV: { group?: string; items: NavItem[] }[] = [
+  { items: [{ path: '/overview', label: 'Tenant overview' }] },
+  {
+    group: 'People & access',
+    items: [
+      { path: '/accounts', label: 'Users & access' },
+      { path: '/identities', label: 'Agents & identities' },
+      { path: '/clients', label: 'OAuth clients & keys' },
+    ],
+  },
+  { group: 'Work', items: [{ path: '/projects', label: 'Projects & teams' }] },
+  {
+    group: 'Governance',
+    items: [
+      { path: '/memories', label: 'Content moderation' },
+      { path: '/review', label: 'Review queue', badge: 'review' },
+      { path: '/curation', label: 'Curation & compaction' },
+      { path: '/incident', label: 'Incident access', superuser: true },
+    ],
+  },
+  {
+    group: 'Insight',
+    items: [
+      { path: '/audit', label: 'Audit & forensics' },
+      { path: '/quality', label: 'Retrieval health & operations' },
+    ],
+  },
+  { group: 'Tenant', items: [{ path: '/settings', label: 'Tenant settings' }] },
+];
+
+/** Admin screens without their own menu item: where they live now, or reachable by link only. */
+export const ADMIN_MOVED: Record<string, { path: string; view: string }> = {
+  '/operations': { path: '/quality', view: 'jobs' },
+};
+const ADMIN_LINK_ONLY = ['/search', '/graph'];
+
+/** Where a moved screen lives for this role, if it moved. */
+export const movedFor = (role: Role, path: string) => (role === 'user' ? USER_MOVED[path] : role === 'admin' ? ADMIN_MOVED[path] : undefined);
+
 export const canSee = (path: string, role: Role, superuser = false) =>
-  role === 'user'
+  role === 'admin'
+    ? ADMIN_NAV.some((s) => s.items.some((i) => i.path === path && (!i.superuser || superuser))) || path in ADMIN_MOVED || ADMIN_LINK_ONLY.includes(path)
+    : role === 'user'
     ? USER_NAV.some((s) => s.items.some((i) => i.path === path)) || path in USER_MOVED
     : NAV.some((s) => s.items.some((i) => i.path === path && (!i.roles || i.roles.includes(role)) && (!i.superuser || superuser)));
 
@@ -307,12 +349,15 @@ const hasContent = (item: NavItem, role: Role, features: NavFeatures | null) => 
   return !!features && keys.some((k) => (features[k] ?? 0) > 0);
 };
 
-export const isLabsPath = (path: string) => [...NAV, ...USER_NAV].some((s) => s.items.some((i) => i.path === path && i.labs));
+export const isLabsPath = (path: string, role?: Role) =>
+  (role === 'user' ? USER_NAV : role === 'admin' ? ADMIN_NAV : NAV).some((s) => s.items.some((i) => i.path === path && i.labs));
 
 export const navFor = (role: Role, features: NavFeatures | null = null, labs = false, superuser = false) =>
   role === 'user'
     ? USER_NAV.map((s) => ({ group: s.group, items: s.items.filter((i) => labs || !i.labs) })).filter((s) => s.items.length > 0)
-    : NAV.map((s) => ({
+    : role === 'admin'
+      ? ADMIN_NAV.map((s) => ({ group: s.group, items: s.items.filter((i) => !i.superuser || superuser) })).filter((s) => s.items.length > 0)
+      : NAV.map((s) => ({
     group: s.groupFor?.[role] ?? s.group,
     items: s.items
       .filter((i) => !i.roles || i.roles.includes(role))

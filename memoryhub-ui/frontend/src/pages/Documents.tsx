@@ -531,3 +531,4 @@ const NewVersionModal: React.FC<{ doc: DocumentDetail; onClose: () => void; onDo
     </Modal>
   );
 };
+

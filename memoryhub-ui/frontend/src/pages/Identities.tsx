@@ -48,7 +48,7 @@ const Identities: React.FC<{ route: HashRoute }> = ({ route }) => {
   return (
     <>
       <PageHeader
-        title={isUser ? 'My agents' : 'Users & agents'}
+        title={isUser ? 'My agents' : 'Agents & identities'}
         crumbs={[{ label: isUser ? 'My agents' : 'Users & agents' }]}
         description={
           isUser

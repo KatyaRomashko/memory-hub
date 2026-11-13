@@ -452,7 +452,7 @@ const Projects: React.FC<{ route: HashRoute }> = ({ route }) => {
   );
 };
 
-const ProjectPanel: React.FC<{
+export const ProjectPanel: React.FC<{
   name: string;
   onEdit: () => void;
   onAddMember: () => void;
@@ -697,7 +697,7 @@ const useRouteToken = () => {
   return { route: useMemo(() => new URLSearchParams(route.split('?')[1] ?? '').get('_r'), [route]) };
 };
 
-const CampaignPanel: React.FC<{ campaign: CampaignRow; projects: ProjectRow[]; onChanged: () => void; onEnroll: () => void }> = ({ campaign, onChanged, onEnroll }) => {
+export const CampaignPanel: React.FC<{ campaign: CampaignRow; projects: ProjectRow[]; onChanged: () => void; onEnroll: () => void }> = ({ campaign, onChanged, onEnroll }) => {
   const toast = useToast();
   const setStatus = async (status: string) => {
     try {
@@ -763,7 +763,7 @@ const CampaignPanel: React.FC<{ campaign: CampaignRow; projects: ProjectRow[]; o
   );
 };
 
-const ProjectForm: React.FC<{ existing?: ProjectRow; central?: boolean; onClose: () => void; onSaved: (name: string) => void }> = ({ existing, central = true, onClose, onSaved }) => {
+export const ProjectForm: React.FC<{ existing?: ProjectRow; central?: boolean; onClose: () => void; onSaved: (name: string) => void }> = ({ existing, central = true, onClose, onSaved }) => {
   const [name, setName] = useState(existing?.name ?? '');
   const [description, setDescription] = useState(existing?.description ?? '');
   const [inviteOnly, setInviteOnly] = useState(existing?.invite_only ?? central);
@@ -895,7 +895,7 @@ const ProjectForm: React.FC<{ existing?: ProjectRow; central?: boolean; onClose:
   );
 };
 
-const MemberForm: React.FC<{ project: string; onClose: () => void; onSaved: () => void }> = ({ project, onClose, onSaved }) => {
+export const MemberForm: React.FC<{ project: string; onClose: () => void; onSaved: () => void }> = ({ project, onClose, onSaved }) => {
   const [people, setPeople] = useState<string[]>([]);
   const [role, setRole] = useState<'member' | 'admin'>('member');
   const [err, setErr] = useState<string | null>(null);
@@ -954,7 +954,7 @@ const MemberForm: React.FC<{ project: string; onClose: () => void; onSaved: () =
   );
 };
 
-const CampaignForm: React.FC<{ projects: ProjectRow[]; onClose: () => void; onSaved: (id: string) => void }> = ({ projects, onClose, onSaved }) => {
+export const CampaignForm: React.FC<{ projects: ProjectRow[]; onClose: () => void; onSaved: (id: string) => void }> = ({ projects, onClose, onSaved }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [ttl, setTtl] = useState('');
@@ -1018,7 +1018,7 @@ const CampaignForm: React.FC<{ projects: ProjectRow[]; onClose: () => void; onSa
   );
 };
 
-const EnrollForm: React.FC<{ campaign: CampaignRow; projects: ProjectRow[]; onClose: () => void; onSaved: () => void }> = ({ campaign, projects, onClose, onSaved }) => {
+export const EnrollForm: React.FC<{ campaign: CampaignRow; projects: ProjectRow[]; onClose: () => void; onSaved: () => void }> = ({ campaign, projects, onClose, onSaved }) => {
   const [project, setProject] = useState(projects[0]?.name ?? '');
   const [err, setErr] = useState<string | null>(null);
   return (
@@ -1096,7 +1096,7 @@ const PolicySummary: React.FC<{ policies?: ProjectPolicies; memories: number }> 
   );
 };
 
-const LifecycleModal: React.FC<{
+export const LifecycleModal: React.FC<{
   action: 'archive' | 'unarchive' | 'delete';
   project: ProjectRow;
   onClose: () => void;
@@ -1147,10 +1147,10 @@ const LifecycleModal: React.FC<{
         <li>
           access for its <b>{fmtInt(project.members)}</b> {project.members === 1 ? 'member' : 'members'} and any linked teams;
         </li>
-        <li>the project name disappears from the current demo session.</li>
+        <li>the name: a new project can never be called {project.name}.</li>
       </ul>
       <p style={{ margin: '0 0 12px' }}>
-        This removes the project from the current demo session; refresh to restore the sample.{' '}
+        The dashboard cannot undo it.{' '}
         {project.archived ? 'The project is archived already: members can still read it until you delete it.' : <b>To keep the memories readable, archive the project instead.</b>}
       </p>
       <div className="f">

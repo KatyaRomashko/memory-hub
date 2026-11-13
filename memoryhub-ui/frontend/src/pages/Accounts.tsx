@@ -20,7 +20,8 @@ const Accounts: React.FC = () => {
   const { me } = useApp();
   const [tab, setTab] = useState<Tab>('people');
   const { data, error, loading, reload } = useApi<AccountsResponse>(() => api.accounts(), []);
-  const [inviteOpen, setInviteOpen] = useState(false);
+  // Tenant overview › Invite users links here with ?invite=1.
+  const [inviteOpen, setInviteOpen] = useState(() => new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('invite') === '1');
   const [created, setCreated] = useState<InviteCreated | null>(null);
 
   const change = async (a: AccountRow, body: { status?: 'active' | 'disabled'; role?: 'admin' | 'user' }, done: string) => {
@@ -39,8 +40,8 @@ const Accounts: React.FC = () => {
   return (
     <>
       <PageHeader
-        title="Accounts & sign-up"
-        description="Dashboard accounts for people. Agents and service identities live under Users & agents. Admins manage accounts; they never read personal memories."
+        title="Users & access"
+        description="Dashboard accounts for people. Agents and service identities live under Agents & identities. Admins manage accounts; they never read personal memories."
         actions={
           <button type="button" className="btn bp" onClick={() => setInviteOpen(true)}>
             <Icon.Plus />

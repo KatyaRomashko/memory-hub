@@ -16,16 +16,19 @@ const list = (v: string | null) => (v ? v.split(',').filter(Boolean) : []);
 const COLUMNS = ['scope', 'entities', 'owner', 'weight', 'version', 'branches', 'relevant', 'updated'] as const;
 type Column = (typeof COLUMNS)[number];
 const COLUMN_LABEL: Record<Column, string> = { scope: 'Scope', entities: 'Entities', owner: 'Owner', weight: 'Weight', version: 'Ver.', branches: 'Branches', relevant: 'Relevant until', updated: 'Updated' };
-// v3: adds 'Relevant until' (QA 2026-11-10); saved v2 choices would hide it.
-const COLS_KEY = 'memoryhub.browser.columns.v3';
+// v4 (Nov 2026): Relevant until and Updated are on for everyone again; older saved choices would hide them.
+const COLS_KEY = 'memoryhub.browser.columns.v5';
 
-const readCols = (): Column[] => {
+/** Moderators work on scope, owner, weight and dates; entities and branches are one click away in Columns. */
+const ADMIN_DEFAULT: Column[] = ['scope', 'owner', 'weight', 'relevant', 'updated'];
+const readCols = (admin = false): Column[] => {
+  const fallback = admin ? [...ADMIN_DEFAULT] : [...COLUMNS];
   try {
     const raw = window.localStorage.getItem(COLS_KEY);
     const parsed = raw ? (JSON.parse(raw) as Column[]) : null;
-    return parsed?.length ? parsed : [...COLUMNS];
+    return parsed?.length ? parsed : fallback;
   } catch {
-    return [...COLUMNS];
+    return fallback;
   }
 };
 
@@ -36,6 +39,15 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   const grant = me?.access?.break_glass ?? null;
   const p = route.params;
   const view: 'table' | 'graph' | 'timeline' = p.get('view') === 'graph' ? 'graph' : p.get('view') === 'timeline' ? 'timeline' : 'table';
+  // Platform admins: the table is the page; graph and timeline open on their own page.
+  useEffect(() => {
+    if (isAdmin && view !== 'table') {
+      const next = new URLSearchParams(p);
+      next.set('view', view);
+      navigate('/graph', next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, view]);
   // Old links drew time inside the graph; it is its own view now.
   useEffect(() => {
     if (p.get('layout') === 'timeline') navigate('/memories', { ...Object.fromEntries(p), layout: '', view: 'timeline' }, { replace: true });
@@ -86,7 +98,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
   useEffect(() => setQuery(state.q), [state.q]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   useEffect(() => setSelected(new Set()), [key]);
-  const [columns, setColumns] = useState<Column[]>(readCols);
+  const [columns, setColumns] = useState<Column[]>(() => readCols(isAdmin));
   const [moreWriters, setMoreWriters] = useState(false);
   const [moreDomains, setMoreDomains] = useState(false);
   const [modal, setModal] = useState<null | 'write' | 'weight' | 'relate' | 'promote' | 'delete' | 'quarantine'>(null);
@@ -189,10 +201,21 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
         }
         actions={
           <>
-            {view === 'table' && (
-              <a className="btn bg" href={api.exportUrl(params)} download aria-disabled={standby}>
-                {isAdmin ? 'Export metadata' : 'Export JSONL'}
+            {isAdmin && (
+              <a className="btn bs" href={buildHash('/graph', Object.fromEntries([...new URLSearchParams(p)].filter(([k]) => !['view', 'page', 'sel'].includes(k))))}>
+                Open graph (admin scopes)
               </a>
+            )}
+            {view === 'table' && (
+              <a className={`btn ${isAdmin ? 'bs' : 'bg'}`} href={api.exportUrl(params)} download aria-disabled={standby}>
+                {isAdmin ? 'Export metadata CSV' : 'Export JSONL'}
+              </a>
+            )}
+            {isAdmin && (
+              <button type="button" className="btn bp" onClick={() => setModal('write')}>
+                <Icon.Plus />
+                Write org memory
+              </button>
             )}
             {!isAdmin && me?.labs && (
               <button type="button" className="btn bg" onClick={() => setDocOpen(true)}>
@@ -222,6 +245,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 ]}
               />
             )}
+            {!isAdmin && (
             <div className="viewtoggle">
               <span className="sm muted">View</span>
               <div className="seg lg" role="group" aria-label="View as">
@@ -249,6 +273,7 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                 </button>
               </div>
             </div>
+            )}
           </div>
         }
       />
@@ -690,16 +715,10 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                           </td>
                           <td style={{ maxWidth: 440, minWidth: 300 }}>
                             {m.redacted ? (
-                              <div>
-                                <span className="redact">
-                                  <LockIcon />
-                                  Content hidden
-                                </span>{' '}
-                                <a href={memoryHref(m.id)} className="sm">
-                                  Metadata
-                                </a>
-                                <div className="rbar" aria-hidden="true" style={{ width: `${40 + (parseInt(m.id.slice(0, 2), 16) % 55)}%` }} />
-                              </div>
+                              <a href={memoryHref(m.id)} className="hidden-box lg link-plain" title="Open the metadata view">
+                                <Icon.EyeOff size={18} />
+                                {m.scope === 'user' ? 'Personal content hidden' : 'Content hidden'}
+                              </a>
                             ) : (
                               <a href={memoryHref(m.id)} style={{ fontWeight: 500, textDecoration: 'none' }}>
                                 {m.content_preview}
@@ -712,16 +731,33 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                                   {d}
                                 </span>
                               ))}
-                              {m.open_contradictions > 0 && <span className="lbl s-role">⚠ contradicted ×{m.open_contradictions}</span>}
-                              {m.near_duplicate !== null && <span className="lbl s-role">⚠ near-duplicate {m.near_duplicate.toFixed(2)}</span>}
-                              {m.status !== 'active' && <span className="lbl g">{m.status}</span>}
+                              {(m.flags ?? []).map((f) => (
+                                <span key={f.label} className={`lbl ${f.kind === 'duplicate' ? 'ylw' : 'red'}`}>
+                                  {f.label}
+                                </span>
+                              ))}
+                              {!m.flags?.some((f) => f.kind === 'conflict') && m.open_contradictions > 0 && (
+                                <span className="lbl red">{m.open_contradictions === 1 ? 'open contradiction' : `${m.open_contradictions} open contradictions`}</span>
+                              )}
+                              {!m.flags?.some((f) => f.kind === 'duplicate') && m.near_duplicate !== null && <span className="lbl ylw">near-duplicate {m.near_duplicate.toFixed(2)}</span>}
+                              {m.status === 'quarantined' && !m.flags?.length && <span className="lbl red">quarantined</span>}
+                              {m.status !== 'active' && m.status !== 'quarantined' && <span className="lbl g">{m.status}</span>}
                               {!m.is_current && state.tab === 'all' && <span className="lbl g">v{m.version} · superseded</span>}
                               {m.score !== null && <span className="mono muted">score {m.score.toFixed(2)}</span>}
                             </div>
                           </td>
                           {columns.includes('scope') && (
                             <td>
-                              <ScopeLabel scope={m.scope} />
+                              {m.redacted ? (
+                                <ScopeLabel scope={m.scope}>
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                    <LockIcon size={12} />
+                                    {scopeMeta(m.scope).label}
+                                  </span>
+                                </ScopeLabel>
+                              ) : (
+                                <ScopeLabel scope={m.scope} />
+                              )}
                             </td>
                           )}
                           {columns.includes('entities') && (
@@ -785,8 +821,14 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
                             </td>
                           )}
                           {columns.includes('updated') && (
-                            <td className="sm muted" style={{ whiteSpace: 'nowrap' }} title={new Date(m.updated_at).toLocaleString()}>
-                              {fmtRelative(state.tab === 'deleted' && m.deleted_at ? m.deleted_at : m.updated_at)}
+                            <td className="sm muted" style={{ minWidth: 96 }} title={new Date(m.updated_at).toLocaleString()}>
+                              {state.tab === 'deleted' && m.deleted_at ? (
+                                <>deleted<br />{fmtRelative(m.deleted_at).toLowerCase()}</>
+                              ) : m.version > 1 || new Date(m.updated_at).getTime() - new Date(m.created_at).getTime() > 1000 ? (
+                                fmtRelative(m.updated_at)
+                              ) : (
+                                <>created<br />{fmtRelative(m.created_at).toLowerCase()}</>
+                              )}
                             </td>
                           )}
                           <td>
@@ -899,7 +941,14 @@ const Memories: React.FC<{ route: HashRoute }> = ({ route }) => {
       </div>
 
       {docOpen && <UploadDocumentModal onClose={() => setDocOpen(false)} />}
-      {modal === 'write' && <WriteMemoryModal onClose={() => setModal(null)} onSaved={() => reload()} />}
+      {modal === 'write' && (
+        <WriteMemoryModal
+          onClose={() => setModal(null)}
+          onSaved={() => reload()}
+          title={isAdmin ? 'Write org memory' : undefined}
+          initialScope={isAdmin ? 'organizational' : undefined}
+        />
+      )}
       {modal === 'relate' && <RelationshipModal sourceIds={ids} onClose={() => setModal(null)} onDone={reload} />}
       {modal === 'weight' && (
         <Modal

@@ -179,6 +179,17 @@ export interface Overview {
     /** Open contradictions on records the viewer can read (newest first). */
     items?: OverviewContradiction[];
   };
+  /** Admin: limits and governance work waiting; every field optional on older backends. */
+  governance?: {
+    storage_quota_pct?: number | null;
+    storage_quota_limit?: number | null;
+    indexing_backlog?: number | null;
+    indexing_failed?: number | null;
+    policy_blocks_7d?: number | null;
+    quarantined?: number | null;
+    pending_hard_deletes?: number | null;
+    incident_grants?: number | null;
+  };
   /** Per-container breakdown for the viewer: personal, each project, organizational… */
   my_scopes?: OverviewScopeRow[];
   approvals: { enterprise_pending: number; pending_total: number };
@@ -270,6 +281,8 @@ export interface MemoryRow {
   /** Admins only: content, domains and entity names were withheld. */
   redacted?: boolean;
   entity_count?: number;
+  /** Problems to show on the row: a policy hit (PII, secret), a conflict with a rule, a near-duplicate. */
+  flags?: { kind: 'pii' | 'secret' | 'policy' | 'conflict' | 'duplicate'; label: string }[];
 }
 
 export interface EntityRef {
@@ -543,6 +556,8 @@ export interface ProjectRow {
   archived_at?: string | null;
   archived_by?: string | null;
   policies?: ProjectPolicies;
+  /** Project owner, when the backend tracks one (else the creator). */
+  owner?: string | null;
 }
 
 export interface ProjectPolicies {
@@ -1096,6 +1111,8 @@ export interface MemoryUsage {
 
 export interface UsageSummary extends MemoryUsage {
   memories_served: number;
+  /** Tenant-wide use rate split by kind of agent; optional on older backends. */
+  by_kind?: { user_agents: number | null; service_agents: number | null } | null;
   skipped_most: { id: string; stub: string; scope: Scope; weight: number; served: number; used: number; skipped: number; use_rate: number | null; redacted?: boolean }[];
 }
 
