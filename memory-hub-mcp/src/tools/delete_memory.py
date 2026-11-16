@@ -21,6 +21,8 @@ from memoryhub_core.services.exceptions import (
     MemoryAccessDeniedError,
     MemoryAlreadyDeletedError,
     MemoryNotFoundError,
+    ProjectArchivedError,
+    ProjectDeletedError,
 )
 from memoryhub_core.services.memory import delete_memory as svc_delete_memory
 from memoryhub_core.services.memory import read_memory as _read_memory
@@ -240,6 +242,8 @@ async def delete_memory(
             f"Memory {memory_id} was deleted by another caller during this "
             "operation. No further action needed."
         ) from None
+    except (ProjectArchivedError, ProjectDeletedError) as exc:
+        raise ToolError(str(exc)) from exc
     except MemoryAccessDeniedError as exc:
         raise ToolError(f"Access denied: {exc.reason}") from None
     finally:

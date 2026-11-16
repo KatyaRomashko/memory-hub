@@ -36,6 +36,11 @@ from memoryhub_core.services.exceptions import (
     MemoryNotFoundError,
 )
 from memoryhub_core.services.pattern import PatternSignal, detect_patterns
+from memoryhub_core.services.project import (
+    assert_project_writable,
+    project_write_policies,
+    relevant_until_from_policies,
+)
 from memoryhub_core.services.rerank import (
     RERANK_POOL_SIZE,
     RerankerService,
@@ -104,7 +109,27 @@ async def create_memory(
 
     Storage is independent: content exceeding ``s3_threshold_bytes`` goes to
     S3 (if configured), otherwise stays inline in PostgreSQL.
+
+    Project-scoped writes follow the project's lifecycle and policies (#671):
+    archived and deleted projects refuse them (``ProjectArchivedError`` /
+    ``ProjectDeletedError``), ``max_memories`` caps new root memories
+    (``ProjectQuotaExceededError``), and ``default_weight`` / ``ttl_days`` fill
+    in ``weight`` and ``relevant_until`` when the caller did not set them.
     """
+    if data.scope == "project" and data.scope_id:
+        policies = await project_write_policies(
+            session, data.scope_id, tenant_id, new_memory=data.parent_id is None
+        )
+        changes: dict = {}
+        if "weight" not in data.model_fields_set and policies.get("default_weight") is not None:
+            changes["weight"] = policies["default_weight"]
+        if data.relevant_until is None and data.parent_id is None:
+            until = relevant_until_from_policies(policies)
+            if until is not None:
+                changes["relevant_until"] = until
+        if changes:
+            data = data.model_copy(update=changes)
+
     app_settings = AppSettings()
     content_bytes = len(data.content.encode("utf-8"))
     embedding_max_chars = embedding_service.max_tokens * 4
@@ -505,6 +530,10 @@ async def update_memory(
     if old_node is None:
         raise MemoryNotFoundError(memory_id)
 
+    if old_node.scope == "project" and old_node.scope_id:
+        # Archived projects are read-only (#671).
+        await assert_project_writable(session, old_node.scope_id)
+
     if not old_node.is_current:
         # Find the current version to include in the error
         current_stmt = (
@@ -756,6 +785,10 @@ async def delete_memory(
 
     if node.deleted_at is not None:
         raise MemoryAlreadyDeletedError(memory_id)
+
+    if node.scope == "project" and node.scope_id:
+        # Archived projects are read-only (#671).
+        await assert_project_writable(session, node.scope_id)
 
     now = datetime.now(UTC)
 

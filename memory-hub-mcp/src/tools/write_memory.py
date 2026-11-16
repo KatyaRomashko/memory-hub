@@ -39,7 +39,10 @@ from memoryhub_core.services.exceptions import (
     EmbeddingServiceUnavailableError,
     MemoryAccessDeniedError,
     MemoryNotFoundError,
+    ProjectArchivedError,
+    ProjectDeletedError,
     ProjectInviteOnlyError,
+    ProjectQuotaExceededError,
 )
 from memoryhub_core.services.memory import create_fact_children, create_memory
 from memoryhub_core.services.project import ensure_project_membership
@@ -191,14 +194,15 @@ async def write_memory(
         ),
     ] = None,
     weight: Annotated[
-        float,
+        float | None,
         Field(
             description=(
                 "Injection priority from 0.0 to 1.0. High-weight (0.8-1.0) "
-                "memories get full content injected. Default 0.7."
+                "memories get full content injected. Default 0.7, or the "
+                "project's default_weight policy for project-scoped memories."
             ),
         ),
-    ] = 0.7,
+    ] = None,
     parent_id: Annotated[
         str | None,
         Field(
@@ -460,7 +464,7 @@ async def write_memory(
                         existing = set(user.get("project_memberships", []))
                         existing.add(project_id)
                         user["project_memberships"] = sorted(existing)
-            except ProjectInviteOnlyError as exc:
+            except (ProjectInviteOnlyError, ProjectArchivedError, ProjectDeletedError) as exc:
                 raise ToolError(str(exc)) from exc
             finally:
                 await release_db_session(gen_for_project)
@@ -566,7 +570,6 @@ async def write_memory(
         create_kwargs = dict(
             content=content,
             scope=scope,
-            weight=weight,
             owner_id=owner_id,
             actor_id=actor_id,
             driver_id=resolved_driver,
@@ -577,6 +580,9 @@ async def write_memory(
             scope_id=scope_id_value,
             relevant_until=parsed_relevant_until,
         )
+        if weight is not None:
+            # Left out, the schema default (0.7) or the project's default_weight applies.
+            create_kwargs["weight"] = weight
         if content_type is not None:
             create_kwargs["content_type"] = content_type
         if chunk_target_tokens is not None:
@@ -721,6 +727,8 @@ async def write_memory(
             f"Parent memory {parent_id} not found. Check the parent_id — "
             "it may have been deleted or you may not have access to it."
         ) from None
+    except (ProjectArchivedError, ProjectDeletedError, ProjectQuotaExceededError) as exc:
+        raise ToolError(str(exc)) from exc
     except MemoryAccessDeniedError as exc:
         raise ToolError(f"Access denied: {exc.reason}") from exc
     except EmbeddingContentTooLargeError as exc:

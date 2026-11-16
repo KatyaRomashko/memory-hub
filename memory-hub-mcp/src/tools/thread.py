@@ -12,6 +12,11 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from memoryhub_core.services.exceptions import (
+    ProjectArchivedError,
+    ProjectDeletedError,
+    ProjectInviteOnlyError,
+)
 from src.core.app import mcp
 
 logger = logging.getLogger(__name__)
@@ -180,6 +185,8 @@ async def _dispatch_create(scope, opts, ctx):
                 session_proj, scope_id_value, caller_id, tenant,
             )
             await session_proj.commit()
+        except (ProjectInviteOnlyError, ProjectArchivedError, ProjectDeletedError) as exc:
+            raise ToolError(str(exc)) from exc
         finally:
             await release_db_session(gen_proj)
 

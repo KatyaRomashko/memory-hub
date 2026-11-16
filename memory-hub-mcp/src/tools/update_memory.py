@@ -21,6 +21,8 @@ from memoryhub_core.services.exceptions import (
     MemoryAccessDeniedError,
     MemoryNotCurrentError,
     MemoryNotFoundError,
+    ProjectArchivedError,
+    ProjectDeletedError,
 )
 from memoryhub_core.services.memory import read_memory as _read_memory
 from memoryhub_core.services.memory import update_memory as svc_update_memory
@@ -237,6 +239,8 @@ async def update_memory(
             f"Memory {memory_id} is not current. "
             f"Current version is {exc.current_id}. Update that instead."
         ) from None
+    except (ProjectArchivedError, ProjectDeletedError) as exc:
+        raise ToolError(str(exc)) from exc
     except MemoryAccessDeniedError as exc:
         raise ToolError(f"Access denied: {exc.reason}") from None
     except EmbeddingContentTooLargeError as exc:

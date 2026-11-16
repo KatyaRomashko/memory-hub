@@ -109,6 +109,41 @@ class ProjectInviteOnlyError(Exception):
         super().__init__(f"Project '{project_id}' requires an invitation. Contact a project admin to be added.")
 
 
+class ProjectArchivedError(Exception):
+    """Raised when writing to, or joining, an archived (read-only) project."""
+
+    def __init__(self, project_id: str) -> None:
+        self.project_id = project_id
+        super().__init__(
+            f"Project '{project_id}' is archived and read-only. Its memories can still be read; "
+            "ask a project admin to unarchive it before writing."
+        )
+
+
+class ProjectDeletedError(Exception):
+    """Raised when writing to a deleted project. Deleted project names are never reused."""
+
+    def __init__(self, project_id: str) -> None:
+        self.project_id = project_id
+        super().__init__(f"Project '{project_id}' was deleted. Its name cannot be reused; choose another project.")
+
+
+class ProjectQuotaExceededError(Exception):
+    """Raised when a new memory would exceed the project's max_memories policy."""
+
+    def __init__(self, project_id: str, limit: int) -> None:
+        self.project_id = project_id
+        self.limit = limit
+        super().__init__(
+            f"Project '{project_id}' has reached its limit of {limit} memories. Update or delete existing "
+            "project memories, or ask a project admin to raise the limit."
+        )
+
+
+class InvalidProjectPolicyError(ValueError):
+    """Raised when a project policy is unknown or out of range."""
+
+
 class ProjectNotFoundError(Exception):
     """Raised when a project does not exist."""
 
