@@ -9,14 +9,17 @@ What exists (migration 012, shipped 2026-04-15):
 - `manage_project` MCP tool with `action="list"` and `filter=mine/all`
 - `manage-memberships.py` script does raw SQL inserts, bypassing any future service-layer guards
 
-What is missing:
-- No HTTP API for project CRUD — projects only spring into existence on first write
-- No MCP tool for explicit project creation or update
-- No invite management path — adding members to invite-only projects requires direct DB access via `manage-memberships.py`
+What exists (migration 033, #671):
+- `archived_at`/`archived_by`, `deleted_at`/`deleted_by` and a JSON `policies` column on `projects`
+- Service functions in `services/project.py`: `update_project`, `archive_project`, `unarchive_project`, `delete_project` (cascading soft delete), `update_member_role`, `list_tenant_projects`, `validate_policies`
+- Write-path guards in `services/memory.py`: archived and deleted projects refuse create/update/delete; `max_memories`, `default_weight` and `ttl_days` apply on create. They act only when a `projects` row exists, so deployments without project isolation behave as before
+- BFF `/api/projects` (see Admin API), with caller identity from the oauth-proxy headers
+
+What is still missing:
+- MCP tools for explicit project creation, update and membership (the BFF API covers the dashboard)
 - No ORM `relationship()` / `back_populates` pair between `Project` and `ProjectMembership` — the FK is modeled, but `project.memberships` ORM navigation is not available; membership queries go through `ProjectMembership` directly.
-- No FK from `memory_nodes.scope_id` to `projects.name` — project deletion leaves orphan scope references
-- No project-level policies (TTL defaults, memory quotas)
-- No projects panel in `memoryhub-ui`
+- No FK from `memory_nodes.scope_id` to `projects.name` (see Referential Integrity)
+- The Projects panel in `memoryhub-ui` is not yet wired to the API
 
 ## Problem Statement
 
@@ -57,51 +60,37 @@ Option 1 is the correct default: deleting a project deletes its data. Operators 
 
 The BFF (`memoryhub-ui/backend/src/routes.py`) gains a `/api/projects` resource following the same pattern as `/api/rules` (direct DB access, tenant-scoped) and `/api/clients` (proxied to auth service with `_admin_request`). Projects live in the MemoryHub DB directly, so no proxy needed.
 
-**Endpoints:**
+**Endpoints** (implemented in `memoryhub-ui/backend/src/projects.py`):
 
 ```
-GET    /api/projects                  List projects in the current tenant
-POST   /api/projects                  Create a project explicitly
-GET    /api/projects/{name}           Get project detail
-PATCH  /api/projects/{name}           Update description, invite_only, or archive
-DELETE /api/projects/{name}           Soft-delete (cascades to project memories)
+GET    /api/projects                  List projects (?archived=, ?q=, ?sort=name|created_at|-created_at)
+POST   /api/projects                  Create a project; the caller becomes its admin. Optional policies and members
+GET    /api/projects/{name}           Project detail with members
+PATCH  /api/projects/{name}           Update description, invite_only or policies (409 while archived)
+POST   /api/projects/{name}/archive   Make the project read-only
+POST   /api/projects/{name}/unarchive Make it writable again
+DELETE /api/projects/{name}           Soft-delete with its memories. 409 {message, memory_count} unless ?force=true or empty
 
-GET    /api/projects/{name}/members   List members
-POST   /api/projects/{name}/members   Add a member (required for invite-only projects)
-DELETE /api/projects/{name}/members/{user_id}  Remove a member
+GET    /api/projects/{name}/members            List members
+POST   /api/projects/{name}/members            Add a member (409 while archived)
+PATCH  /api/projects/{name}/members/{user_id}  Change role (409 when demoting the last admin)
+DELETE /api/projects/{name}/members/{user_id}  Remove a member, or leave (409 for the last admin)
 ```
 
-Request/response schemas follow the pattern in `memoryhub-ui/backend/src/schemas.py`. Key schemas:
+Project names are slugs: `^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most 63 characters. Names are never reused, deleted projects included. Policies are `ttl_days` (1–3650), `max_memories` (1–10,000,000) and `default_weight` (0.0–1.0); on PATCH they merge into the current ones and a field sent as `null` clears it.
 
-```python
-class CreateProjectRequest(BaseModel):
-    name: str                     # slug; validated: lowercase alphanumeric + hyphens
-    description: str | None = None
-    invite_only: bool = False
+**Caller identity.** The oauth-proxy sidecar forwards the signed-in user (`X-Forwarded-Preferred-Username` / `X-Forwarded-User`) and groups (`X-Forwarded-Groups`). The BFF trusts them only with `MEMORYHUB_UI_TRUST_PROXY_HEADERS=true`; without a user it answers 401. Platform admins are listed in `MEMORYHUB_UI_ADMIN_USERS` or belong to `MEMORYHUB_UI_ADMIN_GROUP` (default `memoryhub-admins`). The group check needs a proxy that sends `X-Forwarded-Groups`; the `ose-oauth-proxy` in `memoryhub-ui/openshift.yaml` does not, so list admins by name there. Turn trust on only when port 8080 is reachable solely through the proxy. With trust off, every request acts as `MEMORYHUB_UI_OPERATOR_NAME` (default `dashboard`) with platform-admin rights, as the single-operator dashboard always has.
 
-class UpdateProjectRequest(BaseModel):
-    description: str | None = None
-    invite_only: bool | None = None
-    archived: bool | None = None  # True to archive, False to unarchive
+**Authorization.** Everything is scoped to `settings.ui_tenant_id`; other tenants' projects answer 404.
 
-class AddMemberRequest(BaseModel):
-    user_id: str
-    role: Literal["member", "admin"] = "member"
+| Action | Who |
+|---|---|
+| List / view | Anyone for open projects; invite-only ones only for members, the creator and platform admins (others get 404) |
+| Create | Any signed-in user (self-service) |
+| Update, archive, unarchive, delete, add/change/remove members | Platform admin, the project's creator, or a project admin |
+| Leave | Any member, unless they are the last admin |
 
-class ProjectResponse(BaseModel):
-    name: str
-    description: str | None
-    invite_only: bool
-    archived_at: datetime | None
-    created_at: datetime
-    created_by: str
-    member_count: int
-    memory_count: int
-```
-
-**Authorization.** The BFF admin API is scoped to `settings.ui_tenant_id` (same as rules, contradictions). Cross-tenant project operations return 404. The `DELETE /api/projects/{name}` endpoint requires the project to have zero active memories or for the caller to confirm cascade deletion — implement this as a `?force=true` query parameter that triggers the cascade.
-
-**Service layer.** Add `create_project`, `update_project`, `archive_project`, and `delete_project` functions to `services/project.py`. The delete function must atomically: soft-delete all project-scoped `memory_nodes` where `scope_id = project_name`, then soft-delete the project row itself. Both operations in a single transaction.
+**Service layer.** `delete_project` soft-deletes every project memory (all versions and branches) and the project row in one transaction. Deleted projects drop out of membership lookups at once, so members lose access immediately.
 
 ### MCP Tools
 
@@ -154,8 +143,8 @@ JSONB is sufficient at this scale; a separate table is over-engineering until mu
 }
 ```
 
-- `ttl_days` — if set, project-scoped memories inherit this as their default `expires_at` at write time (offset from `created_at`). Overrides the system default. `null` means no expiry.
-- `max_memories` — quota cap on active memories for the project. The write path checks count before inserting; the error is surfaced to the MCP caller as a structured `MemoryQuotaExceeded` error. `null` means no cap.
+- `ttl_days` — if set, new project-scoped memories without an explicit `relevant_until` get one this many days after the write (offset from `created_at`). Overrides the system default. `null` means no expiry.
+- `max_memories` — quota cap on active memories for the project. The write path checks count before inserting; it counts current, non-deleted root memories (branches and old versions do not count) and the MCP caller gets a `ToolError` from `ProjectQuotaExceededError`. `null` means no cap.
 - `default_weight` — default relevance weight for new memories in this project (range 0.0–1.0). Useful for low-priority reference projects that should not dominate search results.
 
 The `enrollment_policy` field (`invite_only`) already exists as a top-level column and stays there for indexed lookup performance.
@@ -209,7 +198,8 @@ PatternFly components: `Table`, `Toolbar`, `Drawer`, `Modal` (for delete confirm
 
 **Depends on:**
 - Migration 012 (`projects` table) — already shipped
-- Migration 013 (`fk_memory_nodes_scope_project` + `archived_at`/`archived_by`/`policies` columns) — new
+- Migration 033 (`archived_at`/`archived_by`/`deleted_at`/`deleted_by`/`policies` columns) — shipped with #671
+- `fk_memory_nodes_scope_project` — not yet implemented
 
 **Depended on by:**
 - `manage-memberships.py` — remains functional but superseded for add/remove operations by the membership API; the script should be updated to call the HTTP API rather than direct SQL once the API is deployed, to ensure service-layer guards apply

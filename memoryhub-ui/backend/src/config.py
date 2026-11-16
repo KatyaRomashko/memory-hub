@@ -44,6 +44,18 @@ class Settings(BaseSettings):
     # the authenticated user. Default is "default" to match the Phase 1
     # server_default on memory_nodes.tenant_id.
     ui_tenant_id: str = "default"
+    # Caller identity for project management (#671). The oauth-proxy sidecar
+    # forwards the signed-in user in X-Forwarded-User / -Preferred-Username
+    # (and groups in X-Forwarded-Groups). Trust those headers only when the
+    # BFF is reachable solely through the proxy. With trust off, every request
+    # acts as ui_operator_name with platform-admin rights, which matches the
+    # single-operator dashboard this BFF has served so far.
+    ui_trust_proxy_headers: bool = False
+    # Comma-separated usernames treated as platform admins.
+    ui_admin_users: str = ""
+    # Members of this OpenShift group are platform admins.
+    ui_admin_group: str = "memoryhub-admins"
+    ui_operator_name: str = "dashboard"
 
     @property
     def database_url(self) -> str:

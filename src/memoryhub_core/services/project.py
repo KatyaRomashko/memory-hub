@@ -493,6 +493,7 @@ def project_summary(p: Project, *, memory_count: int = 0, member_count: int = 0)
         "invite_only": p.invite_only,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "created_by": p.created_by,
+        "archived": p.archived_at is not None,
         "archived_at": p.archived_at.isoformat() if p.archived_at else None,
         "archived_by": p.archived_by,
         "policies": dict(p.policies or {}),

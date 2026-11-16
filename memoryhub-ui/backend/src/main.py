@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import get_settings
+from src.projects import router as projects_router
 from src.routes import router
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(projects_router)
     app.include_router(router)
 
     # Serve the compiled frontend if dist/ exists (single-container deployment)

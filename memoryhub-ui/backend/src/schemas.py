@@ -1,8 +1,9 @@
 """Pydantic response models for the MemoryHub UI BFF API."""
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GraphNode(BaseModel):
@@ -225,3 +226,87 @@ class ContradictionStatsResponse(BaseModel):
 
 class UpdateContradictionRequest(BaseModel):
     resolved: bool
+
+
+# ---------------------------------------------------------------------------
+# Projects (#671)
+# ---------------------------------------------------------------------------
+
+# Lowercase slug: letters, digits and single hyphens, like a Kubernetes name.
+PROJECT_NAME_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+USER_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._@:+-]*$"
+
+ProjectRole = Literal["member", "admin"]
+
+
+class ProjectPolicies(BaseModel):
+    """Per-project limits. On update, a field sent as null clears that policy."""
+
+    ttl_days: int | None = Field(default=None, ge=1, le=3650)
+    max_memories: int | None = Field(default=None, ge=1, le=10_000_000)
+    default_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ProjectMemberInput(BaseModel):
+    user_id: str = Field(min_length=1, max_length=255, pattern=USER_ID_PATTERN)
+    role: ProjectRole = "member"
+
+
+class CreateProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=63, pattern=PROJECT_NAME_PATTERN)
+    description: str | None = Field(default=None, max_length=2000)
+    invite_only: bool = False
+    policies: ProjectPolicies | None = None
+    members: list[ProjectMemberInput] = Field(default_factory=list, max_length=200)
+
+
+class UpdateProjectRequest(BaseModel):
+    description: str | None = Field(default=None, max_length=2000)
+    invite_only: bool | None = None
+    policies: ProjectPolicies | None = None
+
+
+class UpdateMemberRequest(BaseModel):
+    role: ProjectRole
+
+
+class ProjectResponse(BaseModel):
+    name: str
+    description: str | None
+    invite_only: bool
+    created_at: datetime | None
+    created_by: str
+    archived: bool
+    archived_at: datetime | None
+    archived_by: str | None
+    policies: ProjectPolicies
+    member_count: int
+    memory_count: int
+    # The caller's view of the project.
+    my_role: ProjectRole | None
+    can_manage: bool
+    can_delete: bool
+
+
+class ProjectMemberResponse(BaseModel):
+    user_id: str
+    role: ProjectRole
+    joined_at: datetime | None
+    joined_by: str | None
+
+
+class ProjectDetailResponse(ProjectResponse):
+    members: list[ProjectMemberResponse]
+
+
+class ProjectListResponse(BaseModel):
+    items: list[ProjectResponse]
+    total: int
+    # Any signed-in user may create a project (self-service).
+    can_create: bool
+
+
+class ProjectDeletedResponse(BaseModel):
+    project: str
+    memories_deleted: int
+    deleted_at: datetime
