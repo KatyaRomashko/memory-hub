@@ -15,6 +15,8 @@ export interface Me {
   email: string | null;
   initials: string;
   source: string;
+  /** MemoryHub Labs (Dreaming and other experimental pages). */
+  labs?: boolean;
   role: 'admin' | 'user';
   tenant_id: string;
   /** Admins: the scopes whose content stays hidden from them. */
@@ -771,54 +773,6 @@ export interface TeamRow {
 export interface TeamsResponse {
   items: TeamRow[];
   counts: { teams: number; people: number };
-}
-
-export type DreamKind = 'duplicates' | 'connections' | 'fading' | 'contradictions' | 'themes';
-
-export interface DreamInsight {
-  id: string;
-  kind: DreamKind;
-  title: string;
-  detail: string;
-  memories: { id: string; stub: string; scope: string; owner_id: string; weight: number; version: number; updated_at: string | null }[];
-  action: { type: 'merge' | 'link' | 'fade' | 'review' | 'consolidate'; [k: string]: unknown };
-  confidence: number | null;
-  status: 'proposed' | 'accepted' | 'dismissed';
-  result?: string;
-  auto?: boolean;
-}
-
-export interface DreamSettings {
-  schedule: 'nightly' | 'weekly' | 'off';
-  window: string;
-  auto: { connections: boolean; fading: boolean };
-  kinds: Record<DreamKind, boolean>;
-}
-
-export interface DreamReport {
-  id: string;
-  started_at: string;
-  duration_ms: number;
-  trigger: string;
-  reviewed: number;
-  insights: DreamInsight[];
-  counts: Partial<Record<DreamKind, number>>;
-}
-
-export interface DreamsResponse {
-  settings: DreamSettings;
-  last: DreamReport | null;
-  history: {
-    id: string;
-    started_at: string;
-    duration_ms: number;
-    trigger: string;
-    reviewed: number;
-    counts: Partial<Record<DreamKind, number>>;
-    accepted: number;
-    dismissed: number;
-    total: number;
-  }[];
 }
 
 export interface CampaignRow {
@@ -1684,4 +1638,57 @@ export interface SharedKnowledgeRecord {
 export interface SharedKnowledgeResponse {
   items: SharedKnowledgeRecord[];
   total: number;
+}
+
+/* Dreaming (#716, Labs) */
+export type DreamKind = 'duplicates' | 'connections' | 'fading' | 'contradictions' | 'themes';
+
+export interface DreamMemory {
+  id: string;
+  stub: string;
+  scope: string;
+  scope_id: string | null;
+  owner_id: string;
+  weight: number;
+  version: number;
+  updated_at: string | null;
+}
+
+export interface DreamInsight {
+  id: string;
+  kind: DreamKind;
+  title: string;
+  detail: string;
+  memories: DreamMemory[];
+  action: { type: 'merge' | 'link' | 'fade' | 'review' | 'consolidate'; [k: string]: unknown };
+  confidence: number | null;
+  status: 'proposed' | 'accepted' | 'dismissed';
+  result?: string;
+  auto?: boolean;
+  memory_id?: string;
+}
+
+export interface DreamSettings {
+  schedule: 'nightly' | 'weekly' | 'off';
+  /** HH:MM, UTC. */
+  window: string;
+  auto: { connections: boolean; fading: boolean };
+  kinds: Record<DreamKind, boolean>;
+  next_run_at: string | null;
+}
+
+export interface DreamReport {
+  id: string;
+  started_at: string;
+  duration_ms: number;
+  trigger: 'manual' | 'scheduled';
+  reviewed: number;
+  insights: DreamInsight[];
+  counts: Partial<Record<DreamKind, number>>;
+}
+
+export interface DreamsResponse {
+  settings: DreamSettings;
+  last: DreamReport | null;
+  history: (Omit<DreamReport, 'insights'> & { accepted: number; dismissed: number; total: number })[];
 }

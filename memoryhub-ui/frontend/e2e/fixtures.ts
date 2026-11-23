@@ -57,6 +57,12 @@ export const BFF_ROUTES: [string, RegExp][] = [
   // with the service key (403 for every person), so the dashboard must not call it.
   ['GET', /^\/api\/stats$/],
   ['GET', /^\/api\/users$/],
+  // Dreaming (#716, Labs)
+  ['GET', /^\/api\/dreams$/],
+  ['POST', /^\/api\/dreams\/run$/],
+  ['PATCH', /^\/api\/dreams\/settings$/],
+  ['POST', /^\/api\/dreams\/[^/]+\/insights\/[^/]+\/decision$/],
+  ['POST', /^\/api\/dreams\/[^/]+\/insights\/[^/]+\/consolidate$/],
 ];
 
 const now = '2026-11-18T12:00:00.000Z';
@@ -457,10 +463,39 @@ function respond(role: Role, method: string, path: string, url: URL, body: unkno
   if (path.endsWith('/rotate-secret')) return { client_id: 'claude-code-mchen', client_secret: 'sec_456', api_key: 'mh_456' };
   if (path.endsWith('/rotate-api-key')) return { client_id: 'claude-code-mchen', api_key: 'mh_789' };
   if (path.startsWith('/api/clients/')) return client(path.split('/')[3], 'user', (body as { active?: boolean } | undefined)?.active ?? true);
+  if (path === '/api/dreams') return dreams;
+  if (path === '/api/dreams/run') return dreamReport;
+  if (path === '/api/dreams/settings') return { ...dreams.settings, ...(body as object) };
+  if (path.endsWith('/decision') && path.startsWith('/api/dreams/'))
+    return { ...dreamReport.insights[0], status: (body as { decision: string }).decision === 'accept' ? 'accepted' : 'dismissed', result: 'Kept the newer memory; the older one now has weight 0.20.' };
+  if (path.endsWith('/consolidate')) return { ...dreamReport.insights[1], status: 'accepted', result: 'Consolidated memory written.', memory_id: memoryId };
   if (path === '/api/rules' && method === 'GET') return [rule('rule-sys', 'system', null), rule('rule-org', 'organizational', null), rule('rule-mine', 'user', 'mchen')];
   if (path.startsWith('/api/rules')) return method === 'DELETE' ? null : rule('rule-new', 'user', 'mchen');
   return {};
 }
+
+/* ---------------- Dreaming (#716) ---------------- */
+
+const dreamMem = (id: string, stub: string) => ({ id, stub, scope: 'user', scope_id: null, owner_id: 'mchen', weight: 0.8, version: 1, updated_at: now });
+
+const dreamReport = {
+  id: 'run-1',
+  started_at: now,
+  duration_ms: 420,
+  trigger: 'manual',
+  reviewed: 12,
+  insights: [
+    { id: 'dup-1', kind: 'duplicates', title: 'These two say nearly the same thing', detail: 'Keep the newer one.', memories: [dreamMem(memoryId, 'Gripper torque limit is 11.5 N·m'), dreamMem(otherMemoryId, 'Torque limit 11.5 N·m')], action: { type: 'merge', keep: memoryId, fade: otherMemoryId }, confidence: 0.97, status: 'proposed' },
+    { id: 'theme-1', kind: 'themes', title: '4 recent memories about robotics', detail: 'One consolidated memory.', memories: [dreamMem(memoryId, 'Robotics fact')], action: { type: 'consolidate', domain: 'robotics', draft: 'robotics: what we know\n- Robotics fact' }, confidence: null, status: 'proposed' },
+  ],
+  counts: { duplicates: 1, themes: 1 },
+};
+
+const dreams = {
+  settings: { schedule: 'nightly', window: '02:00', kinds: { duplicates: true, connections: true, fading: true, contradictions: true, themes: true }, auto: { connections: false, fading: false }, next_run_at: now },
+  last: dreamReport,
+  history: [{ ...dreamReport, insights: undefined, accepted: 0, dismissed: 0, total: 2 }],
+};
 
 export interface MockedBff {
   /** "METHOD /path" for every call to an endpoint the BFF does not serve. */

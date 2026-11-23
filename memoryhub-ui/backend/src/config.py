@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # the authenticated user. Default is "default" to match the Phase 1
     # server_default on memory_nodes.tenant_id.
     ui_tenant_id: str = "default"
+    # MemoryHub Labs (#716): Dreaming and other experimental pages.
+    ui_labs: bool = False
+    # Run due Dreaming schedules from the BFF itself (one pass per interval).
+    # Turn off when a CronJob runs `python -m src.dreams_adapter` instead.
+    ui_dream_scheduler: bool = True
+    ui_dream_scheduler_interval: int = 300
     # Human role assignments are deployment-owned. OAuth proxy authenticates
     # the username; a request header cannot assign an admin role.
     ui_admin_users: str = ""

@@ -1,7 +1,9 @@
 """FastAPI application factory for the MemoryHub UI BFF."""
 
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import get_settings
+from src.dreams_adapter import router as dreams_router
 from src.export_adapter import router as export_router
 from src.graph_adapters import router as graph_router
 from src.human_adapters import router as human_router
@@ -34,10 +37,26 @@ def create_app() -> FastAPI:
     if not cors_origins:
         cors_origins = ["*"]
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Dreaming schedules (#716, Labs): one pass per interval; safe with several replicas.
+        task = None
+        if settings.ui_labs and settings.ui_dream_scheduler:
+            from src.database import _get_session_factory
+            from src.dreams_adapter import scheduler_loop
+
+            task = asyncio.create_task(scheduler_loop(
+                _get_session_factory(settings), settings, settings.ui_dream_scheduler_interval))
+            logger.info("Dreaming scheduler on (every %ss)", settings.ui_dream_scheduler_interval)
+        yield
+        if task is not None:
+            task.cancel()
+
     app = FastAPI(
         title="MemoryHub UI BFF",
         description="BFF API for the MemoryHub dashboard",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     app.add_middleware(
@@ -54,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router)
     app.include_router(search_router)
     app.include_router(export_router)
+    app.include_router(dreams_router)
 
     # Serve the compiled frontend if dist/ exists (single-container deployment)
     if FRONTEND_DIST.is_dir():

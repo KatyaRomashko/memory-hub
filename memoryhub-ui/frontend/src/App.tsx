@@ -13,6 +13,7 @@ import Identities from '@/pages/Identities';
 import Memories from '@/pages/Memories';
 import MemoryDetail from '@/pages/MemoryDetail';
 import Overview from '@/pages/Overview';
+import Dreaming from '@/pages/Dreaming';
 import Review from '@/pages/Review';
 import Search from '@/pages/Search';
 import MyAgents from '@/pages/MyAgents';
@@ -49,6 +50,7 @@ const SCREENS: Record<string, Screen> = {
   '/projects': { nav: '/projects', title: 'Projects', render: (r) => <ByRole user={<MyProjects route={r} />} other={<AdminProjects route={r} />} /> },
   '/project': { nav: '/projects', title: 'Project', render: (r) => <ByRole user={<Redirect to="/projects" params={{ project: decodeURIComponent(r.path.slice(9)) }} />} other={<ProjectSettings route={r} />} /> },
   '/review': { nav: '/review', title: 'Contradictions', render: (r) => <Review route={r} /> },
+  '/dreaming': { nav: '/dreaming', title: 'Dreaming', render: () => <Dreaming /> },
   '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },
   '/identities': { nav: '/identities', title: 'Agents & identities', render: (r) => <ByRole user={<MyAgents route={r} />} other={<Identities route={r} />} /> },
   '/clients': { nav: '/clients', title: 'OAuth clients & keys', render: (r) => <Clients route={r} /> },
@@ -78,7 +80,7 @@ const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, ch
     navigate(moved.path, next, { replace: true });
   }, [moved, route.params]);
   if (moved) return null;
-  if (!me || canSee(nav, role)) return <>{children}</>;
+  if (!me || canSee(nav, role, Boolean(me.labs))) return <>{children}</>;
   return (
     <div className="body">
       <div className="card">
@@ -104,7 +106,7 @@ const DocTitle: React.FC<{ path: string; screen: Screen }> = ({ path, screen }) 
   const { role } = useApp();
   const label =
     path === screen.nav
-      ? navFor(role)
+      ? navFor(role, true)
           .flatMap((s) => s.items)
           .find((i) => i.path === screen.nav)?.label
       : undefined;

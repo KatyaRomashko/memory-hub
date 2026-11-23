@@ -203,3 +203,42 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await expect(page.getByText('Teams')).toHaveCount(0);
   expectClean(bff, errors);
 });
+
+/* ---------------- Dreaming (#716, Labs) ---------------- */
+
+const withLabs = (on: boolean) => (key: string, payload: unknown) => (key === 'GET /api/me' ? { ...(payload as object), labs: on } : payload);
+
+test('user: Dreaming is in the menu only with Labs', async ({ page }) => {
+  const bff = await mockBff(page, 'user', withLabs(false));
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Overview');
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Dreaming' })).toHaveCount(0);
+  await page.goto('/#/dreaming');
+  await expect(page.getByText('Only platform admins can open this')).toBeVisible();
+  expect(bff.calls).not.toContain('GET /api/dreams');
+  expectClean(bff, errors);
+});
+
+test('user: Dreaming merges a duplicate and writes a consolidated memory', async ({ page }) => {
+  const bff = await mockBff(page, 'user', withLabs(true));
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Dreaming' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Dreaming');
+  const dup = page.getByLabel('Duplicates: These two say nearly the same thing');
+  await dup.getByRole('button', { name: 'Merge' }).click();
+  await expect(page.getByText('Kept the newer memory; the older one now has weight 0.20.').first()).toBeVisible();
+  expect(bff.calls).toContain('POST /api/dreams/run-1/insights/dup-1/decision');
+
+  await page.getByLabel('Themes: 4 recent memories about robotics').getByRole('button', { name: 'Write summary' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Memory')).toHaveValue(/robotics: what we know/);
+  await dialog.getByRole('button', { name: 'Save as a personal memory' }).click();
+  await expect(page.getByText('Consolidated memory written. Curation rules applied as for any write.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/dreams/run-1/insights/theme-1/consolidate');
+
+  await page.getByRole('button', { name: 'Weekly' }).click();
+  expect(bff.calls).toContain('PATCH /api/dreams/settings');
+  expectClean(bff, errors);
+});

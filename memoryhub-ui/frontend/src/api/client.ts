@@ -31,6 +31,10 @@ import type {
   StatsResponse,
   UpdateClientPayload,
   UserRow,
+  DreamInsight,
+  DreamReport,
+  DreamSettings,
+  DreamsResponse,
 } from '@/types';
 
 const BASE = '/api';
@@ -179,6 +183,15 @@ export const api = {
     patch<{ id: string; name: string; entity_type: string; aliases: string[] }>(`/entities/${enc(id)}`, { name }),
   mergeEntity: (id: string, into: string, dryRun: boolean) =>
     post<EntityMergePreview>(`/entities/${enc(id)}/merge`, { into, dry_run: dryRun }),
+
+  /* Dreaming (#716, Labs). */
+  dreams: () => get<DreamsResponse>('/dreams'),
+  dreamNow: () => post<DreamReport>('/dreams/run'),
+  saveDreamSettings: (body: Partial<Omit<DreamSettings, 'next_run_at'>>) => patch<DreamSettings>('/dreams/settings', body),
+  decideInsight: (run: string, insight: string, decision: 'accept' | 'dismiss') =>
+    post<DreamInsight>(`/dreams/${enc(run)}/insights/${enc(insight)}/decision`, { decision }),
+  consolidateInsight: (run: string, insight: string, body: { content: string; scope?: 'user' | 'project'; scope_id?: string }) =>
+    post<DreamInsight>(`/dreams/${enc(run)}/insights/${enc(insight)}/consolidate`, body),
 
   // Projects
   projects: (mine = false) => get<ProjectsResponse>(`/projects${qs({ mine: mine || undefined })}`),
