@@ -46,6 +46,14 @@ export const BFF_ROUTES: [string, RegExp][] = [
   ['GET', /^\/api\/projects\/[^/]+$/],
   ['POST', /^\/api\/projects\/[^/]+\/members$/],
   ['DELETE', /^\/api\/projects\/[^/]+\/members\/[^/]+$/],
+  ['POST', /^\/api\/projects\/[^/]+\/join$/],
+  ['GET', /^\/api\/project-roles$/],
+  ['GET', /^\/api\/teams$/],
+  ['GET', /^\/api\/teams\/[^/]+$/],
+  ['DELETE', /^\/api\/teams\/[^/]+\/members\/[^/]+$/],
+  ['GET', /^\/api\/campaigns$/],
+  ['POST', /^\/api\/campaigns\/[^/]+\/projects\/[^/]+$/],
+  ['DELETE', /^\/api\/campaigns\/[^/]+\/projects\/[^/]+$/],
   ['GET', /^\/api\/public-config$/],
   ['POST', /^\/api\/relationships$/],
   ['GET', /^\/api\/rules$/],
@@ -195,8 +203,38 @@ const projectRow = {
   members: 3,
   campaigns: [],
   my_role: 'admin',
+  my_project_role: 'manager',
   owner: 'dosei',
 };
+
+const team = {
+  id: 'team-robotics',
+  name: 'Robotics',
+  description: 'Arm and gripper work',
+  created_by: 'dosei',
+  created_at: now,
+  members: [
+    { user_id: 'jlee', role: 'lead', added_at: now },
+    { user_id: 'mchen', role: 'member', added_at: now },
+    { user_id: 'bob', role: 'member', added_at: now },
+  ],
+  projects: ['atlas-planner'],
+};
+
+const campaignRow = {
+  id: 'camp-winter',
+  name: 'Winter release',
+  description: 'Ship the arm firmware',
+  status: 'active',
+  default_ttl_days: 30,
+  projects: ['atlas-planner'],
+  memories: 14,
+  my_projects: ['atlas-planner'],
+  can_enroll: [],
+  can_leave: [],
+};
+
+const openProject = { ...projectRow, name: 'tooling', description: 'Shared tooling', invite_only: false, members: 5, memories: 30, my_role: null, my_project_role: null };
 
 const brief = (id: string, stub: string) => ({
   id,
@@ -424,19 +462,41 @@ function respond(role: Role, method: string, path: string, url: URL, body: unkno
       memories: [{ id: memoryId, stub: 'Gripper torque limit is 11.5 N·m', scope: 'project', scope_id: 'atlas-planner', owner_id: 'atlas-planner', weight: 0.8, version: 2, created_at: now, updated_at: now }],
     };
   }
-  if (path === '/api/projects' && method === 'GET') return { items: [projectRow], total: 1, viewer: me(role).username, can_create: !user, can_delete: false };
+  if (path === '/api/projects' && method === 'GET')
+    return { items: user ? [{ ...projectRow, my_role: 'member', my_project_role: 'contributor' }, openProject] : [projectRow], total: user ? 2 : 1, viewer: me(role).username, can_create: !user, can_delete: false };
+  if (/\/api\/projects\/[^/]+\/join$/.test(path)) return { ok: true, project: decodeURIComponent(path.split('/')[3]), role: 'contributor' };
+  if (path === '/api/project-roles')
+    return {
+      items: [
+        { role: 'owner', label: 'Owner', stored_as: 'created_by', permissions: ['read project memories', 'write project memories'], note: '' },
+        { role: 'manager', label: 'Project Manager', stored_as: 'admin', permissions: ['read project memories', 'write project memories', 'enroll the project in campaigns'], note: '' },
+        { role: 'contributor', label: 'Contributor', stored_as: 'member', permissions: ['read project memories', 'write project memories', 'leave the project'], note: '' },
+      ],
+    };
+  if (path === '/api/teams') return { items: [team], counts: { teams: 1, people: 3 } };
+  if (/^\/api\/teams\/[^/]+\/members\//.test(path)) return null;
+  if (path.startsWith('/api/teams/')) return { ...team, can_manage: false, my_role: 'member' };
+  if (path === '/api/campaigns') return { items: [campaignRow], total: 1 };
+  if (path.startsWith('/api/campaigns/')) return method === 'DELETE' ? null : { ok: true };
   if (path === '/api/projects' && method === 'POST') return { name: (body as { name: string }).name };
   if (/\/api\/projects\/[^/]+\/members/.test(path)) return method === 'DELETE' ? null : { ok: true };
+  if (path === '/api/projects/tooling') return { ...openProject, can_manage: false, can_delete: false, can_join: true, managers: ['dosei'], members_list: [], focus_history: null, focus_available: false, written_by_me: null, open_contradictions: null, quota: null };
   if (path.startsWith('/api/projects/'))
     return {
       ...projectRow,
       my_role: user ? 'member' : 'admin',
+      my_project_role: user ? 'contributor' : 'manager',
+      managers: ['dosei'],
+      written_by_me: user ? 12 : null,
+      written_by_my_agents: user ? 9 : null,
+      open_contradictions: 1,
+      quota: null,
       can_manage: !user,
       can_delete: false,
       members_list: [
-        { user_id: 'dosei', role: 'admin', joined_at: now },
-        { user_id: 'mchen', role: 'member', joined_at: now },
-        { user_id: 'claude-code-mchen', role: 'member', joined_at: now },
+        { user_id: 'dosei', role: 'admin', joined_at: now, project_role: 'owner' },
+        { user_id: 'mchen', role: 'member', joined_at: now, project_role: 'contributor' },
+        { user_id: 'claude-code-mchen', role: 'member', joined_at: now, project_role: 'contributor' },
       ],
       focus_history: [{ focus: 'release', count: 3 }],
       focus_available: true,

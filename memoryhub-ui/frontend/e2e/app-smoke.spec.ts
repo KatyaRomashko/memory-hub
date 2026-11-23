@@ -8,7 +8,7 @@ const SCREENS: Record<Role, [string, string, string][]> = {
     ['Memory browser', 'memories', 'Memory browser'],
     ['Search playground', 'search', 'Search playground'],
     ['Entities', 'entities', 'Entities'],
-    ['Projects', 'projects', 'Projects'],
+    ['Projects & teams', 'projects', 'Projects & teams'],
     ['My agents & API keys', 'identities', 'My agents & API keys'],
     ['My curation rules', 'curation', 'My curation rules'],
   ],
@@ -201,5 +201,39 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await page.getByRole('button', { name: '+ Add member' }).click();
   await expect(page.getByRole('dialog')).toContainText('Add members to atlas-planner');
   await expect(page.getByText('Teams')).toHaveCount(0);
+  expectClean(bff, errors);
+});
+
+/* ---------------- Projects & teams (#720) ---------------- */
+
+test('user: projects show the enforced role, own figures, and open projects can be joined', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/projects');
+  await expect(page.getByText('Your role: Contributor')).toBeVisible();
+  await expect(page.getByText('What a Contributor can do')).toBeVisible();
+  await expect(page.getByText('12', { exact: true })).toBeVisible();
+  await expect(page.getByText('9 by your agents')).toBeVisible();
+  await expect(page.getByText('no quota set')).toBeVisible();
+  await page.getByRole('button', { name: /tooling/ }).click();
+  await page.getByRole('button', { name: 'Join project' }).click();
+  await expect(page.getByText('You joined tooling as a Contributor.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/projects/tooling/join');
+  expectClean(bff, errors);
+});
+
+test('user: teams and campaigns tabs list what the user belongs to', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/projects?kind=teams');
+  await expect(page.getByRole('heading', { name: 'Robotics' })).toBeVisible();
+  await expect(page.getByText('You are a member')).toBeVisible();
+  await page.getByRole('button', { name: 'Leave team…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Leave team' }).click();
+  await expect(page.getByText('You left Robotics.')).toBeVisible();
+  expect(bff.calls).toContain('DELETE /api/teams/team-robotics/members/mchen');
+  await page.getByRole('tab', { name: /Campaigns/ }).click();
+  await expect(page.getByRole('heading', { name: 'Winter release' })).toBeVisible();
+  await expect(page.getByText('30 d')).toBeVisible();
   expectClean(bff, errors);
 });

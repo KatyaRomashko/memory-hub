@@ -200,6 +200,32 @@ async def _known_member(db: AsyncSession, settings: Settings, tenant: str, user_
     return (await db.execute(stmt)).scalar_one_or_none() is not None
 
 
+def project_role(membership_role: str | None) -> str | None:
+    """The role name the backend enforces for this person in this project."""
+    if membership_role is None:
+        return None
+    if membership_role == "admin":
+        return "manager"
+    return "contributor"
+
+
+
+async def project_stats(db: AsyncSession, access: AccessDep, name: str) -> dict:
+    """The person's own figures in a project: what they and their agents wrote, open contradictions."""
+    tenant = access.principal.tenant_id
+    live = (MemoryNode.tenant_id == tenant, MemoryNode.scope == "project", MemoryNode.scope_id == name,
+            MemoryNode.deleted_at.is_(None), MemoryNode.is_current.is_(True))
+    written = (await db.execute(select(func.count()).select_from(MemoryNode).where(
+        *live, MemoryNode.actor_id.in_(access.identities)))).scalar_one()
+    by_agents = (await db.execute(select(func.count()).select_from(MemoryNode).where(
+        *live, MemoryNode.actor_id.in_(access.agents or {""})))).scalar_one()
+    contradictions = (await db.execute(select(func.count()).select_from(ContradictionReport).join(
+        MemoryNode, MemoryNode.id == ContradictionReport.memory_id,
+    ).where(*live, ContradictionReport.resolved.is_(False)))).scalar_one()
+    return {"written_by_me": written, "written_by_my_agents": by_agents, "open_contradictions": contradictions}
+
+
+
 async def _project_row(db: AsyncSession, access: AccessDep, project: Project) -> dict:
     tenant = access.principal.tenant_id
     member_count = (await db.execute(select(func.count()).select_from(ProjectMembership).where(
@@ -230,6 +256,9 @@ async def _project_row(db: AsyncSession, access: AccessDep, project: Project) ->
         "members": member_count,
         "campaigns": [{"id": str(c.id), "name": c.name, "status": c.status} for c in campaigns],
         "my_role": my_role,
+        # The role the backend enforces (#720): owner = creator, manager = admin, contributor = member.
+        "my_project_role": ("owner" if my_role and project.created_by == access.principal.username
+                            else project_role(my_role)),
         "owner": project.created_by,
     }
 
@@ -279,10 +308,20 @@ async def project_detail(name: str, db: DbDep, settings: SettingsDep, access: Ac
             focus = [{"focus": value, "count": count}
                      for value, count in sorted(focus_counts.items(), key=lambda item: (-item[1], item[0]))]
             focus_available = True
+    members = await get_project_members(db, name) if can_read_project_details else []
+    for m in members:
+        m["project_role"] = "owner" if m["user_id"] == project.created_by else project_role(m.get("role"))
     row.update({
         "can_manage": access.principal.role == "admin" and await _membership(db, access, name, admin=True),
         "can_delete": False,
-        "members_list": await get_project_members(db, name) if can_read_project_details else [],
+        "can_join": access.principal.role == "user" and not is_member and not project.invite_only,
+        "managers": [m["user_id"] for m in members if m.get("role") == "admin"],
+        # Per-person figures only for members: what they and their agents wrote, open contradictions.
+        **(await project_stats(db, access, name) if is_member else
+           {"written_by_me": None, "written_by_my_agents": None, "open_contradictions": None}),
+        # No project quota exists in MemoryHub yet.
+        "quota": None,
+        "members_list": members,
         "focus_history": focus,
         "focus_available": focus_available,
     })

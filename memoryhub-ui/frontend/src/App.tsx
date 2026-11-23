@@ -46,7 +46,7 @@ const SCREENS: Record<string, Screen> = {
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
   '/entity': { nav: '/entities', title: 'Entity', render: (r) => <EntityDetail route={r} /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
-  '/projects': { nav: '/projects', title: 'Projects', render: (r) => <ByRole user={<MyProjects route={r} />} other={<AdminProjects route={r} />} /> },
+  '/projects': { nav: '/projects', title: 'Projects & teams', render: (r) => <ByRole user={<MyProjects route={r} />} other={<AdminProjects route={r} />} /> },
   '/project': { nav: '/projects', title: 'Project', render: (r) => <ByRole user={<Redirect to="/projects" params={{ project: decodeURIComponent(r.path.slice(9)) }} />} other={<ProjectSettings route={r} />} /> },
   '/review': { nav: '/review', title: 'Contradictions', render: (r) => <Review route={r} /> },
   '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },

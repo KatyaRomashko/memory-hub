@@ -3,10 +3,14 @@ import type {
   AuthStatus,
   BrowseParams,
   BrowseResponse,
+  CampaignRow,
   ClientCreatedResponse,
   ClientResponse,
   ContradictionReport,
   ContradictionStats,
+  ProjectRoleInfo,
+  TeamDetail,
+  TeamsResponse,
   CreateClientPayload,
   CurationRule,
   EntitiesResponse,
@@ -210,4 +214,14 @@ export const api = {
   contradictionStats: () => get<ContradictionStats>('/contradictions/stats'),
   setContradictionResolved: (id: string, resolved: boolean) =>
     patch<ContradictionReport>(`/contradictions/${enc(id)}`, { resolved }),
+
+  // Projects & teams (#720)
+  projectRoles: () => get<{ items: ProjectRoleInfo[] }>('/project-roles'),
+  joinProject: (name: string) => post<{ ok: boolean; project: string; role: string }>(`/projects/${enc(name)}/join`),
+  teams: () => get<TeamsResponse>('/teams'),
+  team: (id: string) => get<TeamDetail>(`/teams/${enc(id)}`),
+  leaveTeam: (id: string, userId: string) => del<void>(`/teams/${enc(id)}/members/${enc(userId)}`),
+  campaigns: () => get<{ items: CampaignRow[]; total: number }>('/campaigns'),
+  enrollCampaign: (id: string, project: string) => post<{ ok: boolean }>(`/campaigns/${enc(id)}/projects/${enc(project)}`),
+  leaveCampaign: (id: string, project: string) => del<void>(`/campaigns/${enc(id)}/projects/${enc(project)}`),
 };

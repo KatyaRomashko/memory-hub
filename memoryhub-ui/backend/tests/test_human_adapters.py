@@ -162,18 +162,21 @@ def test_project_list_filters_user_visibility_and_admin_tenant(client):
 
 def test_project_detail_requires_membership_for_invite_only(client):
     http, db, _ = client
-    project = SimpleNamespace(name="p", tenant_id="tenant-a", invite_only=True)
+    project = SimpleNamespace(name="p", tenant_id="tenant-a", invite_only=True, created_by="bob")
     db.execute.side_effect = [result(project), result(items=[])]
     assert http.get("/api/projects/p").status_code == 404
     db.execute.side_effect = [result(project), result(items=[SimpleNamespace(role="member")])]
     with patch("src.human_adapters._project_row", new_callable=AsyncMock,
-               return_value={"name": "p"}), patch(
+               return_value={"name": "p"}), patch("src.human_adapters.project_stats", new_callable=AsyncMock,
+                                                  return_value={"written_by_me": 2}), patch(
         "src.human_adapters.get_project_members", new_callable=AsyncMock,
         return_value=[{"user_id": "alice", "role": "member"}],
     ):
         response = http.get("/api/projects/p")
         assert response.status_code == 200
         assert response.json()["members_list"][0]["user_id"] == "alice"
+        assert response.json()["members_list"][0]["project_role"] == "contributor"
+        assert response.json()["written_by_me"] == 2
         assert response.json()["focus_available"] is False
 
 
@@ -182,14 +185,16 @@ def test_project_focus_history_uses_project_member_grant(client):
     app.dependency_overrides[get_settings] = lambda: Settings(
         ui_tenant_id="tenant-a", valkey_url="redis://focus.test/0",
     )
-    project = SimpleNamespace(name="p", tenant_id="tenant-a", invite_only=False)
+    project = SimpleNamespace(name="p", tenant_id="tenant-a", invite_only=False, created_by="bob")
     db.execute.side_effect = [result(project), result(items=[SimpleNamespace(role="member")])]
     focus = MagicMock()
     focus.read_focus_history = AsyncMock(return_value=[{"focus": "search"}, {"focus": "search"}, {"focus": "write"}])
     with patch("src.human_adapters._project_row", new_callable=AsyncMock,
                return_value={"name": "p"}), patch(
         "src.human_adapters.get_project_members", new_callable=AsyncMock, return_value=[],
-    ), patch("src.human_adapters._cached_valkey_client", return_value=focus):
+    ), patch("src.human_adapters._cached_valkey_client", return_value=focus), patch(
+        "src.human_adapters.project_stats", new_callable=AsyncMock, return_value={},
+    ):
         response = http.get("/api/projects/p")
         assert response.status_code == 200
         assert response.json()["focus_available"] is True
@@ -202,7 +207,7 @@ def test_project_focus_history_uses_project_member_grant(client):
 def test_admin_reads_tenant_project_members_without_management_grant(client):
     http, db, set_access = client
     set_access(access("admin", projects=set(), project_admins=set()))
-    project = SimpleNamespace(name="p", tenant_id="tenant-a", invite_only=True)
+    project = SimpleNamespace(name="p", tenant_id="tenant-a", invite_only=True, created_by="carol")
     db.execute.side_effect = [result(project), result(items=[]), result(items=[])]
     with patch("src.human_adapters._project_row", new_callable=AsyncMock,
                return_value={"name": "p"}), patch(
@@ -211,7 +216,8 @@ def test_admin_reads_tenant_project_members_without_management_grant(client):
     ) as members:
         response = http.get("/api/projects/p")
         assert response.status_code == 200
-        assert response.json()["members_list"] == [{"user_id": "bob", "role": "member"}]
+        assert response.json()["members_list"] == [{"user_id": "bob", "role": "member", "project_role": "contributor"}]
+        assert response.json()["written_by_me"] is None  # admin is not a member: no own figures
         assert response.json()["can_manage"] is False
         members.assert_awaited_once()
 

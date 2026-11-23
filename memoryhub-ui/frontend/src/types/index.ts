@@ -537,8 +537,10 @@ export interface ProjectRow {
   last_write: string | null;
   members: number;
   campaigns: { id: string; name: string; status: string }[];
-  /** The viewer's own role in the project, if they are a member. */
+  /** The viewer's own membership role, as stored, if they are a member. */
   my_role: 'admin' | 'member' | null;
+  /** The role the backend enforces (#720): owner = creator, manager = admin, contributor = member. */
+  my_project_role: ProjectRole | null;
   /** The project's creator. */
   owner: string;
 }
@@ -548,9 +550,28 @@ export interface ProjectDetail extends ProjectRow {
   /** Platform admin who is a project admin: may add and remove members. */
   can_manage: boolean;
   can_delete: boolean;
-  members_list: { user_id: string; role: 'admin' | 'member' | string; joined_at: string | null }[];
+  members_list: { user_id: string; role: 'admin' | 'member' | string; joined_at: string | null; project_role?: ProjectRole | null }[];
   focus_history: { focus: string; count: number }[] | null;
   focus_available: boolean;
+  /** A user may join this open project themselves. */
+  can_join?: boolean;
+  /** Project admins (Project Managers). */
+  managers?: string[];
+  /** The viewer's own figures; null when they are not a member. */
+  written_by_me?: number | null;
+  written_by_my_agents?: number | null;
+  open_contradictions?: number | null;
+  /** MemoryHub has no project quota yet: always null. */
+  quota?: { used: number; limit: number } | null;
+}
+
+/** GET /api/project-roles: roles the backend enforces. */
+export interface ProjectRoleInfo {
+  role: ProjectRole;
+  label: string;
+  stored_as: string;
+  permissions: string[];
+  note: string;
 }
 
 export interface ProjectsResponse {
@@ -674,7 +695,8 @@ export interface RuleVersion {
   created_at: string;
 }
 
-export type ProjectRole = 'owner' | 'manager' | 'contributor' | 'viewer';
+/** Project roles the backend enforces. "viewer" is part of the redesign but not enforced yet. */
+export type ProjectRole = 'owner' | 'manager' | 'contributor';
 
 export interface BehaviorProfile {
   schema: string;
@@ -773,6 +795,11 @@ export interface TeamsResponse {
   counts: { teams: number; people: number };
 }
 
+export interface TeamDetail extends TeamRow {
+  can_manage: boolean;
+  my_role: 'lead' | 'member' | null;
+}
+
 export type DreamKind = 'duplicates' | 'connections' | 'fading' | 'contradictions' | 'themes';
 
 export interface DreamInsight {
@@ -829,8 +856,11 @@ export interface CampaignRow {
   default_ttl_days: number | null;
   projects: string[];
   memories: number;
-  created_at: string;
-  updated_at: string;
+  /** The viewer's projects enrolled in it. */
+  my_projects: string[];
+  /** Projects the viewer administers that may join (active campaigns only) or leave. */
+  can_enroll: string[];
+  can_leave: string[];
 }
 
 export interface IdentityRow {
