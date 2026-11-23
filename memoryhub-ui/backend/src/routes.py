@@ -280,6 +280,7 @@ async def get_graph(
     access: AccessDep,
     scope: str | None = Query(default=None),
     owner_id: str | None = Query(default=None),
+    entity: uuid.UUID | None = Query(default=None, description="Only memories that mention this entity"),
 ):
     """Return all current memory nodes and their edges for graph visualization.
 
@@ -300,6 +301,15 @@ async def get_graph(
         stmt = stmt.where(MemoryNode.scope == scope)
     if owner_id:
         stmt = stmt.where(MemoryNode.owner_id == owner_id)
+    if entity is not None:
+        # Memories that mention the entity (#717), through live "mentions" edges in this tenant.
+        mentions = select(MemoryRelationship.source_id).where(
+            MemoryRelationship.target_id == entity,
+            MemoryRelationship.relationship_type == "mentions",
+            MemoryRelationship.tenant_id == tenant_id,
+            MemoryRelationship.valid_until.is_(None),
+        )
+        stmt = stmt.where(MemoryNode.id.in_(mentions))
 
     result = await db.execute(stmt)
     nodes = [n for n in result.scalars().all() if access.can_read(n)]

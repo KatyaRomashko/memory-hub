@@ -76,7 +76,7 @@ const EntityDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
               {e.can_edit ? (
                 <>
                   <button type="button" className="btn bg" onClick={() => setModal('edit')}>
-                    Rename
+                    Edit
                   </button>
                   <button type="button" className="btn bs" onClick={() => setModal('merge')}>
                     Merge into…
@@ -85,7 +85,7 @@ const EntityDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
               ) : (
                 <span
                   className="sm muted"
-                  title="Rename and merge work on entities you created yourself, when you can edit every memory that mentions them. Entities your agents extracted belong to the agent."
+                  title="Editing and merging work on entities you created yourself, when you can edit every memory that mentions them. Entities your agents extracted belong to the agent."
                 >
                   Read only
                 </span>
@@ -135,9 +135,14 @@ const EntityDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
                 <section className="card" style={{ padding: 0 }}>
                   <div className="ch" style={{ padding: '18px 20px 0' }}>
                     <h2 data-h="3">Memories</h2>
-                    <a className="sm" href={buildHash('/memories', { ...filter, view: 'graph' })}>
-                      Graph
-                    </a>
+                    <span style={{ display: 'flex', gap: 12 }}>
+                      <a className="sm" href={buildHash('/memories', { ...filter, view: 'graph' })}>
+                        Graph
+                      </a>
+                      <a className="sm" href={buildHash('/memories', { ...filter, view: 'timeline', tdays: '0' })}>
+                        Timeline
+                      </a>
+                    </span>
                   </div>
                   <div className="scroll">
                     <table className="tbl mid">
@@ -266,11 +271,24 @@ const EntityDetail: React.FC<{ route: HashRoute }> = ({ route }) => {
 const EditEntityModal: React.FC<{ entity: EntityDetailT; onClose: () => void; onSaved: () => void }> = ({ entity, onClose, onSaved }) => {
   const toast = useToast();
   const [name, setName] = useState(entity.name);
+  const [type, setType] = useState(entity.entity_type);
+  const [aliases, setAliases] = useState(entity.aliases.join(', '));
   const [busy, setBusy] = useState(false);
+  const aliasList = aliases
+    .split(',')
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const body = {
+    ...(name.trim() && name.trim() !== entity.name ? { name: name.trim() } : {}),
+    ...(type !== entity.entity_type ? { entity_type: type } : {}),
+    ...(JSON.stringify([...aliasList].sort()) !== JSON.stringify([...entity.aliases].sort()) ? { aliases: aliasList } : {}),
+  };
+  const changed = Object.keys(body).length > 0;
   const save = async () => {
     setBusy(true);
     try {
-      await api.renameEntity(entity.id, name.trim());
+      await api.updateEntity(entity.id, body);
+      toast('Entity updated. The change is in the audit log.');
       onSaved();
     } catch (e) {
       toast(errorMessage(e), 'err');
@@ -280,11 +298,11 @@ const EditEntityModal: React.FC<{ entity: EntityDetailT; onClose: () => void; on
   };
   return (
     <Modal
-      title="Rename entity"
+      title="Edit entity"
       onClose={onClose}
       actions={
         <>
-          <button type="button" className="btn bp" disabled={busy || !name.trim() || name.trim() === entity.name} onClick={save}>
+          <button type="button" className="btn bp" disabled={busy || !name.trim() || !changed} onClick={save}>
             Save
           </button>
           <button type="button" className="btn bg" onClick={onClose}>
@@ -298,9 +316,22 @@ const EditEntityModal: React.FC<{ entity: EntityDetailT; onClose: () => void; on
         <input id="en" className="in" value={name} onChange={(ev) => setName(ev.target.value)} />
         <span className="hint">The old name is kept as an alias.</span>
       </div>
-      <p className="hint" style={{ margin: 0 }}>
-        Type and aliases come from extraction and stay as they are. Recorded in the audit log.
-      </p>
+      <div className="f">
+        <label htmlFor="et">Type</label>
+        <select id="et" className="in" value={type} onChange={(ev) => setType(ev.target.value)}>
+          {TYPES.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+        <span className="hint">If another entity already has this name and type, merge the two instead.</span>
+      </div>
+      <div className="f">
+        <label htmlFor="ea">Aliases</label>
+        <input id="ea" className="in" value={aliases} onChange={(ev) => setAliases(ev.target.value)} placeholder="Comma-separated" />
+        <span className="hint">Other names agents use for it. Every change is recorded in the audit log.</span>
+      </div>
     </Modal>
   );
 };

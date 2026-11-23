@@ -644,3 +644,88 @@ async def rename_entity(
         "old_name": old_name,
         "message": f"Renamed entity from '{old_name}' to '{new_name}'",
     }
+
+
+MAX_ALIASES = 50
+MAX_ALIAS_LENGTH = 200
+
+
+def clean_aliases(aliases: list[str], name: str) -> list[str]:
+    """Trim, drop empties and the canonical name, and dedupe case-insensitively."""
+    seen = {name.strip().lower()}
+    cleaned: list[str] = []
+    for alias in aliases:
+        alias = " ".join(alias.split())
+        if not alias or alias.lower() in seen:
+            continue
+        if len(alias) > MAX_ALIAS_LENGTH:
+            raise ValueError(f"An alias is at most {MAX_ALIAS_LENGTH} characters")
+        seen.add(alias.lower())
+        cleaned.append(alias)
+    if len(cleaned) > MAX_ALIASES:
+        raise ValueError(f"An entity has at most {MAX_ALIASES} aliases")
+    return sorted(cleaned, key=str.lower)
+
+
+async def update_entity_details(
+    entity_id: uuid.UUID,
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    owner_id: str,
+    entity_type: str | None = None,
+    aliases: list[str] | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Change an entity's type and/or replace its aliases.
+
+    A new type changes the dedup hash (tenant, owner, name, type); if another
+    entity already has that identity a ValueError asks for a merge instead.
+    Returns ``{"before": {...}, "after": {...}}`` for the fields that changed.
+    """
+    node = await session.get(MemoryNode, entity_id)
+    if node is None or node.scope != "entity" or node.deleted_at is not None:
+        raise ValueError(f"Entity {entity_id} not found")
+    if node.tenant_id != tenant_id:
+        raise ValueError("Entity belongs to a different tenant")
+    if node.owner_id != owner_id:
+        raise ValueError("Entity belongs to a different owner")
+
+    current_type = (node.branch_type or "").removeprefix("entity:")
+    meta = dict(node.metadata_ or {})
+    current_aliases = list(meta.get("aliases", []) or [])
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
+
+    if entity_type is not None and entity_type != current_type:
+        if entity_type not in VALID_ENTITY_TYPES:
+            raise ValueError(
+                f"Invalid entity_type '{entity_type}'. Must be one of: {', '.join(sorted(VALID_ENTITY_TYPES))}"
+            )
+        new_hash = compute_entity_hash(tenant_id, owner_id, node.content, entity_type)
+        collision = (await session.execute(select(MemoryNode.id).where(
+            MemoryNode.content_hash == new_hash, MemoryNode.scope == "entity",
+            MemoryNode.deleted_at.is_(None), MemoryNode.id != node.id,
+        ).limit(1))).scalar_one_or_none()
+        if collision is not None:
+            raise ValueError(
+                f"An entity named '{node.content}' (type={entity_type}) already exists. "
+                f"Use merge_entities to combine them."
+            )
+        before["entity_type"], after["entity_type"] = current_type, entity_type
+        node.branch_type = f"entity:{entity_type}"
+        node.content_hash = new_hash
+
+    if aliases is not None:
+        cleaned = clean_aliases(aliases, node.content)
+        if sorted(cleaned, key=str.lower) != sorted(current_aliases, key=str.lower):
+            before["aliases"], after["aliases"] = sorted(current_aliases, key=str.lower), cleaned
+            meta["aliases"] = cleaned
+            node.metadata_ = meta
+
+    if after:
+        node.updated_at = datetime.now(UTC)
+        if commit:
+            await session.commit()
+            await session.refresh(node)
+    return {"before": before, "after": after}

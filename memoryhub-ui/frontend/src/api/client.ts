@@ -174,9 +174,12 @@ export const api = {
   entities: (params: { q?: string; type?: EntityType | 'all'; project?: string; page?: number; per_page?: number } = {}) =>
     get<EntitiesResponse>(`/entities${qs(params)}`),
   entity: (id: string) => get<EntityDetail>(`/entities/${enc(id)}`),
-  /** Only the name can change; type and aliases are fixed by extraction. */
-  renameEntity: (id: string, name: string) =>
-    patch<{ id: string; name: string; entity_type: string; aliases: string[] }>(`/entities/${enc(id)}`, { name }),
+  /** Rename, change the type or replace the aliases; send only what changes (#717). */
+  updateEntity: (id: string, body: { name?: string; entity_type?: string; aliases?: string[] }) =>
+    patch<{ id: string; name: string; entity_type: string; aliases: string[]; changes: Record<string, { before: unknown; after: unknown }> }>(
+      `/entities/${enc(id)}`,
+      body,
+    ),
   mergeEntity: (id: string, into: string, dryRun: boolean) =>
     post<EntityMergePreview>(`/entities/${enc(id)}/merge`, { into, dry_run: dryRun }),
 

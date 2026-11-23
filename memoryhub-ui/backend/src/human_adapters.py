@@ -22,7 +22,7 @@ from memoryhub_core.models.project import Project, ProjectMembership
 from memoryhub_core.models.schemas import MemoryNodeCreate, MemoryNodeUpdate, RelationshipCreate, RelationshipType
 from memoryhub_core.services.admin import quarantine_memory, record_moderation_audit, restore_memory
 from memoryhub_core.services.embeddings import HttpEmbeddingService
-from memoryhub_core.services.entity import merge_entities, rename_entity
+from memoryhub_core.services.entity import merge_entities, rename_entity, update_entity_details
 from memoryhub_core.services.exceptions import (
     CrossTenantRelationshipError,
     LastAdminError,
@@ -126,9 +126,9 @@ class BulkBody(StrictBody):
 
 
 class EntityUpdateBody(StrictBody):
-    name: str | None = Field(default=None, min_length=1)
-    entity_type: str | None = None
-    aliases: list[str] | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=500)
+    entity_type: Literal["person", "organization", "location", "object", "event"] | None = None
+    aliases: list[str] | None = Field(default=None, max_length=50)
 
 
 class EntityMergeBody(StrictBody):
@@ -1214,23 +1214,40 @@ async def entity_detail(entity_id: uuid.UUID, db: DbDep, access: AccessDep):
 @router.patch("/api/entities/{entity_id}")
 async def update_entity(entity_id: uuid.UUID, body: EntityUpdateBody, db: DbDep,
                         access: AccessDep, embedding: EmbeddingDep):
+    """Rename an entity, change its type, or replace its aliases (#717); audited."""
     entity = await _entity(db, access, entity_id, lock=True)
     await _entity_mutation_sources(db, access, entity)
-    if (not body.name or body.name == entity.content or
-            (body.entity_type is not None and body.entity_type != _entity_type(entity)) or
-            (body.aliases is not None and sorted(body.aliases) != sorted(_aliases(entity)))):
-        raise HTTPException(status_code=422, detail="Only an existing entity name can be changed")
-    _record_human_audit(db, access, "entity.renamed", "entity", entity.owner_id, entity.id)
+    rename = body.name is not None and body.name.strip() != entity.content
     try:
-        changed = await rename_entity(
-            entity_id, body.name, db, embedding,
-            tenant_id=access.principal.tenant_id, owner_id=access.principal.username,
+        details = await update_entity_details(
+            entity_id, db, tenant_id=access.principal.tenant_id, owner_id=access.principal.username,
+            entity_type=body.entity_type, aliases=body.aliases, commit=False,
         )
-    except ValueError:
-        raise HTTPException(status_code=409, detail="Entity rename rejected") from None
-    value = changed["entity"]
-    return {"id": value["id"], "name": value["content"],
-            "entity_type": value["entity_type"], "aliases": value["aliases"]}
+    except ValueError as exc:
+        status = 409 if "already exists" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from None
+    if not rename and not details["after"]:
+        raise HTTPException(status_code=422, detail="Nothing to change")
+    changes = {field: {"before": details["before"][field], "after": value}
+               for field, value in details["after"].items()}
+    if rename:
+        changes["name"] = {"before": entity.content, "after": body.name.strip()}
+        _record_human_audit(db, access, "entity.renamed", "entity", entity.owner_id, entity.id)
+    _record_human_audit(db, access, "entity.updated", "entity", entity.owner_id, entity.id, {"changes": changes})
+    if rename:
+        try:
+            await rename_entity(
+                entity_id, body.name, db, embedding,
+                tenant_id=access.principal.tenant_id, owner_id=access.principal.username,
+            )
+        except ValueError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+    else:
+        await db.commit()
+    await db.refresh(entity)
+    return {"id": str(entity.id), "name": entity.content, "entity_type": _entity_type(entity),
+            "aliases": _aliases(entity), "changes": changes}
 
 
 @router.post("/api/entities/{entity_id}/merge")

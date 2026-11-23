@@ -550,7 +550,7 @@ def test_entity_detail_never_reports_hidden_only_sources(client):
     assert http.get(f"/api/entities/{entity.id}").status_code == 404
 
 
-def test_entity_rename_rechecks_linked_memories_and_rejects_unsupported_changes(client):
+def test_entity_update_rechecks_linked_memories_and_validates_changes(client):
     http, db, _ = client
     entity = node(scope="entity", branch_type="entity:person", metadata_={"aliases": ["Old"]})
     foreign = node(owner_id="bob")
@@ -559,19 +559,21 @@ def test_entity_rename_rechecks_linked_memories_and_rejects_unsupported_changes(
     with patch("src.human_adapters.rename_entity", new_callable=AsyncMock) as rename:
         assert http.patch(f"/api/entities/{entity.id}", json={"name": "New", "aliases": ["Old"]}).status_code == 404
         rename.assert_not_awaited()
+    # Types outside the extraction vocabulary are refused before any lookup.
+    assert http.patch(f"/api/entities/{entity.id}", json={"entity_type": "robot"}).status_code == 422
     db.execute.side_effect = [result(entity), result(items=[])]
-    with patch("src.human_adapters.rename_entity", new_callable=AsyncMock,
-               return_value={"entity": {"id": str(entity.id), "content": "New",
-                                        "entity_type": "person", "aliases": ["Entity", "Old"]}}) as rename:
-        assert http.patch(f"/api/entities/{entity.id}", json={"name": "New", "aliases": ["changed"]}).status_code == 422
-        rename.assert_not_awaited()
+    with patch("src.human_adapters.update_entity_details", new_callable=AsyncMock,
+               return_value={"before": {}, "after": {}}):
+        assert http.patch(f"/api/entities/{entity.id}", json={"aliases": ["Old"]}).status_code == 422
     db.execute.side_effect = [result(entity), result(items=[])]
-    with patch("src.human_adapters.rename_entity", new_callable=AsyncMock,
-               return_value={"entity": {"id": str(entity.id), "content": "New",
-                                        "entity_type": "person", "aliases": ["Entity", "Old"]}}) as rename:
-        response = http.patch(f"/api/entities/{entity.id}", json={"name": "New", "aliases": ["Old"]})
+    with patch("src.human_adapters.update_entity_details", new_callable=AsyncMock,
+               return_value={"before": {"entity_type": "person"}, "after": {"entity_type": "object"}}) as details, \
+            patch("src.human_adapters.rename_entity", new_callable=AsyncMock, return_value={}) as rename:
+        response = http.patch(f"/api/entities/{entity.id}", json={"name": "New", "entity_type": "object"})
         assert response.status_code == 200
-        assert response.json()["name"] == "New"
+        assert response.json()["changes"] == {
+            "entity_type": {"before": "person", "after": "object"}, "name": {"before": "Entity", "after": "New"}}
+        assert details.await_args.kwargs["commit"] is False
         assert rename.await_args.kwargs["owner_id"] == "alice"
 
 

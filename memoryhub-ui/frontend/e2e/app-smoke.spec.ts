@@ -115,13 +115,25 @@ for (const role of ['user', 'admin'] as const) {
   });
 }
 
-test('user: entity page renames only', async ({ page }) => {
+test('user: entity page edits name, type and aliases, and links its graph and timeline', async ({ page }) => {
   const bff = await mockBff(page, 'user');
+  const sent: unknown[] = [];
+  page.on('request', (r) => r.method() === 'PATCH' && r.url().includes('/api/entities/') && sent.push(r.postDataJSON()));
   const errors = watch(page);
   await page.goto(`/#/entity/${entityId}`);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Atlas gripper');
-  await page.getByRole('button', { name: 'Rename', exact: true }).click();
-  await expect(page.getByLabel('Aliases')).toHaveCount(0);
+  const graph = page.getByRole('link', { name: 'Graph', exact: true });
+  await expect(graph).toHaveAttribute('href', new RegExp(`entity=${entityId}.*view=graph`));
+  await expect(page.getByRole('link', { name: 'Timeline', exact: true })).toHaveAttribute('href', /view=timeline/);
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
+  await dialog.getByLabel('Type').selectOption('organization');
+  await dialog.getByLabel('Aliases').fill('Atlas end effector, AG');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('Entity updated. The change is in the audit log.')).toBeVisible();
+  expect(sent).toEqual([{ entity_type: 'organization', aliases: ['Atlas end effector', 'AG'] }]);
   expectClean(bff, errors);
 });
 
@@ -133,7 +145,7 @@ test('user: an entity the BFF would not let them change is read only', async ({ 
   await page.goto(`/#/entity/${entityId}`);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Atlas gripper');
   await expect(page.getByText('Read only', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Rename', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Merge into…' })).toHaveCount(0);
   expectClean(bff, errors);
 });
