@@ -1685,3 +1685,19 @@ export interface SharedKnowledgeResponse {
   items: SharedKnowledgeRecord[];
   total: number;
 }
+
+/* User overview (#711) */
+export type UserOverviewRange = '1d' | '7d' | '30d';
+
+export interface UserOverview {
+  generated_at: string;
+  activity_range: UserOverviewRange;
+  activity_bucket_seconds: number;
+  /** Bucket start (ISO, UTC) with the person's and their agents' counts. */
+  activity: { date: string; writes: number; searches: number }[];
+  totals: { writes: number; searches: number };
+  categories: { name: string; memory_count: number }[];
+  categories_truncated: boolean;
+  /** Null when the requests feature is not installed: the block is hidden. */
+  requests: { open: number } | null;
+}

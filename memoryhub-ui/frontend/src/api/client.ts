@@ -31,6 +31,10 @@ import type {
   StatsResponse,
   UpdateClientPayload,
   UserRow,
+  Onboarding,
+  UsageSummary,
+  UserOverview,
+  UserOverviewRange,
 } from '@/types';
 
 const BASE = '/api';
@@ -179,6 +183,12 @@ export const api = {
     patch<{ id: string; name: string; entity_type: string; aliases: string[] }>(`/entities/${enc(id)}`, { name }),
   mergeEntity: (id: string, into: string, dryRun: boolean) =>
     post<EntityMergePreview>(`/entities/${enc(id)}/merge`, { into, dry_run: dryRun }),
+
+  /* User overview (#711). */
+  userOverview: (range: UserOverviewRange) => get<UserOverview>(`/overview${qs({ range })}`),
+  usageSummary: (days = 30) => get<UsageSummary>(`/usage/summary${qs({ days })}`),
+  onboarding: () => get<Onboarding>('/me/onboarding'),
+  dismissOnboarding: () => post<Onboarding>('/me/onboarding/dismiss'),
 
   // Projects
   projects: (mine = false) => get<ProjectsResponse>(`/projects${qs({ mine: mine || undefined })}`),

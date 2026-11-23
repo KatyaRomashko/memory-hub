@@ -4,7 +4,8 @@ import { PageHeader, useApp } from '@/components/Shell';
 import { ErrorState, Icon, ScopeLabel, Sk, SkLines, Standby } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { buildHash } from '@/hooks/useHashRoute';
-import type { ContradictionStats, StatsResponse } from '@/types';
+import { ActivityChart } from '@/components/charts';
+import type { ContradictionStats, Onboarding, StatsResponse, UsageSummary, UserOverview, UserOverviewRange } from '@/types';
 import { fmtInt, fmtRelative, scopeMeta, truncate } from '@/utils/format';
 import { memoryHref, WriteMemoryModal } from './common';
 
@@ -174,6 +175,8 @@ const Overview: React.FC = () => {
               />
             </div>
 
+            {!isAdmin && <UserBlocks />}
+
             <div className="grid-2-1">
               <div className="card span-2">
                 <div className="ch">
@@ -262,6 +265,181 @@ const Overview: React.FC = () => {
       </div>
       {writing && <WriteMemoryModal onClose={() => setWriting(false)} onSaved={() => reload()} />}
     </>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* User overview (#711): operations over time, agent usage, categories, */
+/* open requests and getting started. Each block hides without data.   */
+/* ------------------------------------------------------------------ */
+
+const USER_RANGES: { value: UserOverviewRange; label: string; title: string }[] = [
+  { value: '1d', label: '24 h', title: 'Your writes and searches in the last 24 hours, per hour' },
+  { value: '7d', label: '7 days', title: 'Your writes and searches in the last 7 days, per day' },
+  { value: '30d', label: '30 days', title: 'Your writes and searches in the last 30 days, per day' },
+];
+
+const UserBlocks: React.FC = () => {
+  const [range, setRange] = useState<UserOverviewRange>('7d');
+  const { data, error, loading, reload } = useApi<UserOverview>(() => api.userOverview(range), [range], 60000);
+  const selected = USER_RANGES.find((r) => r.value === range) ?? USER_RANGES[1];
+  const ready = Boolean(data && data.activity_range === range);
+  const quiet = ready && data!.totals.writes + data!.totals.searches === 0;
+  return (
+    <>
+      <GettingStarted />
+      {!(error && !data) && (
+        <div className="card ops">
+          <div className="ops-head">
+            <div>
+              <h2 data-h="3">Memory operations</h2>
+              <div className="ops-sub">
+                {selected.title}
+                {ready && ` · ${fmtInt(data!.totals.writes)} writes, ${fmtInt(data!.totals.searches)} searches by you and your agents`}
+              </div>
+            </div>
+            <div className="ops-tools">
+              <div className="ops-range" role="group" aria-label="Memory operation range">
+                {USER_RANGES.map((item) => (
+                  <button key={item.value} type="button" className={range === item.value ? 'on' : ''} aria-pressed={range === item.value} onClick={() => setRange(item.value)}>
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="ops-refresh" onClick={reload} disabled={loading} aria-label="Refresh memory operations" title="Refresh">
+                <Icon.Refresh size={15} />
+              </button>
+            </div>
+          </div>
+          {!ready ? (
+            <Sk h={290} r={8} />
+          ) : quiet ? (
+            <Standby>Writes and searches by you and your agents chart here.</Standby>
+          ) : (
+            <ActivityChart data={data!.activity} bucketSeconds={data!.activity_bucket_seconds} range={range} />
+          )}
+        </div>
+      )}
+      <div className="row-wrap">
+        <AgentUsage />
+        {data && data.categories.length > 0 && (
+          <section className="card" style={{ flex: '1 1 300px' }}>
+            <h2 data-h="3" style={{ marginBottom: 12 }}>
+              Memory categories
+            </h2>
+            <div className="chips">
+              {data.categories.map((c) => (
+                <a key={c.name} className="tag link-plain" href={buildHash('/memories', { domain: c.name })}>
+                  {c.name} {fmtInt(c.memory_count)}
+                </a>
+              ))}
+            </div>
+            {data.categories_truncated && <p className="hint">The largest categories of the memories you can read.</p>}
+          </section>
+        )}
+        {data?.requests && (
+          <section className="card" style={{ flex: '0 1 240px' }}>
+            <div className="ch">
+              <h2 data-h="3">My open requests</h2>
+              <a className="sm" href={buildHash('/review')}>
+                My requests
+              </a>
+            </div>
+            <div className="kpi">{fmtInt(data.requests.open)}</div>
+            <div className="sm muted">{data.requests.open === 1 ? 'request is' : 'requests are'} waiting for a decision</div>
+          </section>
+        )}
+      </div>
+    </>
+  );
+};
+
+/** Getting started: what a new user still has to do. Hidden once done or dismissed. */
+const GettingStarted: React.FC = () => {
+  const { data, setData } = useApi<Onboarding>(() => api.onboarding(), []);
+  if (!data?.steps || data.dismissed || data.done === data.total) return null;
+  const dismiss = () => {
+    setData({ ...data, dismissed: true });
+    api.dismissOnboarding().catch(() => undefined);
+  };
+  return (
+    <section className="card" aria-label="Getting started">
+      <div className="ch">
+        <div>
+          <h2 data-h="3">Getting started</h2>
+          <p className="sm muted" style={{ margin: '4px 0 0' }}>
+            {data.done} of {data.total} done. Each step takes a minute.
+          </p>
+        </div>
+        <button type="button" className="btn bl sm" onClick={dismiss}>
+          Hide
+        </button>
+      </div>
+      <div className="bar thin" style={{ marginTop: 10 }}>
+        <span style={{ width: `${Math.round((data.done / data.total) * 100)}%` }} />
+      </div>
+      <div className="onb">
+        {data.steps.map((s) => (
+          <a key={s.id} href={buildHash(s.href)} className={s.done ? 'done' : ''}>
+            <span className="chk" aria-hidden="true">
+              {s.done ? '✓' : ''}
+            </span>
+            <span>
+              <span className="sm b6" style={{ display: 'block' }}>
+                {s.title}
+                {s.done && <span className="vh"> (done)</span>}
+              </span>
+              <span className="hint">{s.body}</span>
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+};
+
+/** Do my agents act on what search hands them? Hidden until there is something to measure. */
+const AgentUsage: React.FC = () => {
+  const { data } = useApi<UsageSummary>(() => api.usageSummary(30), []);
+  if (!data || !data.served) return null;
+  const pct = data.use_rate === null ? null : Math.round(data.use_rate * 100);
+  return (
+    <section className="card" aria-label="Agent usage" style={{ flex: '2 1 420px' }}>
+      <div className="ch">
+        <h2 data-h="3">Do your agents use what they get?</h2>
+        <span className="sm muted">Last {data.days} days</span>
+      </div>
+      <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ flex: '0 1 240px' }}>
+          <div className="statv">{pct === null ? '—' : `${pct}%`}</div>
+          <div className="hint">
+            of {fmtInt(data.used + data.skipped)} search hits were acted on — read, updated, linked or reported by the same agent within 30 minutes. {fmtInt(data.full)} more
+            were delivered in full (weight ≥ 0.80).
+          </div>
+        </div>
+        <div style={{ flex: '1 1 280px', minWidth: 0 }}>
+          <div className="sm b6" style={{ marginBottom: 6 }}>
+            Skipped most often
+          </div>
+          {data.skipped_most.length === 0 ? (
+            <p className="sm muted" style={{ margin: 0 }}>
+              Nothing stands out — your agents act on what they get.
+            </p>
+          ) : (
+            data.skipped_most.slice(0, 5).map((m) => (
+              <a key={m.id} className="conn link-plain" href={memoryHref(m.id)}>
+                <span className="ellipsis" style={{ flex: 1, minWidth: 0 }}>
+                  {m.stub}
+                </span>
+                <span className="hint" style={{ whiteSpace: 'nowrap' }}>
+                  skipped {m.skipped} of {m.served}
+                </span>
+              </a>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
   );
 };
 

@@ -203,3 +203,36 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await expect(page.getByText('Teams')).toHaveCount(0);
   expectClean(bff, errors);
 });
+
+/* ---------------- User overview (#711) ---------------- */
+
+test('user: overview charts my operations per period, agent usage, categories, requests and getting started', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await expect(page.getByRole('heading', { name: 'Memory operations' })).toBeVisible();
+  await expect(page.getByText(/in the last 7 days, per day/)).toBeVisible();
+  await page.getByRole('button', { name: '24 h' }).click();
+  await expect(page.getByText(/in the last 24 hours, per hour/)).toBeVisible();
+  expect(bff.calls.filter((c) => c === 'GET /api/overview').length).toBeGreaterThanOrEqual(2);
+
+  await expect(page.getByLabel('Agent usage').getByText('70%', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Path planner budget is 40 ms.*skipped 3 of 3/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'robotics 9' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'My open requests' })).toBeVisible();
+
+  await expect(page.getByText('3 of 5 done.')).toBeVisible();
+  await page.getByLabel('Getting started').getByRole('button', { name: 'Hide' }).click();
+  await expect(page.getByLabel('Getting started')).toHaveCount(0);
+  expect(bff.calls).toContain('POST /api/me/onboarding/dismiss');
+  expectClean(bff, errors);
+});
+
+test('admin: tenant overview does not call the personal overview', async ({ page }) => {
+  const bff = await mockBff(page, 'admin');
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Tenant overview');
+  expect(bff.calls.filter((c) => c.includes('/api/overview') || c.includes('/api/usage') || c.includes('/onboarding'))).toEqual([]);
+  expectClean(bff, errors);
+});

@@ -57,6 +57,11 @@ export const BFF_ROUTES: [string, RegExp][] = [
   // with the service key (403 for every person), so the dashboard must not call it.
   ['GET', /^\/api\/stats$/],
   ['GET', /^\/api\/users$/],
+  // User overview (#711)
+  ['GET', /^\/api\/overview$/],
+  ['GET', /^\/api\/usage\/summary$/],
+  ['GET', /^\/api\/me\/onboarding$/],
+  ['POST', /^\/api\/me\/onboarding\/dismiss$/],
 ];
 
 const now = '2026-11-18T12:00:00.000Z';
@@ -457,10 +462,64 @@ function respond(role: Role, method: string, path: string, url: URL, body: unkno
   if (path.endsWith('/rotate-secret')) return { client_id: 'claude-code-mchen', client_secret: 'sec_456', api_key: 'mh_456' };
   if (path.endsWith('/rotate-api-key')) return { client_id: 'claude-code-mchen', api_key: 'mh_789' };
   if (path.startsWith('/api/clients/')) return client(path.split('/')[3], 'user', (body as { active?: boolean } | undefined)?.active ?? true);
+  if (path === '/api/overview') return userOverview(url);
+  if (path === '/api/usage/summary') return usageSummary;
+  if (path === '/api/me/onboarding') return onboarding;
+  if (path === '/api/me/onboarding/dismiss') return { ...onboarding, dismissed: true, dismissed_at: now };
   if (path === '/api/rules' && method === 'GET') return [rule('rule-sys', 'system', null), rule('rule-org', 'organizational', null), rule('rule-mine', 'user', 'mchen')];
   if (path.startsWith('/api/rules')) return method === 'DELETE' ? null : rule('rule-new', 'user', 'mchen');
   return {};
 }
+
+/* ---------------- User overview (#711) ---------------- */
+
+const userOverview = (url: URL) => {
+  const range = url.searchParams.get('range') ?? '7d';
+  const hourly = range === '1d';
+  const n = hourly ? 24 : range === '7d' ? 7 : 30;
+  const step = hourly ? 3600_000 : 86400_000;
+  const start = Date.parse(now) - (n - 1) * step;
+  const activity = Array.from({ length: n }, (_, i) => ({ date: new Date(start + i * step).toISOString(), writes: i % 3, searches: (i * 2) % 5 }));
+  return {
+    generated_at: now,
+    activity_range: range,
+    activity_bucket_seconds: step / 1000,
+    activity,
+    totals: { writes: activity.reduce((a, b) => a + b.writes, 0), searches: activity.reduce((a, b) => a + b.searches, 0) },
+    categories: [
+      { name: 'robotics', memory_count: 9 },
+      { name: 'safety', memory_count: 4 },
+    ],
+    categories_truncated: false,
+    requests: { open: 2 },
+  };
+};
+
+const usageSummary = {
+  days: 30,
+  agents: ['claude-code-mchen'],
+  served: 12,
+  memories_served: 6,
+  full: 2,
+  used: 7,
+  skipped: 3,
+  use_rate: 0.7,
+  skipped_most: [{ id: otherMemoryId, stub: 'Path planner budget is 40 ms', scope: 'project', weight: 0.6, served: 3, used: 0, skipped: 3, use_rate: 0 }],
+};
+
+const onboarding = {
+  steps: [
+    { id: 'connect_agent', title: 'Connect an agent', body: 'Create an API key.', href: '/identities', done: true },
+    { id: 'first_memory', title: 'Save a first memory', body: 'Ask your agent to remember something.', href: '/memories', done: true },
+    { id: 'agent_search', title: 'Let your agent search', body: 'Your agent searches first.', href: '/search', done: false },
+    { id: 'join_project', title: 'Join a project', body: 'Share with your team.', href: '/projects', done: true },
+    { id: 'curation_rule', title: 'Add a personal curation rule', body: 'Block what agents should not store.', href: '/curation', done: false },
+  ],
+  done: 3,
+  total: 5,
+  dismissed: false,
+  dismissed_at: null,
+};
 
 export interface MockedBff {
   /** "METHOD /path" for every call to an endpoint the BFF does not serve. */
