@@ -11,6 +11,7 @@ from memoryhub_core.models.conversation import (
     PurgeLog,
 )
 from memoryhub_core.models.curation import CuratorRule
+from memoryhub_core.models.knowledge import ContextPack, Document, DocumentLink, DocumentVersion
 from memoryhub_core.models.memory import MemoryNode, MemoryRelationship
 from memoryhub_core.models.project import Project, ProjectMembership
 from memoryhub_core.models.reconciliation import ReconciliationDecision
@@ -58,6 +59,10 @@ from memoryhub_core.models.schemas import (
 from memoryhub_core.models.utils import generate_stub
 
 __all__ = [
+    "ContextPack",
+    "Document",
+    "DocumentLink",
+    "DocumentVersion",
     "AccessLevel",
     "AuditLog",
     "Base",

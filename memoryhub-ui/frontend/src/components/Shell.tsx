@@ -134,6 +134,8 @@ export interface NavItem {
   path: string;
   label: string;
   badge?: 'review';
+  /** Shown only when MemoryHub Labs is on (MEMORYHUB_UI_LABS). */
+  labs?: boolean;
 }
 type NavSection = { group?: string; items: NavItem[] };
 
@@ -159,6 +161,7 @@ export const USER_NAV: NavSection[] = [
       { path: '/curation', label: 'My curation rules' },
     ],
   },
+  { group: 'Labs', items: [{ path: '/knowledge', label: 'Knowledge', labs: true }] },
 ];
 
 /** Old user screens and where they live now (the hub path and its view). */
@@ -196,14 +199,17 @@ const ADMIN_LINK_ONLY = ['/search'];
 /** Where a moved screen lives for this role, if it moved. */
 export const movedFor = (role: Role, path: string) => (role === 'user' ? USER_MOVED[path] : undefined);
 
-export const canSee = (path: string, role: Role) =>
+const withLabs = (sections: NavSection[], labs: boolean): NavSection[] =>
+  sections.map((s) => ({ ...s, items: s.items.filter((i) => labs || !i.labs) })).filter((s) => s.items.length > 0);
+
+export const canSee = (path: string, role: Role, labs = false) =>
   role === 'admin'
     ? ADMIN_NAV.some((s) => s.items.some((i) => i.path === path)) || ADMIN_LINK_ONLY.includes(path)
     : role === 'user'
-      ? USER_NAV.some((s) => s.items.some((i) => i.path === path)) || path in USER_MOVED
+      ? withLabs(USER_NAV, labs).some((s) => s.items.some((i) => i.path === path)) || path in USER_MOVED
       : true;
 
-export const navFor = (role: Role): NavSection[] => (role === 'admin' ? ADMIN_NAV : USER_NAV);
+export const navFor = (role: Role, labs = false): NavSection[] => (role === 'admin' ? ADMIN_NAV : withLabs(USER_NAV, labs));
 
 export const ROLE_LABEL: Record<Role, string> = { admin: 'Platform admin', user: 'User', operator: 'Signing in' };
 
@@ -318,7 +324,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
       </header>
       <div className={`shell ${open ? 'nav-open' : 'nav-closed'}`}>
         <nav className="nav" aria-label="Primary">
-          {navFor(role).map((section, i) => (
+          {navFor(role, Boolean(me?.labs)).map((section, i) => (
             <React.Fragment key={section.group ?? i}>
               {section.group && <div className="ng">{section.group}</div>}
               {section.items.map((item) => (

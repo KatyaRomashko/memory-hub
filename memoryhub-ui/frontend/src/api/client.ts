@@ -16,13 +16,22 @@ import type {
   GraphAll,
   GraphNeighbourhood,
   GraphPrefer,
+  ContextPack,
+  ContextPackDetail,
+  DocumentDetail,
+  DocumentRow,
+  KnowledgeIndexItem,
+  KnowledgePage,
   Me,
   MemoryContext,
   MemoryRecord,
   MemoryVersion,
   NavCounts,
+  NavFeatures,
+  PackQuery,
   ProjectDetail,
   ProjectsResponse,
+  SharedKnowledgeResponse,
   PublicConfig,
   RulePayload,
   SearchRequest,
@@ -87,6 +96,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 const get = <T,>(path: string) => request<T>('GET', path);
 const post = <T,>(path: string, body: unknown = {}) => request<T>('POST', path, body);
 const patch = <T,>(path: string, body: unknown) => request<T>('PATCH', path, body);
+const put = <T,>(path: string, body: unknown) => request<T>('PUT', path, body);
 const del = <T,>(path: string) => request<T>('DELETE', path);
 
 const qs = (params: Record<string, unknown>): string => {
@@ -210,4 +220,34 @@ export const api = {
   contradictionStats: () => get<ContradictionStats>('/contradictions/stats'),
   setContradictionResolved: (id: string, resolved: boolean) =>
     patch<ContradictionReport>(`/contradictions/${enc(id)}`, { resolved }),
+
+  // Knowledge (Labs)
+  navFeatures: () => get<NavFeatures>('/nav-features'),
+  knowledge: () => get<{ items: KnowledgeIndexItem[] }>('/knowledge'),
+  knowledgePage: (kind: 'me' | 'project', id: string, refresh = false) =>
+    get<KnowledgePage>(`/knowledge/${enc(kind)}/${enc(id)}${qs({ refresh: refresh || undefined })}`),
+  sharedKnowledge: (params: { q?: string; scope?: string; audience?: 'mine' | 'all'; sort?: 'updated' | 'title' } = {}) =>
+    get<SharedKnowledgeResponse>(`/knowledge/shared${qs(params)}`),
+
+  // Context packs
+  packs: () => get<{ items: ContextPack[] }>('/context-packs'),
+  pack: (id: string) => get<ContextPackDetail>(`/context-packs/${enc(id)}`),
+  packMarkdownUrl: (id: string) => `${BASE}/context-packs/${enc(id)}/markdown`,
+  createPack: (body: { name: string; description?: string; pinned?: string[]; queries?: PackQuery[]; token_budget?: number }) =>
+    post<{ id: string }>('/context-packs', body),
+  updatePack: (id: string, body: Partial<Omit<ContextPack, 'id' | 'owner' | 'created_at' | 'updated_at' | 'last_render' | 'mine' | 'can_edit'>>) =>
+    patch<{ ok: boolean }>(`/context-packs/${enc(id)}`, body),
+  deletePack: (id: string) => del<void>(`/context-packs/${enc(id)}`),
+
+  // Documents
+  documents: () => get<{ items: DocumentRow[] }>('/documents'),
+  document: (id: string) => get<DocumentDetail>(`/documents/${enc(id)}`),
+  createDocument: (body: { title: string; body: string; mime?: string; project?: string | null }) => post<{ id: string }>('/documents', body),
+  updateDocument: (id: string, body: { title?: string; body?: string }) =>
+    put<{ version: number; reprocessed: { ok: number; moved: number; changed: number } | null }>(`/documents/${enc(id)}`, body),
+  deleteDocument: (id: string) => del<void>(`/documents/${enc(id)}`),
+  memoriesFromDocument: (
+    id: string,
+    body: { spans: { start: number; end: number; content?: string }[]; scope: string; scope_id?: string; weight: number; domains?: string[] },
+  ) => post<{ created: string[]; failed: { start: number; detail: string }[] }>(`/documents/${enc(id)}/memories`, body),
 };

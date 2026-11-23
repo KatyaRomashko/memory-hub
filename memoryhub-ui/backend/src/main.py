@@ -13,6 +13,7 @@ from src.config import get_settings
 from src.export_adapter import router as export_router
 from src.graph_adapters import router as graph_router
 from src.human_adapters import router as human_router
+from src.knowledge_adapter import router as knowledge_router
 from src.memory_context import router as context_router
 from src.routes import router
 from src.search_adapter import router as search_router
@@ -44,7 +45,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router)
     app.include_router(search_router)
     app.include_router(export_router)
+    app.include_router(knowledge_router)
 
     # Serve the compiled frontend if dist/ exists (single-container deployment)
     if FRONTEND_DIST.is_dir():

@@ -203,3 +203,54 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await expect(page.getByText('Teams')).toHaveCount(0);
   expectClean(bff, errors);
 });
+
+/* ---------------- Knowledge (#715, Labs) ---------------- */
+
+const labs = (on: boolean) => (key: string, payload: unknown) =>
+  key === 'GET /api/me' ? { ...(payload as object), labs: on } : key === 'GET /api/nav-features' && on ? { knowledge: 1, documents: 0, packs: 0 } : payload;
+
+test('user: Knowledge is in the menu only with Labs', async ({ page }) => {
+  const bff = await mockBff(page, 'user', labs(false));
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Overview');
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Knowledge' })).toHaveCount(0);
+  await page.goto('/#/knowledge');
+  expect(bff.calls).not.toContain('GET /api/knowledge');
+  expectClean(bff, errors);
+});
+
+test('user: Knowledge page, a document turned into memories, and a pack attached to an agent', async ({ page }) => {
+  const bff = await mockBff(page, 'user', labs(true));
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Knowledge' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Knowledge');
+  await page.getByRole('link', { name: /What memory knows about you/ }).click();
+  await expect(page).toHaveURL(/#\/knowledge\/me/);
+  await expect(page.getByText('Prefers metric units').first()).toBeVisible();
+  expect(bff.calls).toContain('GET /api/knowledge/me/me');
+
+  await page.goto('/#/knowledge/documents');
+  await page.getByRole('button', { name: 'Add document' }).click();
+  const add = page.getByRole('dialog');
+  await add.getByLabel('Title').fill('Atlas runbook');
+  await add.getByLabel('Text').fill('Gripper limit is 11.5 Nm.\n\nCalibrate weekly.');
+  await add.getByRole('button', { name: 'Add document' }).click();
+  await expect(page).toHaveURL(/#\/knowledge\/documents\/doc-1/);
+  expect(bff.calls).toContain('POST /api/documents');
+  await page.getByLabel('Passage 1').check();
+  await page.getByRole('button', { name: 'Write 1 memory' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Write', exact: true }).click();
+  await expect(page.getByText('1 memory written, each linked to its passage.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/documents/doc-1/memories');
+
+  await page.goto('/#/knowledge/packs');
+  await page.getByRole('button', { name: 'New pack' }).click();
+  await expect(page).toHaveURL(/#\/knowledge\/packs\/pack-1/);
+  await page.getByRole('checkbox', { name: 'claude-code-mchen' }).check();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('Pack saved.')).toBeVisible();
+  expect(bff.calls).toContain('PATCH /api/context-packs/pack-1');
+  expectClean(bff, errors);
+});

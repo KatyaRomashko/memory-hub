@@ -57,6 +57,22 @@ export const BFF_ROUTES: [string, RegExp][] = [
   // with the service key (403 for every person), so the dashboard must not call it.
   ['GET', /^\/api\/stats$/],
   ['GET', /^\/api\/users$/],
+  // Knowledge (#715, Labs)
+  ['GET', /^\/api\/knowledge$/],
+  ['GET', /^\/api\/knowledge\/shared$/],
+  ['GET', /^\/api\/knowledge\/(me|project)\/[^/]+$/],
+  ['GET', /^\/api\/documents$/],
+  ['POST', /^\/api\/documents$/],
+  ['GET', /^\/api\/documents\/[^/]+$/],
+  ['PUT', /^\/api\/documents\/[^/]+$/],
+  ['DELETE', /^\/api\/documents\/[^/]+$/],
+  ['POST', /^\/api\/documents\/[^/]+\/memories$/],
+  ['GET', /^\/api\/context-packs$/],
+  ['POST', /^\/api\/context-packs$/],
+  ['GET', /^\/api\/context-packs\/[^/]+$/],
+  ['PATCH', /^\/api\/context-packs\/[^/]+$/],
+  ['DELETE', /^\/api\/context-packs\/[^/]+$/],
+  ['GET', /^\/api\/context-packs\/[^/]+\/markdown$/],
 ];
 
 const now = '2026-11-18T12:00:00.000Z';
@@ -457,10 +473,40 @@ function respond(role: Role, method: string, path: string, url: URL, body: unkno
   if (path.endsWith('/rotate-secret')) return { client_id: 'claude-code-mchen', client_secret: 'sec_456', api_key: 'mh_456' };
   if (path.endsWith('/rotate-api-key')) return { client_id: 'claude-code-mchen', api_key: 'mh_789' };
   if (path.startsWith('/api/clients/')) return client(path.split('/')[3], 'user', (body as { active?: boolean } | undefined)?.active ?? true);
+  if (path === '/api/knowledge') return { items: [knowledgeIndex] };
+  if (path === '/api/knowledge/shared') return { items: [], total: 0 };
+  if (path.startsWith('/api/knowledge/')) return knowledgePage;
+  if (path === '/api/documents') return method === 'POST' ? { id: 'doc-1' } : { items: [] };
+  if (path.endsWith('/memories') && path.startsWith('/api/documents/')) return { created: [memoryId], failed: [] };
+  if (path.startsWith('/api/documents/')) return method === 'DELETE' ? null : method === 'PUT' ? { version: 2, reprocessed: null } : documentDetail;
+  if (path === '/api/context-packs') return method === 'POST' ? { id: 'pack-1' } : { items: [] };
+  if (path.startsWith('/api/context-packs/')) return method === 'DELETE' ? null : method === 'PATCH' ? { ok: true } : packDetail;
   if (path === '/api/rules' && method === 'GET') return [rule('rule-sys', 'system', null), rule('rule-org', 'organizational', null), rule('rule-mine', 'user', 'mchen')];
   if (path.startsWith('/api/rules')) return method === 'DELETE' ? null : rule('rule-new', 'user', 'mchen');
   return {};
 }
+
+/* ---------------- Knowledge (#715) ---------------- */
+
+const fact = { text: 'Prefers metric units', memory_id: memoryId, memory_ids: [memoryId, otherMemoryId], similar: 1, scope: 'user', weight: 0.9, updated_at: now, stale: false, contradicted: 0 };
+const summary = { facts: 1, folded: 1, sections: 1, entities: 0, open_questions: 0, stale: 0 };
+const knowledgeIndex = { kind: 'me', id: 'me', title: 'What memory knows about you', source_count: 2, generated_at: now, fresh: true, summary, sections: ['General'] };
+const knowledgePage = {
+  subject: { kind: 'me', id: 'me', title: 'What memory knows about you' },
+  generated_at: now, rebuilt: true, truncated: false, source_count: 2, last_source_change: now, summary,
+  highlights: [fact], sections: [{ title: 'General', facts: [fact] }], entities: [], recent: [], questions: [], stale: [], changes: null, scopes: { user: 2 },
+};
+const docBody = 'Gripper limit is 11.5 Nm.\n\nCalibrate weekly.';
+const documentDetail = {
+  id: 'doc-1', owner: 'mchen', title: 'Atlas runbook', mime: 'text/plain', body: docBody, version: 1, project: null, created_at: now, updated_at: now,
+  passages: [{ i: 0, start: 0, end: 25, text: 'Gripper limit is 11.5 Nm.', memories: [] }, { i: 1, start: 27, end: 44, text: 'Calibrate weekly.', memories: [] }],
+  links: [], mine: true,
+};
+const packDetail = {
+  id: 'pack-1', owner: 'mchen', name: 'New context pack', description: null, pinned: [], queries: [], token_budget: 2000, visibility: 'private', project: null,
+  read_only: false, agents: [], created_at: now, updated_at: now, last_render: null, mine: true, can_edit: true, my_agents: ['claude-code-mchen'],
+  render: { items: [], tokens: 0, budget: 2000, over_budget: [], hidden: 0, missing: 0, markdown: '# New context pack\n', rendered_at: now, as: 'mchen' },
+};
 
 export interface MockedBff {
   /** "METHOD /path" for every call to an endpoint the BFF does not serve. */

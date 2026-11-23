@@ -20,7 +20,7 @@ _VALID_ACTIONS = frozenset({
     # Read path
     "search", "read", "list", "similar", "relationships", "guidance",
     "status", "focus_history", "list_projects", "describe_project",
-    "reconstruct",
+    "reconstruct", "packs",
     # Write path
     "write", "update", "delete", "set_focus", "relate",
     "report", "resolve", "set_rule",
@@ -201,6 +201,10 @@ async def memory(
         List your projects or all open ones.
       describe_project(project_id)
         Project detail with members.
+      packs([options: name])
+        Context packs your owner attached to you in the dashboard, rendered
+        within each pack's token budget with your own read access. Inject each
+        pack's `markdown` as context.
 
     Write actions:
       write(content, [scope, project_id, options: weight, parent_id, branch_type, ...])
@@ -292,6 +296,8 @@ async def memory(
         return await _dispatch_list_projects(opts, ctx)
     if action == "describe_project":
         return await _dispatch_describe_project(project_id, ctx)
+    if action == "packs":
+        return await _dispatch_packs(opts, ctx)
 
     # --- Write path ---
     if action == "write":
@@ -429,6 +435,11 @@ async def _dispatch_describe_project(project_id, ctx):
     return await manage_project(
         action="describe", project_name=project_id, ctx=ctx,
     )
+
+
+async def _dispatch_packs(opts, ctx):
+    from src.tools.context_packs import context_packs
+    return await context_packs(name=opts.get("name"), ctx=ctx)
 
 
 async def _dispatch_reconstruct(scope, project_id, opts, ctx):

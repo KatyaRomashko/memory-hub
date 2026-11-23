@@ -168,7 +168,7 @@ async def healthz():
 
 
 @router.get("/api/me", response_model=MeResponse)
-async def get_me(access: AccessDep, response: Response):
+async def get_me(access: AccessDep, response: Response, settings: SettingsDep):
     """Expose only the verified OAuth-proxy principal needed by the UI Shell."""
     response.headers["Cache-Control"] = "no-store"
     principal = access.principal
@@ -186,6 +186,7 @@ async def get_me(access: AccessDep, response: Response):
         email=None,
         initials=principal.username[:2].upper(),
         source="oauth-proxy",
+        labs=settings.ui_labs,
         role=principal.role,
         tenant_id=principal.tenant_id,
         write={"scopes": write_scopes, "project_ids": project_ids,
@@ -243,12 +244,6 @@ async def nav_counts(db: DbDep, access: AccessDep):
             or_(MemoryNode.driver_id.is_(None), ~MemoryNode.driver_id.in_(access.identities)),
         ))).scalar_one()
     return NavCountsResponse(memories=memories, review_queue=review_queue)
-
-
-@router.get("/api/nav-features")
-async def nav_features(_access: AccessDep):
-    """No content-backed Labs modules are implemented by this BFF."""
-    return {}
 
 
 @router.get("/api/public-config", response_model=PublicConfigResponse)

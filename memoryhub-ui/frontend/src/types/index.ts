@@ -15,6 +15,8 @@ export interface Me {
   email: string | null;
   initials: string;
   source: string;
+  /** MemoryHub Labs (Dreaming and other experimental pages). */
+  labs?: boolean;
   role: 'admin' | 'user';
   tenant_id: string;
   /** Admins: the scopes whose content stays hidden from them. */

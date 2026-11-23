@@ -10,6 +10,7 @@ import Curation from '@/pages/Curation';
 import Entities from '@/pages/Entities';
 import EntityDetail from '@/pages/EntityDetail';
 import Identities from '@/pages/Identities';
+import Knowledge from '@/pages/Knowledge';
 import Memories from '@/pages/Memories';
 import MemoryDetail from '@/pages/MemoryDetail';
 import Overview from '@/pages/Overview';
@@ -45,6 +46,7 @@ const SCREENS: Record<string, Screen> = {
   '/memory': { nav: '/memories', title: 'Memory detail', render: (r) => <MemoryDetail route={r} /> },
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
   '/entity': { nav: '/entities', title: 'Entity', render: (r) => <EntityDetail route={r} /> },
+  '/knowledge': { nav: '/knowledge', title: 'Knowledge', render: (r) => <Knowledge route={r} /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects', render: (r) => <ByRole user={<MyProjects route={r} />} other={<AdminProjects route={r} />} /> },
   '/project': { nav: '/projects', title: 'Project', render: (r) => <ByRole user={<Redirect to="/projects" params={{ project: decodeURIComponent(r.path.slice(9)) }} />} other={<ProjectSettings route={r} />} /> },
@@ -78,7 +80,7 @@ const Guarded: React.FC<{ nav: string; children: React.ReactNode }> = ({ nav, ch
     navigate(moved.path, next, { replace: true });
   }, [moved, route.params]);
   if (moved) return null;
-  if (!me || canSee(nav, role)) return <>{children}</>;
+  if (!me || canSee(nav, role, Boolean(me.labs))) return <>{children}</>;
   return (
     <div className="body">
       <div className="card">
@@ -96,6 +98,7 @@ const screenKey = (path: string) => {
   if (path.startsWith('/memory/')) return '/memory';
   if (path.startsWith('/project/')) return '/project';
   if (path.startsWith('/entity/')) return '/entity';
+  if (path.startsWith('/knowledge/')) return '/knowledge';
   return path;
 };
 
@@ -104,7 +107,7 @@ const DocTitle: React.FC<{ path: string; screen: Screen }> = ({ path, screen }) 
   const { role } = useApp();
   const label =
     path === screen.nav
-      ? navFor(role)
+      ? navFor(role, true)
           .flatMap((s) => s.items)
           .find((i) => i.path === screen.nav)?.label
       : undefined;

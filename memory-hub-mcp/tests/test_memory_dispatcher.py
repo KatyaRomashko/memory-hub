@@ -71,7 +71,7 @@ class TestActionValidation:
 
     def test_valid_actions_count(self):
         assert "guidance" in _VALID_ACTIONS
-        assert len(_VALID_ACTIONS) == 29
+        assert len(_VALID_ACTIONS) == 30
 
 
 # ── Required param validation ──────────────────────────────────────────────
@@ -265,6 +265,13 @@ class TestDispatchRouting:
         call_kwargs = mock_read.call_args[1]
         assert call_kwargs["memory_id"] == "abc-123"
         assert call_kwargs["include_versions"] is True
+
+    @pytest.mark.asyncio
+    @patch("src.tools.context_packs.context_packs", new_callable=AsyncMock)
+    async def test_packs_dispatches(self, mock_packs):
+        mock_packs.return_value = {"packs": [], "total": 0}
+        await memory(action="packs", options={"name": "Onboarding", "bogus": 1})
+        assert mock_packs.call_args[1]["name"] == "Onboarding"
 
     @pytest.mark.asyncio
     @patch("src.tools.manage_session.manage_session", new_callable=AsyncMock)
