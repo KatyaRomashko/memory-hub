@@ -689,13 +689,20 @@ export interface BehaviorProfile {
   updated_at: string | null;
 }
 
+/** GET /api/me/prefs (#723). PATCH replaces any section sent, whole. */
 export interface MyPrefs {
-  write: { default_scope: string; default_weight: number };
-  privacy: { allow_promotion_by_others: boolean; show_in_team_directory: boolean };
-  dreaming_fade_days: number;
+  write: { default_scope: 'user' | 'project'; default_weight: number };
+  dreaming: { enabled: boolean; fade_days: number };
   onboarding_dismissed?: boolean;
   behavior: BehaviorProfile;
   behavior_history?: BehaviorProfile[];
+}
+
+export interface MyPrefsPatch {
+  write?: MyPrefs['write'];
+  dreaming?: MyPrefs['dreaming'];
+  onboarding_dismissed?: boolean;
+  behavior?: Omit<BehaviorProfile, 'schema' | 'revision' | 'updated_at'>;
 }
 
 export interface MyPrefsResponse {
@@ -710,8 +717,8 @@ export interface MyPrefsResponse {
   };
   account: {
     username: string;
-    name: string;
-    email: string | null;
+    name?: string;
+    email?: string | null;
     role: Role;
     source: string;
     agents: string[];

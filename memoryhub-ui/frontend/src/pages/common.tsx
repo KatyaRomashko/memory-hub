@@ -100,7 +100,24 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
   );
   const [scopeId, setScopeId] = useState(projects.length === 1 ? projects[0] : '');
   const [weight, setWeight] = useState(0.7);
+  const touched = React.useRef(false);
   const [domains, setDomains] = useState('');
+  // Start from the person's defaults (#723) until they change a field.
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .myPrefs()
+      .then(({ prefs }) => {
+        if (cancelled || touched.current) return;
+        setWeight(prefs.write.default_weight);
+        if (!initialScope && allowedScopes.includes(prefs.write.default_scope as WriteScope)) setScope(prefs.write.default_scope as WriteScope);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsProject = scope === 'project';
@@ -139,7 +156,10 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div className="f">
             <label htmlFor="wm-scope">Scope</label>
-            <select id="wm-scope" className="in" value={scope} onChange={(e) => setScope(e.target.value as WriteScope)} aria-describedby="wm-who">
+            <select id="wm-scope" className="in" value={scope} onChange={(e) => {
+                touched.current = true;
+                setScope(e.target.value as WriteScope);
+              }} aria-describedby="wm-who">
               {allowedScopes.map((s) => (
                 <option key={s} value={s}>
                   {scopeMeta(s).label}
@@ -177,7 +197,10 @@ export const WriteMemoryModal: React.FC<{ onClose: () => void; onSaved?: (id: st
         </p>
         <div className="f">
           <label htmlFor="wm-weight">Weight · {weight.toFixed(2)}</label>
-          <input id="wm-weight" type="range" min={0} max={100} value={Math.round(weight * 100)} onChange={(e) => setWeight(Number(e.target.value) / 100)} />
+          <input id="wm-weight" type="range" min={0} max={100} value={Math.round(weight * 100)} onChange={(e) => {
+              touched.current = true;
+              setWeight(Number(e.target.value) / 100);
+            }} />
         </div>
         <div className="f">
           <label htmlFor="wm-domains">Domain tags</label>

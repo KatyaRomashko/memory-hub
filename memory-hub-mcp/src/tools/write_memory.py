@@ -47,6 +47,8 @@ from memoryhub_core.services.memory import read_memory as read_memory_service
 from memoryhub_core.services.project import ensure_project_membership
 from memoryhub_core.services.push_broadcast import build_uri_only_notification
 from memoryhub_core.services.role import get_roles_for_user
+from memoryhub_core.services.user_prefs import effective as effective_prefs
+from memoryhub_core.services.user_prefs import excluded_topic, prefs_for_identity
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,15 @@ async def _get_cache_impact(tenant_id: str, owner_id: str) -> dict:
         return {"compiled_count": None, "will_recompile": True}
 
 
+async def _owner_prefs(session, tenant_id: str, identity: str) -> tuple[str, dict]:
+    """The preferences of the person an identity acts for (defaults without a database)."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    if not isinstance(session, AsyncSession):  # unit-test doubles
+        return identity, effective_prefs(None)
+    return await prefs_for_identity(session, tenant_id, identity)
+
+
 @mcp.tool(
     annotations={
         "readOnlyHint": False,
@@ -193,14 +204,15 @@ async def write_memory(
         ),
     ] = None,
     weight: Annotated[
-        float,
+        float | None,
         Field(
             description=(
                 "Injection priority from 0.0 to 1.0. High-weight (0.8-1.0) "
-                "memories get full content injected. Default 0.7."
+                "memories get full content injected. Omit to use the owner's "
+                "default weight from their dashboard preferences (0.7 unless set)."
             ),
         ),
-    ] = 0.7,
+    ] = None,
     parent_id: Annotated[
         str | None,
         Field(
@@ -533,18 +545,6 @@ async def write_memory(
                 f"Not authorized to write {scope}-scope memory for owner '{owner_id}'."
             )
 
-        await record_audit_event(
-            event_type="memory.write",
-            actor_id=actor_id,
-            driver_id=resolved_driver,
-            scope=scope,
-            owner_id=owner_id,
-            memory_id=None,
-            decision="allowed",
-            tenant_id=write_tenant_id,
-            session=session,
-        )
-
         # Validate branch_type / parent_id pairing in both directions:
         # - parent_id without branch_type: branch with no kind label
         # - branch_type without parent_id: orphan branch with no parent to attach to
@@ -559,6 +559,42 @@ async def write_memory(
                 "A branch must attach to a parent memory; omit branch_type "
                 "to create a root-level memory instead."
             )
+
+        # The owner's dashboard preferences (#723) apply to their agents:
+        # their default weight, and topics they asked never to be stored.
+        prefs_owner, prefs = await _owner_prefs(session, write_tenant_id, actor_id)
+        if weight is None:
+            weight = float(prefs["write"]["default_weight"])
+        topic = excluded_topic(content, prefs)
+        if topic is not None:
+            await record_audit_event(
+                event_type="memory.write",
+                actor_id=actor_id,
+                driver_id=resolved_driver,
+                scope=scope,
+                owner_id=owner_id,
+                memory_id=None,
+                decision="denied",
+                tenant_id=write_tenant_id,
+                session=session,
+                metadata={"blocked_by": "user_preference", "rule": "never_store", "preference_owner": prefs_owner},
+            )
+            await session.commit()
+            raise ToolError(
+                f"Blocked by {prefs_owner}'s preferences: memories about '{topic}' are never stored."
+            )
+
+        await record_audit_event(
+            event_type="memory.write",
+            actor_id=actor_id,
+            driver_id=resolved_driver,
+            scope=scope,
+            owner_id=owner_id,
+            memory_id=None,
+            decision="allowed",
+            tenant_id=write_tenant_id,
+            session=session,
+        )
 
         # Parse parent_id to UUID if provided
         parsed_parent_id: uuid.UUID | None = None

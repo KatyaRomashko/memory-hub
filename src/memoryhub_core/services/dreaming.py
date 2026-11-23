@@ -427,6 +427,22 @@ async def extract_from_thread(
         from memoryhub_core.services.exceptions import ThreadNotFoundError
         raise ThreadNotFoundError(thread_id)
 
+    # The thread owner's preferences (#723): a person who turned Dreaming off
+    # gets no memories extracted from their conversations.
+    if isinstance(session, AsyncSession):
+        from memoryhub_core.services.user_prefs import prefs_for_identity
+
+        prefs_owner, prefs = await prefs_for_identity(session, tenant_id, thread.owner_id)
+        if not prefs["dreaming"]["enabled"]:
+            logger.info("Dreaming is off for %s; skipping thread %s", prefs_owner, thread_id)
+            return {
+                "extracted_count": 0,
+                "cursor": thread.extraction_cursor,
+                "failures": 0,
+                "extraction_run_id": extraction_run_id,
+                "skipped": "dreaming_disabled",
+            }
+
     # Determine extraction mode from retention_policy
     retention = thread.retention_policy or {}
     mode = retention.get("extraction_mode", "per_turn")

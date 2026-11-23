@@ -31,6 +31,9 @@ import type {
   StatsResponse,
   UpdateClientPayload,
   UserRow,
+  MyPrefsPatch,
+  MyPrefsResponse,
+  NotificationsResponse,
 } from '@/types';
 
 const BASE = '/api';
@@ -179,6 +182,14 @@ export const api = {
     patch<{ id: string; name: string; entity_type: string; aliases: string[] }>(`/entities/${enc(id)}`, { name }),
   mergeEntity: (id: string, into: string, dryRun: boolean) =>
     post<EntityMergePreview>(`/entities/${enc(id)}/merge`, { into, dry_run: dryRun }),
+
+  /* Preferences & privacy, notifications (#723). */
+  myPrefs: () => get<MyPrefsResponse>('/me/prefs'),
+  saveMyPrefs: (body: MyPrefsPatch) => patch<MyPrefsResponse>('/me/prefs', body),
+  deleteMyData: (confirm: string) => post<{ deleted: number; deleted_at: string }>('/me/data/delete', { confirm }),
+  exportMineUrl: () => `${BASE}/memories/export${qs({ mine: true })}`,
+  notifications: () => get<NotificationsResponse>('/notifications'),
+  markNotificationsSeen: () => post<{ ok: boolean; seen_at: string }>('/notifications/seen'),
 
   // Projects
   projects: (mine = false) => get<ProjectsResponse>(`/projects${qs({ mine: mine || undefined })}`),

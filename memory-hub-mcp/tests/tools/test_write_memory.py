@@ -42,7 +42,8 @@ def test_write_memory_default_values():
     sig = inspect.signature(write_memory)
     params = sig.parameters
 
-    assert params["weight"].default == 0.7
+    # None: the owner's default weight from their preferences applies (#723).
+    assert params["weight"].default is None
     assert params["parent_id"].default is None
     assert params["branch_type"].default is None
     assert params["metadata"].default is None
@@ -443,3 +444,78 @@ async def test_write_memory_response_includes_procedural_content_type():
         )
 
     assert result["memory"]["content_type"] == "procedural"
+
+
+def _prefs_harness(prefs: dict):
+    """Patches for a write by claude-code-alice, an agent owned by alice."""
+    import datetime as _dt
+    import uuid as _uuid
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from memoryhub_core.models.schemas import MemoryNodeRead, MemoryScope, StorageType
+    from memoryhub_core.services.user_prefs import effective
+
+    node = MemoryNodeRead(
+        id=_uuid.uuid4(), parent_id=None, content="x", stub="x", storage_type=StorageType.INLINE,
+        content_ref=None, weight=0.55, scope=MemoryScope.USER, branch_type=None, owner_id="claude-code-alice",
+        tenant_id="t", is_current=True, version=1, previous_version_id=None, metadata=None,
+        created_at=_dt.datetime.now(_dt.UTC), updated_at=_dt.datetime.now(_dt.UTC), expires_at=None,
+        has_children=False, has_rationale=False, branch_count=0, content_type="experiential",
+    )
+    curation = {"blocked": False, "reason": None, "detail": None, "similar_count": 0,
+                "nearest_id": None, "nearest_score": None, "flags": []}
+    session = MagicMock()
+    session.commit = AsyncMock()
+    claims = {"sub": "claude-code-alice", "identity_type": "user", "tenant_id": "t",
+              "scopes": ["memory:write:user", "memory:read:user"]}
+    create = AsyncMock(return_value=(node, curation))
+    audit = AsyncMock()
+    patches = [
+        patch("src.tools.write_memory.get_claims_from_context", return_value=claims),
+        patch("src.tools.write_memory.get_db_session", return_value=(session, AsyncMock())),
+        patch("src.tools.write_memory.release_db_session", new_callable=AsyncMock),
+        patch("src.tools.write_memory.get_embedding_service", return_value=MagicMock(max_tokens=8192)),
+        patch("src.tools.write_memory.create_memory", create),
+        patch("src.tools.write_memory.broadcast_after_write", new_callable=AsyncMock),
+        patch("src.tools.write_memory.record_audit_event", audit),
+        patch("src.tools.write_memory._owner_prefs", AsyncMock(return_value=("alice", effective(prefs)))),
+    ]
+    return patches, create, audit, session
+
+
+@pytest.mark.asyncio
+async def test_write_memory_uses_the_owners_default_weight_when_none_is_given():
+    from contextlib import ExitStack
+
+    patches, create, _, _ = _prefs_harness({"write": {"default_scope": "user", "default_weight": 0.55}})
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        await write_memory(content="Prefers tabs over spaces", scope="user")
+        create_args = create.call_args.args[0]
+        assert create_args.weight == 0.55
+        await write_memory(content="Prefers dark mode", scope="user", weight=0.9)
+        assert create.call_args.args[0].weight == 0.9  # an explicit weight wins
+
+
+@pytest.mark.asyncio
+async def test_write_memory_refuses_a_topic_the_owner_never_stores_and_audits_without_content():
+    from contextlib import ExitStack
+
+    patches, create, audit, session = _prefs_harness({"behavior": {"custom_exclude": ["salary", "home address"]}})
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        with pytest.raises(ToolError, match="alice's preferences: memories about 'salary'"):
+            await write_memory(content="Alice's SALARY review is in March", scope="user")
+        create.assert_not_called()
+        denied = audit.call_args.kwargs
+        assert denied["decision"] == "denied"
+        assert denied["metadata"] == {
+            "blocked_by": "user_preference", "rule": "never_store", "preference_owner": "alice",
+        }
+        assert "SALARY" not in str(denied)
+        session.commit.assert_awaited()
+        # Whole words only: "salaryman" is not "salary".
+        await write_memory(content="The salaryman novel is on the reading list", scope="user")
+        create.assert_called_once()

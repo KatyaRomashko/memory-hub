@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api, AUTHORIZATION_CHANGED_EVENT } from '@/api/client';
-import type { Me, Role } from '@/types';
+import type { Me, NotificationsResponse, Role } from '@/types';
 import { buildHash, navigate } from '@/hooks/useHashRoute';
 import { Dropdown, Icon } from './ui';
 
@@ -127,6 +127,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 };
 
 /* ------------------------------------------------------------------ */
+/* Notifications (the bell, #723)                                      */
+/* ------------------------------------------------------------------ */
+
+const POLL_NOTIFICATIONS_MS = 60000;
+
+const fmtRelativeShort = (iso: string) => {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+};
+
+/** GET /api/notifications: request decisions, contradictions on my memories, incident access. */
+const Notifications: React.FC = () => {
+  const { role } = useApp();
+  const [data, setData] = useState<NotificationsResponse | null>(null);
+  const load = useCallback(() => {
+    api
+      .notifications()
+      .then(setData)
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    load();
+    const id = window.setInterval(load, POLL_NOTIFICATIONS_MS);
+    return () => window.clearInterval(id);
+  }, [load, role]);
+  const unread = data?.unread ?? 0;
+  return (
+    <Dropdown
+      align="right"
+      toggle={(p) => (
+        <button
+          type="button"
+          className="icb"
+          aria-label={unread ? `Notifications, ${unread} new` : 'Notifications'}
+          {...p}
+          onClick={() => {
+            p.onClick();
+            if (data?.unread) {
+              api
+                .markNotificationsSeen()
+                .then(() => setData((d) => (d ? { ...d, unread: 0 } : d)))
+                .catch(() => undefined);
+            }
+          }}
+        >
+          <Icon.Bell />
+          {unread > 0 && <span className="dot">{unread > 99 ? '99+' : unread}</span>}
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="notif">
+          <div className="notif-h">
+            <b>Notifications</b>
+            <a className="sm" href={buildHash('/preferences')} onClick={close}>
+              Preferences
+            </a>
+          </div>
+          {!data ? (
+            <div style={{ padding: 16 }} className="sm muted">
+              Loading…
+            </div>
+          ) : data.items.length === 0 ? (
+            <div style={{ padding: 16 }} className="sm muted">
+              Nothing new. Decisions on your requests, contradictions reported on your memories and incident access to them show up here.
+            </div>
+          ) : (
+            data.items.map((n) => (
+              <a key={n.id} href={buildHash(n.href.split('?')[0], new URLSearchParams(n.href.split('?')[1] ?? ''))} className={`notif-i ${n.unread ? 'unread' : ''}`} onClick={close}>
+                <span className={`ndot ${n.severity}`} aria-hidden="true" />
+                <span style={{ minWidth: 0 }}>
+                  <span className="sm b6" style={{ display: 'block' }}>
+                    {n.title}
+                  </span>
+                  {n.body && (
+                    <span className="hint ellipsis" style={{ display: 'block' }}>
+                      {n.body}
+                    </span>
+                  )}
+                  {n.at && <span className="hint">{fmtRelativeShort(n.at)}</span>}
+                </span>
+              </a>
+            ))
+          )}
+        </div>
+      )}
+    </Dropdown>
+  );
+};
+
+/* ------------------------------------------------------------------ */
 /* Navigation                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -193,15 +286,19 @@ export const NAV: NavSection[] = [...USER_NAV, ...ADMIN_NAV];
 /** Admin screens reachable by link only. */
 const ADMIN_LINK_ONLY = ['/search'];
 
+/** Screens every signed-in person has, from the account menu. */
+const ACCOUNT_PATHS = ['/preferences'];
+
 /** Where a moved screen lives for this role, if it moved. */
 export const movedFor = (role: Role, path: string) => (role === 'user' ? USER_MOVED[path] : undefined);
 
 export const canSee = (path: string, role: Role) =>
-  role === 'admin'
+  ACCOUNT_PATHS.includes(path) ||
+  (role === 'admin'
     ? ADMIN_NAV.some((s) => s.items.some((i) => i.path === path)) || ADMIN_LINK_ONLY.includes(path)
     : role === 'user'
       ? USER_NAV.some((s) => s.items.some((i) => i.path === path)) || path in USER_MOVED
-      : true;
+      : true);
 
 export const navFor = (role: Role): NavSection[] => (role === 'admin' ? ADMIN_NAV : USER_NAV);
 
@@ -289,6 +386,7 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
               <Icon.Search />
             </a>
           )}
+          {me && <Notifications />}
           <Dropdown
             align="right"
             toggle={(p) => (
@@ -306,6 +404,11 @@ export const Shell: React.FC<{ activePath: string; children: React.ReactNode }> 
                   <br />
                   <span className="muted sm">{ROLE_LABEL[role]}</span>
                 </div>
+                {me && (
+                  <a href={buildHash('/preferences')}>
+                    Preferences &amp; privacy
+                  </a>
+                )}
                 {me && (
                   <button type="button" onClick={onLogout}>
                     Log out

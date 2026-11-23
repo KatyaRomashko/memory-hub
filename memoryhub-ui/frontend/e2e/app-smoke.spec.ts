@@ -203,3 +203,45 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await expect(page.getByText('Teams')).toHaveCount(0);
   expectClean(bff, errors);
 });
+
+/* ---------------- Preferences & notifications (#723) ---------------- */
+
+test('user: the bell shows unread notifications and marks them seen', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  const bell = page.getByRole('button', { name: 'Notifications, 2 new' });
+  await expect(bell).toBeVisible();
+  await bell.click();
+  await expect(page.getByText('Request REQ-ABC123 approved')).toBeVisible();
+  await expect(page.getByText('A memory of yours was reported as contradicted')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Notifications', exact: true })).toBeVisible();
+  expect(bff.calls).toContain('POST /api/notifications/seen');
+  expectClean(bff, errors);
+});
+
+test('user: preferences save only what changed, and deleting data needs the username', async ({ page }) => {
+  const saved: unknown[] = [];
+  const bff = await mockBff(page, 'user', (key, payload) => payload);
+  page.on('request', (r) => r.method() === 'PATCH' && r.url().endsWith('/api/me/prefs') && saved.push(r.postDataJSON()));
+  const errors = watch(page);
+  await page.goto('/#/overview');
+  await page.getByRole('button', { name: /account menu/ }).click();
+  await page.getByRole('link', { name: 'Preferences & privacy' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Preferences & privacy');
+  await expect(page.getByText('salary')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+  await page.getByRole('switch', { name: 'Extract memories from my conversations' }).click();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('Preferences saved.')).toBeVisible();
+  expect(saved[0]).toEqual({ write: { default_scope: 'user', default_weight: 0.55 }, dreaming: { enabled: false, fade_days: 60 } });
+
+  await page.getByRole('button', { name: 'Delete my personal memories' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button', { name: 'Delete' })).toBeDisabled();
+  await dialog.getByLabel(/to confirm/).fill('mchen');
+  await dialog.getByRole('button', { name: 'Delete' }).click();
+  await expect(page.getByText('9 memory versions deleted.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/me/data/delete');
+  expectClean(bff, errors);
+});

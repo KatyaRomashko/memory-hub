@@ -55,10 +55,12 @@ from memoryhub_core.models.schemas import (
     StorageType,
     ThreadStatus,
 )
+from memoryhub_core.models.user_prefs import AgentOwnerBinding, UserPreference
 from memoryhub_core.models.utils import generate_stub
 
 __all__ = [
     "AccessLevel",
+    "AgentOwnerBinding",
     "AuditLog",
     "Base",
     "Campaign",
@@ -114,4 +116,5 @@ __all__ = [
     "ThreadStatus",
     "TimestampMixin",
     "generate_stub",
+    "UserPreference",
 ]

@@ -57,6 +57,12 @@ export const BFF_ROUTES: [string, RegExp][] = [
   // with the service key (403 for every person), so the dashboard must not call it.
   ['GET', /^\/api\/stats$/],
   ['GET', /^\/api\/users$/],
+  // Preferences & privacy, notifications (#723)
+  ['GET', /^\/api\/me\/prefs$/],
+  ['PATCH', /^\/api\/me\/prefs$/],
+  ['POST', /^\/api\/me\/data\/delete$/],
+  ['GET', /^\/api\/notifications$/],
+  ['POST', /^\/api\/notifications\/seen$/],
 ];
 
 const now = '2026-11-18T12:00:00.000Z';
@@ -457,10 +463,61 @@ function respond(role: Role, method: string, path: string, url: URL, body: unkno
   if (path.endsWith('/rotate-secret')) return { client_id: 'claude-code-mchen', client_secret: 'sec_456', api_key: 'mh_456' };
   if (path.endsWith('/rotate-api-key')) return { client_id: 'claude-code-mchen', api_key: 'mh_789' };
   if (path.startsWith('/api/clients/')) return client(path.split('/')[3], 'user', (body as { active?: boolean } | undefined)?.active ?? true);
+  if (path === '/api/me/prefs') return prefsResponse(role);
+  if (path === '/api/me/data/delete') return { deleted: 9, deleted_at: now };
+  if (path === '/api/notifications') return notifications;
+  if (path === '/api/notifications/seen') return { ok: true, seen_at: now };
   if (path === '/api/rules' && method === 'GET') return [rule('rule-sys', 'system', null), rule('rule-org', 'organizational', null), rule('rule-mine', 'user', 'mchen')];
   if (path.startsWith('/api/rules')) return method === 'DELETE' ? null : rule('rule-new', 'user', 'mchen');
   return {};
 }
+
+/* ---------------- Preferences & notifications (#723) ---------------- */
+
+const behavior = {
+  schema: 'memoryhub.memory-behavior/v1',
+  revision: 1,
+  template: 'balanced',
+  include: ['preferences', 'project_decisions', 'procedures', 'facts'],
+  exclude: ['credentials', 'personal_data', 'health', 'customer_data'],
+  custom_exclude: ['salary'],
+  confirmation: 'sensitive',
+  cadence: 'session_end',
+  update: 'supersede',
+  updated_at: now,
+};
+
+export const prefsResponse = (role: Role) => ({
+  prefs: {
+    write: { default_scope: role === 'user' ? 'user' : 'project', default_weight: 0.55 },
+    dreaming: { enabled: true, fade_days: 60 },
+    onboarding_dismissed: false,
+    behavior,
+    behavior_history: [],
+  },
+  profile: {
+    schema: 'memoryhub.memory-behavior/v1',
+    templates: {
+      balanced: { ...behavior, custom_exclude: [], revision: 0, updated_at: null },
+      conservative: { ...behavior, template: 'conservative', include: ['preferences', 'project_decisions'], custom_exclude: [], revision: 0, updated_at: null },
+      proactive: { ...behavior, template: 'proactive', exclude: ['credentials'], custom_exclude: [], revision: 0, updated_at: null },
+    },
+    categories: ['preferences', 'project_decisions', 'procedures', 'facts'],
+    excludes: ['credentials', 'personal_data', 'health', 'customer_data'],
+    choices: { confirmation: ['always', 'sensitive', 'never'], cadence: ['every_turn', 'session_end', 'explicit'], update: ['supersede', 'branch', 'ask'] },
+    applied_by: ['write_memory (MCP): default weight when an agent sends none'],
+  },
+  account: { username: role === 'user' ? 'mchen' : 'dosei', role, source: 'oauth-proxy', own_memories: role === 'user' ? 7 : 0, agents: role === 'user' ? ['claude-code-mchen'] : [], projects: ['atlas-planner'], roles: [] },
+});
+
+const notifications = {
+  items: [
+    { id: 'request-9', kind: 'review', severity: 'info', title: 'Request REQ-ABC123 approved', body: 'Decided by dosei · published to organizational', at: now, href: '/review?tab=decided', unread: true },
+    { id: 'contradiction-2', kind: 'contradiction', severity: 'warning', title: 'A memory of yours was reported as contradicted', body: 'Reported by claude-code-jlee', at: now, href: `/memory/${memoryId}`, unread: true },
+  ],
+  unread: 2,
+  seen_at: null,
+};
 
 export interface MockedBff {
   /** "METHOD /path" for every call to an endpoint the BFF does not serve. */
