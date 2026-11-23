@@ -57,6 +57,10 @@ export const BFF_ROUTES: [string, RegExp][] = [
   // with the service key (403 for every person), so the dashboard must not call it.
   ['GET', /^\/api\/stats$/],
   ['GET', /^\/api\/users$/],
+  ['GET', /^\/api\/audit$/],
+  ['GET', /^\/api\/me\/reads$/],
+  ['GET', /^\/api\/operations$/],
+  ['POST', /^\/api\/operations\/[^/]+\/retry$/],
 ];
 
 const now = '2026-11-18T12:00:00.000Z';
@@ -288,10 +292,128 @@ const searchResponse = (role: Role) => ({
   explain: [],
 });
 
+/* ---------------- My activity (#718) ---------------- */
+
+const auditEvent = (id: number, minutesAgo: number, operation: string, actor: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  timestamp: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  event_type: operation,
+  operation,
+  actor_id: actor,
+  driver_id: actor,
+  actor_type: actor === 'mchen' ? 'user' : 'agent',
+  scope: 'project',
+  owner_id: 'mchen',
+  memory_id: memoryId,
+  memory_stub: 'Gripper torque limit is 11.5 N·m',
+  memory_version: 1,
+  decision: 'allowed',
+  metadata: {},
+  ...extra,
+});
+
+const AUDIT_EVENTS = [
+  auditEvent(5, 5, 'memory.search', 'claude-code-mchen', { memory_id: null, memory_stub: null, scope: 'all', metadata: { query: 'gripper torque' } }),
+  auditEvent(4, 10, 'memory.write', 'claude-code-mchen', { memory_id: null, memory_stub: null, scope: 'user', decision: 'denied', metadata: { rule: 'secrets_scan', blocked_by: 'curation_rule' } }),
+  auditEvent(3, 20, 'memory.update', 'mchen', { memory_version: 2, change: { before: { version: 1, weight: 0.7 }, after: { version: 2, weight: 0.9 } } }),
+  auditEvent(2, 30, 'memory.write', 'claude-code-mchen'),
+];
+
+function audit(url: URL) {
+  const decision = url.searchParams.get('decision');
+  const actor = url.searchParams.get('actor');
+  const items = AUDIT_EVENTS.filter(
+    (e) => (!decision || (decision === 'denied') === (e.decision === 'denied')) && (!actor || actor === 'all' || (actor === 'me') === (e.actor_id === 'mchen')),
+  );
+  return {
+    items,
+    total: items.length,
+    page: 1,
+    per_page: 25,
+    hours: Number(url.searchParams.get('hours') ?? 168),
+    identities: ['claude-code-mchen', 'mchen'],
+    agents: ['claude-code-mchen'],
+    event_types: ['memory.search', 'memory.update', 'memory.write'],
+    denied_total: 1,
+    summary: {
+      changes_by_me: 1,
+      agent_writes: 1,
+      agents_writing: 1,
+      agent_writes_personal: 0,
+      agent_writes_project: 1,
+      blocked: 1,
+      deleted_restorable: 2,
+      by_actor: [
+        { actor_id: 'claude-code-mchen', count: 1, yours: false },
+        { actor_id: 'mchen', count: 1, yours: true },
+      ],
+      blocked_recent: [{ id: 4, timestamp: now, actor_id: 'claude-code-mchen', scope: 'user', rule: 'secrets_scan', blocked_by: 'curation_rule' }],
+    },
+    retention_days: null,
+  };
+}
+
+function myReads(url: URL) {
+  const all = url.searchParams.get('who') === 'all';
+  const readers = [
+    { actor_id: 'claude-code-jlee', driver_id: 'jlee', count: 3, last: now, kinds: ['memory.read'], denied: 0, yours: false, via_dashboard: false, memories: 1, reason: 'Member of atlas-planner', reason_kind: 'project' },
+    ...(all ? [{ actor_id: 'claude-code-mchen', driver_id: 'claude-code-mchen', count: 5, last: now, kinds: ['memory.read'], denied: 0, yours: true, via_dashboard: false, memories: 2, reason: 'Yours', reason_kind: 'own' }] : []),
+  ];
+  return {
+    summary: { reads_by_others: 3, personal_by_others: 0, admin_without_workflow: 0, incident_grants: 0 },
+    days: Number(url.searchParams.get('days') ?? 30),
+    who: all ? 'all' : 'others',
+    identities: ['claude-code-mchen', 'mchen'],
+    total: readers.reduce((a, r) => a + r.count, 0),
+    readers,
+    top_memories: [{ id: memoryId, stub: 'Gripper torque limit is 11.5 N·m', scope: 'project', count: 3 }],
+    events: [{ id: 9, timestamp: now, event_type: 'memory.read', actor_id: 'claude-code-jlee', driver_id: 'jlee', decision: 'allowed', memory_id: memoryId, memory_stub: 'Gripper torque limit is 11.5 N·m', yours: false, break_glass: false }],
+  };
+}
+
+function operations(url: URL) {
+  const job = (id: string, kind: string, status: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    owner: 'claude-code-mchen',
+    kind,
+    label: kind === 'entity_extraction' ? 'Entity extraction' : 'Conversation extraction',
+    status,
+    trigger: kind === 'entity_extraction' ? 'memory written' : 'conversation messages',
+    started_at: now,
+    finished_at: null,
+    duration_ms: null,
+    attempts: 1,
+    correlation_id: memoryId,
+    retry_of: null,
+    error: null,
+    retryable: false,
+    stale: false,
+    detail: {},
+    ...extra,
+  });
+  const items = [
+    job(`extract:${memoryId}`, 'entity_extraction', 'failed', { retryable: true, error: 'Extraction failed; the memory is saved but has no entities', detail: { memory_id: memoryId, memory_stub: 'Gripper torque limit is 11.5 N·m', entities: 0 } }),
+    job('conversation:c1', 'conversation_extraction', 'ok', { detail: { thread_id: 't1', memory_id: memoryId, messages: 6 } }),
+  ].filter((j) => !url.searchParams.get('status') || j.status === url.searchParams.get('status'));
+  return {
+    items,
+    kinds: [
+      { kind: 'entity_extraction', label: 'Entity extraction', ok: 0, failed: 1, running: 0 },
+      { kind: 'conversation_extraction', label: 'Conversation extraction', ok: 1, failed: 0, running: 0 },
+    ],
+    days: 7,
+    scope: 'own',
+  };
+}
+
 function respond(role: Role, method: string, path: string, url: URL, body: unknown): unknown {
   const user = role === 'user';
   if (/\/api\/memory\/[^/]+\/context$/.test(path)) return context(role);
   if (path === '/api/me') return me(role);
+  if (path === '/api/audit') return audit(url);
+  if (path === '/api/me/reads') return myReads(url);
+  if (path === '/api/operations') return operations(url);
+  if (/^\/api\/operations\/[^/]+\/retry$/.test(path)) return { ok: true, id: decodeURIComponent(path.split('/')[3]) };
   if (path === '/api/auth/status')
     return { mode: 'oauth-proxy', authenticated: true, api_key_login: false, local_accounts: false, user: me(role).username, role, cluster_domain: null, setup_required: false };
   if (path === '/api/auth/logout') return { ok: true, redirect: '/oauth/sign_out', method: 'GET' };

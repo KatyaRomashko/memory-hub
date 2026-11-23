@@ -70,3 +70,14 @@ async def record_audit_event(
         decision=decision,
         metadata=metadata,
     )
+
+
+async def commit_audit(session) -> None:
+    """Commit audit rows staged on ``session`` on their own.
+
+    Used where the tool records an event and then stops (a denied or blocked
+    write): without a commit the session is rolled back on release and the
+    event would reach only the log, not ``audit_log``. No-op for test doubles.
+    """
+    if isinstance(session, AsyncSession):
+        await session.commit()

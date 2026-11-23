@@ -20,6 +20,7 @@ from src.core.authz import (
     get_claims_from_context,
     resolve_tenant,
 )
+from src.tools._audit_helpers import commit_audit as _commit_audit
 from src.tools._audit_helpers import record_audit_event
 from src.tools._deps import (
     get_db_session,
@@ -529,21 +530,13 @@ async def write_memory(
                 tenant_id=write_tenant_id,
                 session=session,
             )
+            await _commit_audit(session)
             raise ToolError(
                 f"Not authorized to write {scope}-scope memory for owner '{owner_id}'."
             )
 
-        await record_audit_event(
-            event_type="memory.write",
-            actor_id=actor_id,
-            driver_id=resolved_driver,
-            scope=scope,
-            owner_id=owner_id,
-            memory_id=None,
-            decision="allowed",
-            tenant_id=write_tenant_id,
-            session=session,
-        )
+        # The "allowed" event is recorded once the memory exists, so it carries
+        # the new memory's id (see after create_memory below).
 
         # Validate branch_type / parent_id pairing in both directions:
         # - parent_id without branch_type: branch with no kind label
@@ -654,6 +647,25 @@ async def write_memory(
         )
 
         if curation_result["blocked"]:
+            # Nothing was stored. Keep a denied event that names the rule, so
+            # the owner can see what a policy stopped and why (My activity).
+            # Only the rule name is recorded, never the matched content.
+            await record_audit_event(
+                event_type="memory.write",
+                actor_id=actor_id,
+                driver_id=resolved_driver,
+                scope=scope,
+                owner_id=owner_id,
+                memory_id=None,
+                decision="denied",
+                tenant_id=write_tenant_id,
+                metadata={
+                    "rule": curation_result.get("reason"),
+                    "blocked_by": "similarity_gate" if curation_result.get("gated") else "curation_rule",
+                },
+                session=session,
+            )
+            await _commit_audit(session)
             if curation_result.get("gated"):
                 # Similarity gate fired — return structured response so the
                 # caller can decide to update_memory or retry with force=True.
@@ -683,6 +695,19 @@ async def write_memory(
             raise ToolError(
                 f"Curation rule blocked write: {curation_result['reason']}"
             )
+
+        await record_audit_event(
+            event_type="memory.write",
+            actor_id=actor_id,
+            driver_id=resolved_driver,
+            scope=scope,
+            owner_id=owner_id,
+            memory_id=memory.id,
+            decision="allowed",
+            tenant_id=write_tenant_id,
+            session=session,
+        )
+        await _commit_audit(session)
 
         # Pattern E (#62): broadcast to other connected agents post-commit.
         # Non-fatal — broadcast failures never roll back the write.

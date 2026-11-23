@@ -15,6 +15,7 @@ import MemoryDetail from '@/pages/MemoryDetail';
 import Overview from '@/pages/Overview';
 import Review from '@/pages/Review';
 import Search from '@/pages/Search';
+import MyActivity from '@/pages/MyActivity';
 import MyAgents from '@/pages/MyAgents';
 import MyProjects from '@/pages/MyProjects';
 import AdminProjects, { ProjectSettings } from '@/pages/Projects';
@@ -46,6 +47,7 @@ const SCREENS: Record<string, Screen> = {
   '/entities': { nav: '/entities', title: 'Entities', render: (r) => <Entities route={r} /> },
   '/entity': { nav: '/entities', title: 'Entity', render: (r) => <EntityDetail route={r} /> },
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
+  '/audit': { nav: '/audit', title: 'My activity', render: (r) => <MyActivity route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects', render: (r) => <ByRole user={<MyProjects route={r} />} other={<AdminProjects route={r} />} /> },
   '/project': { nav: '/projects', title: 'Project', render: (r) => <ByRole user={<Redirect to="/projects" params={{ project: decodeURIComponent(r.path.slice(9)) }} />} other={<ProjectSettings route={r} />} /> },
   '/review': { nav: '/review', title: 'Contradictions', render: (r) => <Review route={r} /> },

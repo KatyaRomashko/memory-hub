@@ -443,3 +443,88 @@ async def test_write_memory_response_includes_procedural_content_type():
         )
 
     assert result["memory"]["content_type"] == "procedural"
+
+
+def _write_patches(curation, created=None, audit=None):
+    """Patch the write path's collaborators; ``audit`` captures audit calls."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    claims = {
+        "sub": "claude-code-wjackson",
+        "identity_type": "user",
+        "tenant_id": "default",
+        "scopes": ["memory:write:user", "memory:read:user"],
+    }
+    return [
+        patch("src.tools.write_memory.get_claims_from_context", return_value=claims),
+        patch("src.tools.write_memory.get_db_session", return_value=(MagicMock(), AsyncMock())),
+        patch("src.tools.write_memory.release_db_session", new_callable=AsyncMock),
+        patch("src.tools.write_memory.get_embedding_service", return_value=MagicMock(max_tokens=8192)),
+        patch("src.tools.write_memory.create_memory", new_callable=AsyncMock, return_value=(created, curation)),
+        patch("src.tools.write_memory.record_audit_event", new=audit or AsyncMock()),
+        patch("src.tools.write_memory.broadcast_after_write", new_callable=AsyncMock),
+        patch("src.tools.write_memory._get_cache_impact", new_callable=AsyncMock, return_value=None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_blocked_write_records_a_denied_event_naming_the_rule():
+    """A curation block leaves a denied memory.write event with the rule name, not the content."""
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock
+
+    audit = AsyncMock()
+    curation = {"blocked": True, "reason": "secrets_scan", "detail": "AWS access key AKIA... detected",
+                "similar_count": 0, "nearest_id": None, "nearest_score": None, "flags": []}
+    with ExitStack() as stack:
+        for p in _write_patches(curation, audit=audit):
+            stack.enter_context(p)
+        with pytest.raises(ToolError):
+            await write_memory(content="AKIAIOSFODNN7EXAMPLE", scope="user", content_type="experiential")
+
+    denied = [c.kwargs for c in audit.await_args_list if c.kwargs["decision"] == "denied"]
+    assert len(denied) == 1
+    assert denied[0]["event_type"] == "memory.write"
+    assert denied[0]["memory_id"] is None
+    assert denied[0]["metadata"] == {"rule": "secrets_scan", "blocked_by": "curation_rule"}
+    assert "AKIA" not in str(denied[0])
+    assert not [c for c in audit.await_args_list if c.kwargs["decision"] == "allowed"]
+
+
+@pytest.mark.asyncio
+async def test_similarity_gate_records_a_denied_event_too():
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock
+
+    audit = AsyncMock()
+    curation = {"blocked": True, "gated": True, "reason": "near_duplicate", "detail": None,
+                "similar_count": 1, "nearest_id": None, "nearest_score": 0.97, "flags": []}
+    with ExitStack() as stack:
+        for p in _write_patches(curation, audit=audit):
+            stack.enter_context(p)
+        result = await write_memory(content="same as before", scope="user", content_type="experiential")
+
+    assert result["curation"]["gated"] is True
+    denied = [c.kwargs for c in audit.await_args_list if c.kwargs["decision"] == "denied"]
+    assert denied[0]["metadata"] == {"rule": "near_duplicate", "blocked_by": "similarity_gate"}
+
+
+@pytest.mark.asyncio
+async def test_successful_write_records_the_new_memory_id():
+    import uuid
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, MagicMock
+
+    audit = AsyncMock()
+    new_id = uuid.uuid4()
+    created = MagicMock(id=new_id, upstream_trust_level="trusted")
+    created.model_dump.return_value = {"id": str(new_id)}
+    curation = {"blocked": False, "reason": None, "detail": None, "similar_count": 0,
+                "nearest_id": None, "nearest_score": None, "flags": []}
+    with ExitStack() as stack:
+        for p in _write_patches(curation, created=created, audit=audit):
+            stack.enter_context(p)
+        await write_memory(content="a fact", scope="user", content_type="experiential", extract_facts="off")
+
+    allowed = [c.kwargs for c in audit.await_args_list if c.kwargs["decision"] == "allowed"]
+    assert [a["memory_id"] for a in allowed] == [new_id]

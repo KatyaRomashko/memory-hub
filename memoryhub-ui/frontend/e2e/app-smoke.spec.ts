@@ -8,6 +8,7 @@ const SCREENS: Record<Role, [string, string, string][]> = {
     ['Memory browser', 'memories', 'Memory browser'],
     ['Search playground', 'search', 'Search playground'],
     ['Entities', 'entities', 'Entities'],
+    ['My activity', 'audit', 'My activity'],
     ['Projects', 'projects', 'Projects'],
     ['My agents & API keys', 'identities', 'My agents & API keys'],
     ['My curation rules', 'curation', 'My curation rules'],
@@ -201,5 +202,43 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await page.getByRole('button', { name: '+ Add member' }).click();
   await expect(page.getByRole('dialog')).toContainText('Add members to atlas-planner');
   await expect(page.getByText('Teams')).toHaveCount(0);
+  expectClean(bff, errors);
+});
+
+/* ---------------- My activity (#718) ---------------- */
+
+test('user: my activity log shows own changes, blocked writes and filters on the server', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/audit');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('My activity');
+  await expect(page.getByRole('cell', { name: 'search_memory' })).toBeVisible();
+  await expect(page.getByText('“gripper torque”')).toBeVisible();
+  await expect(page.getByRole('row', { name: /write_memory.*Denied.*secrets_scan/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'v1 → v2 · weight 0.70 → 0.90' })).toBeVisible();
+  await expect(page.getByText(/claude-code-mchen · .* · curation rule/)).toBeVisible();
+  await page.getByLabel('Decision').selectOption('denied');
+  await expect(page.getByRole('cell', { name: 'update_memory' })).toHaveCount(0);
+  await expect(page.getByRole('row', { name: /write_memory.*Denied.*secrets_scan/ })).toBeVisible();
+  expectClean(bff, errors);
+});
+
+test('user: who read my memories, background jobs with retry, incident notices', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/audit?view=reads');
+  await expect(page.getByRole('cell', { name: 'claude-code-jlee' })).toBeVisible();
+  await expect(page.getByText('Member of atlas-planner')).toBeVisible();
+  await page.getByLabel('Include my agents').check();
+  await expect(page.getByText('· your agent')).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Background jobs' }).click();
+  await expect(page.getByText('Extraction failed; the memory is saved but has no entities')).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByText('Entity extraction ran again.')).toBeVisible();
+  expect(bff.calls).toContain(`POST /api/operations/${encodeURIComponent(`extract:${memoryId}`)}/retry`);
+
+  await page.getByRole('tab', { name: /Incident notices/ }).click();
+  await expect(page.getByText('No incident access to your memories')).toBeVisible();
   expectClean(bff, errors);
 });

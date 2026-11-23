@@ -147,9 +147,10 @@ export interface AuditEvent {
   memory_version: number | null;
   decision: 'allowed' | 'denied';
   metadata: Record<string, unknown>;
+  /** memory.update: the version it replaced and the version it made. */
   change?: {
-    before: { version: number; content: string; weight: number };
-    after: { version: number; content: string; weight: number };
+    before: { version: number; weight: number };
+    after: { version: number; weight: number };
   };
 }
 
@@ -1039,19 +1040,32 @@ export interface ReviewItem {
   can_decide: boolean;
 }
 
+/** GET /api/audit: the signed-in person's own activity (#718). */
 export interface AuditResponse {
   items: AuditEvent[];
   total: number;
   page: number;
   per_page: number;
+  hours: number;
+  /** The person and the agents registered to them. */
+  identities: string[];
+  agents: string[];
+  /** Operations seen in the period, whatever the filters. */
   event_types: string[];
-  operations: Record<string, string>;
   denied_total: number;
-  /** Denied tab only: user actions vs. permission checks the dashboard made while loading pages. */
-  origin_counts?: { user_action: number; dashboard_check: number } | null;
-  /** #667: operations on user memories an admin may not see (super-users see all). */
-  hidden_user_operations?: number;
-  retention_days: number;
+  /** Counts for the whole period, whatever the filters. */
+  summary: {
+    changes_by_me: number;
+    agent_writes: number;
+    agents_writing: number;
+    agent_writes_personal: number;
+    agent_writes_project: number;
+    blocked: number;
+    deleted_restorable: number;
+    by_actor: { actor_id: string; count: number; yours: boolean }[];
+    blocked_recent: { id: number | string; timestamp: string; actor_id: string; scope: string; rule: string | null; blocked_by: string | null }[];
+  };
+  retention_days: number | null;
 }
 
 export interface ForensicsResponse {

@@ -1,5 +1,6 @@
 import type {
   ApiKeyRotatedResponse,
+  AuditResponse,
   AuthStatus,
   BrowseParams,
   BrowseResponse,
@@ -7,6 +8,8 @@ import type {
   ClientResponse,
   ContradictionReport,
   ContradictionStats,
+  MyReads,
+  OperationsResponse,
   CreateClientPayload,
   CurationRule,
   EntitiesResponse,
@@ -210,4 +213,21 @@ export const api = {
   contradictionStats: () => get<ContradictionStats>('/contradictions/stats'),
   setContradictionResolved: (id: string, resolved: boolean) =>
     patch<ContradictionReport>(`/contradictions/${enc(id)}`, { resolved }),
+
+  // My activity (#718): the signed-in person's own events, readers and jobs
+  audit: (params: AuditParams = {}) => get<AuditResponse>(`/audit${qs(params)}`),
+  myReads: (days = 30, who: 'others' | 'all' = 'others') => get<MyReads>(`/me/reads${qs({ days, who })}`),
+  operations: (params: { days?: number; status?: string; kind?: string } = {}) => get<OperationsResponse>(`/operations${qs(params)}`),
+  retryJob: (id: string) => post<{ ok: boolean; id: string }>(`/operations/${enc(id)}/retry`),
+};
+
+export type AuditParams = {
+  hours?: number;
+  actor?: 'all' | 'me' | 'agents';
+  operation?: string[];
+  scope?: 'all' | 'personal' | 'projects';
+  decision?: '' | 'permitted' | 'denied';
+  q?: string;
+  page?: number;
+  per_page?: number;
 };
