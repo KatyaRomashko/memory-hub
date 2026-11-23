@@ -31,6 +31,11 @@ import type {
   StatsResponse,
   UpdateClientPayload,
   UserRow,
+  MyRequest,
+  MyRequestsResponse,
+  NewRequestPayload,
+  ReviewQueueResponse,
+  ReviewRequestDetail,
 } from '@/types';
 
 const BASE = '/api';
@@ -179,6 +184,15 @@ export const api = {
     patch<{ id: string; name: string; entity_type: string; aliases: string[] }>(`/entities/${enc(id)}`, { name }),
   mergeEntity: (id: string, into: string, dryRun: boolean) =>
     post<EntityMergePreview>(`/entities/${enc(id)}/merge`, { into, dry_run: dryRun }),
+
+  /* My requests (#719): promotion and shared-knowledge requests, and the reviewers' queue. */
+  myRequests: () => get<MyRequestsResponse>('/me/requests'),
+  createMyRequest: (body: NewRequestPayload) => post<MyRequest>('/me/requests', body),
+  withdrawMyRequest: (id: string) => post<MyRequest>(`/me/requests/${enc(id)}/withdraw`),
+  reviewRequests: () => get<ReviewQueueResponse>('/review/requests'),
+  reviewRequest: (id: string) => get<ReviewRequestDetail>(`/review/requests/${enc(id)}`),
+  decideRequest: (id: string, body: { outcome: 'approved' | 'rejected'; reason?: string }) =>
+    post<{ id: string; state: string; outcome: string; result_memory_id: string | null }>(`/review/requests/${enc(id)}/decision`, body),
 
   // Projects
   projects: (mine = false) => get<ProjectsResponse>(`/projects${qs({ mine: mine || undefined })}`),

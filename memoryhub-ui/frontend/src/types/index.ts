@@ -1618,53 +1618,6 @@ export interface DirectoryEntry {
   owner: string | null;
 }
 
-/* ------------------------------------------------------------------ */
-/* My requests (user): what the viewer submitted and where it stands   */
-/* ------------------------------------------------------------------ */
-
-export type MyRequestKind = 'promotion' | 'shared_knowledge' | 'project_access' | 'restore' | 'contradiction';
-
-export interface MyRequest {
-  id: string;
-  kind: MyRequestKind;
-  title: string;
-  memory_id: string | null;
-  /** Scope chain shown as from → to. */
-  from_scope?: string | null;
-  from_label?: string | null;
-  to_scope?: string | null;
-  to_label?: string | null;
-  project?: string | null;
-  project_role?: string | null;
-  submitted_at: string;
-  submitted_via?: string | null;
-  state: 'open' | 'decided' | 'withdrawn';
-  waiting_for?: 'review' | 'project_owner' | null;
-  queue_position?: number | null;
-  sla?: string | null;
-  note?: string | null;
-  outcome?: 'approved' | 'rejected' | null;
-  decided_by?: string | null;
-  decided_by_role?: string | null;
-  decided_at?: string | null;
-  reason?: string | null;
-  withdrawn_at?: string | null;
-}
-
-export interface MyRequestsResponse {
-  items: MyRequest[];
-  counts: { open: number; decided: number; withdrawn: number };
-}
-
-export interface NewRequestPayload {
-  kind: MyRequestKind;
-  memory_id?: string;
-  target_scope?: string;
-  project?: string;
-  project_role?: string;
-  reason?: string;
-}
-
 /* Shared knowledge: published project, organizational and campaign records the viewer can read. */
 export interface SharedKnowledgeRecord {
   id: string;
@@ -1684,4 +1637,77 @@ export interface SharedKnowledgeRecord {
 export interface SharedKnowledgeResponse {
   items: SharedKnowledgeRecord[];
   total: number;
+}
+
+/* My requests (#719) */
+export type MyRequestKind = 'promotion' | 'shared_knowledge';
+
+export interface MyRequest {
+  id: string;
+  kind: MyRequestKind;
+  /** First line of the submitted version. */
+  title: string;
+  memory_id: string;
+  memory_version: number;
+  from_scope: string;
+  from_label: string;
+  to_scope: 'project' | 'organizational';
+  to_label: string;
+  project: string | null;
+  submitted_at: string;
+  submitted_via: string | null;
+  state: 'open' | 'decided' | 'withdrawn';
+  waiting_for: 'review' | 'project_owner' | null;
+  /** The requester's own reason. */
+  note: string | null;
+  outcome: 'approved' | 'rejected' | null;
+  decided_by: string | null;
+  decided_by_role: 'admin' | 'project_admin' | null;
+  decided_at: string | null;
+  /** The reviewer's reason. */
+  reason: string | null;
+  withdrawn_at: string | null;
+  /** The memory published on approval. */
+  result_memory_id: string | null;
+}
+
+export interface MyRequestsResponse {
+  items: MyRequest[];
+  counts: { open: number; decided: number; withdrawn: number };
+  /** Open requests this person may decide (as a project admin). */
+  to_decide: number;
+}
+
+export interface NewRequestPayload {
+  kind: MyRequestKind;
+  memory_id: string;
+  target_scope: 'project' | 'organizational';
+  project?: string;
+  reason?: string;
+}
+
+/** A reviewer's queue row: who asks for what, without the memory's content. */
+export interface ReviewQueueRow {
+  id: string;
+  kind: MyRequestKind;
+  requester: string;
+  from_scope: string;
+  from_label: string;
+  to_scope: 'project' | 'organizational';
+  to_label: string;
+  project: string | null;
+  submitted_at: string;
+  has_reason: boolean;
+}
+
+export interface ReviewQueueResponse {
+  items: ReviewQueueRow[];
+  total: number;
+}
+
+/** The submitted snapshot a reviewer reads (the read is audited for the requester). */
+export interface ReviewRequestDetail extends ReviewQueueRow {
+  content: string;
+  memory_version: number;
+  reason: string | null;
 }

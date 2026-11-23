@@ -57,6 +57,13 @@ export const BFF_ROUTES: [string, RegExp][] = [
   // with the service key (403 for every person), so the dashboard must not call it.
   ['GET', /^\/api\/stats$/],
   ['GET', /^\/api\/users$/],
+  // My requests (#719)
+  ['GET', /^\/api\/me\/requests$/],
+  ['POST', /^\/api\/me\/requests$/],
+  ['POST', /^\/api\/me\/requests\/[^/]+\/withdraw$/],
+  ['GET', /^\/api\/review\/requests$/],
+  ['GET', /^\/api\/review\/requests\/[^/]+$/],
+  ['POST', /^\/api\/review\/requests\/[^/]+\/decision$/],
 ];
 
 const now = '2026-11-18T12:00:00.000Z';
@@ -457,10 +464,62 @@ function respond(role: Role, method: string, path: string, url: URL, body: unkno
   if (path.endsWith('/rotate-secret')) return { client_id: 'claude-code-mchen', client_secret: 'sec_456', api_key: 'mh_456' };
   if (path.endsWith('/rotate-api-key')) return { client_id: 'claude-code-mchen', api_key: 'mh_789' };
   if (path.startsWith('/api/clients/')) return client(path.split('/')[3], 'user', (body as { active?: boolean } | undefined)?.active ?? true);
+  if (path === '/api/me/requests' && method === 'GET')
+    return { items: MY_REQUESTS, counts: { open: 1, decided: 1, withdrawn: 0 }, to_decide: 0 };
+  if (path === '/api/me/requests' && method === 'POST') return myRequest('REQ-NEW001', 'open');
+  if (path.endsWith('/withdraw')) return myRequest(path.split('/')[4], 'withdrawn');
+  if (path === '/api/review/requests') return user ? { items: [], total: 0 } : { items: [queueRow], total: 1 };
+  if (path.startsWith('/api/review/requests/') && path.endsWith('/decision'))
+    return { ...queueRow, state: 'decided', outcome: (body as { outcome: string }).outcome, result_memory_id: otherMemoryId };
+  if (path.startsWith('/api/review/requests/'))
+    return { ...queueRow, content: 'Always log robot torque in N·m', memory_version: 3, reason: 'Every team needs it' };
   if (path === '/api/rules' && method === 'GET') return [rule('rule-sys', 'system', null), rule('rule-org', 'organizational', null), rule('rule-mine', 'user', 'mchen')];
   if (path.startsWith('/api/rules')) return method === 'DELETE' ? null : rule('rule-new', 'user', 'mchen');
   return {};
 }
+
+/* ---------------- My requests (#719) ---------------- */
+
+const myRequest = (id: string, state: 'open' | 'decided' | 'withdrawn', extra: Record<string, unknown> = {}) => ({
+  id,
+  kind: 'promotion',
+  title: 'Use metric units in every Atlas report',
+  memory_id: memoryId,
+  memory_version: 1,
+  from_scope: 'user',
+  from_label: 'Personal',
+  to_scope: 'organizational',
+  to_label: 'Organizational',
+  project: null,
+  submitted_at: now,
+  submitted_via: 'dashboard',
+  state,
+  waiting_for: state === 'open' ? 'review' : null,
+  note: 'Team-wide rule',
+  outcome: null,
+  decided_by: null,
+  decided_by_role: null,
+  decided_at: null,
+  reason: null,
+  withdrawn_at: state === 'withdrawn' ? now : null,
+  result_memory_id: null,
+  ...extra,
+});
+
+export const MY_REQUESTS = [
+  myRequest('REQ-A1B2C3', 'open'),
+  myRequest('REQ-D4E5F6', 'decided', {
+    kind: 'shared_knowledge',
+    title: 'Atlas release checklist',
+    outcome: 'rejected',
+    decided_by: 'dosei',
+    decided_by_role: 'project_admin',
+    decided_at: now,
+    reason: 'Duplicates the release runbook',
+  }),
+];
+
+const queueRow = { id: 'REQ-777AAA', kind: 'promotion', requester: 'jlee', from_scope: 'user', from_label: 'Personal', to_scope: 'organizational', to_label: 'Organizational', project: null, submitted_at: now, has_reason: true };
 
 export interface MockedBff {
   /** "METHOD /path" for every call to an endpoint the BFF does not serve. */

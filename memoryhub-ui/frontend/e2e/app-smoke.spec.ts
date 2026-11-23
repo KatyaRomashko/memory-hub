@@ -9,6 +9,7 @@ const SCREENS: Record<Role, [string, string, string][]> = {
     ['Search playground', 'search', 'Search playground'],
     ['Entities', 'entities', 'Entities'],
     ['Projects', 'projects', 'Projects'],
+    ['My requests', 'review', 'My requests'],
     ['My agents & API keys', 'identities', 'My agents & API keys'],
     ['My curation rules', 'curation', 'My curation rules'],
   ],
@@ -201,5 +202,46 @@ test('admin: resolves a contradiction and adds a project member', async ({ page 
   await page.getByRole('button', { name: '+ Add member' }).click();
   await expect(page.getByRole('dialog')).toContainText('Add members to atlas-planner');
   await expect(page.getByText('Teams')).toHaveCount(0);
+  expectClean(bff, errors);
+});
+
+/* ---------------- My requests (#719) ---------------- */
+
+test('user: my requests lists open and decided, withdraws and submits', async ({ page }) => {
+  const bff = await mockBff(page, 'user');
+  const errors = watch(page);
+  await page.goto('/#/review');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('My requests');
+  await expect(page.getByRole('link', { name: 'Use metric units in every Atlas report' })).toBeVisible();
+  await expect(page.getByText('Waiting for review')).toBeVisible();
+  await expect(page.getByText('Duplicates the release runbook')).toBeVisible();
+  await expect(page.getByRole('tab', { name: /To decide/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Withdraw' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Withdraw' }).click();
+  await expect(page.getByText('Request withdrawn. It left the review queue.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/me/requests/REQ-A1B2C3/withdraw');
+
+  await page.getByRole('button', { name: 'New request' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: /Gripper torque limit/ }).first().click();
+  await expect(page.getByLabel('Target scope')).toBeVisible();
+  await page.getByRole('button', { name: 'Submit request' }).click();
+  await expect(page.getByText('Request REQ-NEW001 submitted.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/me/requests');
+  expectClean(bff, errors);
+});
+
+test('admin: decides a request from the review queue after reading its snapshot', async ({ page }) => {
+  const bff = await mockBff(page, 'admin');
+  const errors = watch(page);
+  await page.goto('/#/review?tab=requests');
+  await expect(page.getByRole('cell', { name: 'REQ-777AAA' })).toBeVisible();
+  await expect(page.getByText('Always log robot torque')).toHaveCount(0); // no content in the list
+  await page.getByRole('button', { name: 'Review' }).click();
+  await expect(page.getByText('Always log robot torque in N·m')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reject' })).toBeDisabled(); // a rejection needs a reason
+  await page.getByRole('button', { name: 'Approve' }).click();
+  await expect(page.getByText('Approved. The memory is published at the target scope.')).toBeVisible();
+  expect(bff.calls).toContain('POST /api/review/requests/REQ-777AAA/decision');
   expectClean(bff, errors);
 });

@@ -7,6 +7,7 @@ import { navigate, type HashRoute } from '@/hooks/useHashRoute';
 import type { ContradictionReport, Me, MemoryContext } from '@/types';
 import { errorMessage, scopeMeta, shortId, truncate } from '@/utils/format';
 import { memoryHref } from './common';
+import { RequestQueue } from './requests';
 
 const ago = (iso: string) => {
   const s = (Date.now() - Date.parse(iso)) / 1000;
@@ -62,8 +63,11 @@ const groupReports = (reports: ContradictionReport[]): Group[] => {
  */
 const Review: React.FC<{ route: HashRoute }> = ({ route }) => {
   const { tenant, refreshCounts, reviewCount } = useApp();
-  const tab = route.params.get('tab') === 'resolved' ? 'resolved' : 'open';
+  const rawTab = route.params.get('tab');
+  const requestsTab = rawTab === 'requests';
+  const tab = rawTab === 'resolved' ? 'resolved' : 'open';
   const { data, error, loading, reload } = useApi(() => api.contradictions({ resolved: tab === 'resolved' }), [tab], 30000);
+  const queue = useApi(() => api.reviewRequests(), [], 60000);
   const groups = useMemo(() => groupReports(data ?? []), [data]);
   const selectedId = route.params.get('memory');
   const selected = groups.find((g) => g.memoryId === selectedId) ?? groups[0];
@@ -84,17 +88,20 @@ const Review: React.FC<{ route: HashRoute }> = ({ route }) => {
         tabs={
           <Tabs
             label="Report state"
-            value={tab}
+            value={requestsTab ? 'requests' : tab}
             onChange={(t) => setParam({ tab: t === 'open' ? undefined : t, memory: undefined })}
             tabs={[
-              { value: 'open', label: 'Open', count: data && tab === 'open' ? data.length : null },
-              { value: 'resolved', label: 'Resolved', count: data && tab === 'resolved' ? data.length : null },
+              { value: 'open', label: 'Open', count: data && tab === 'open' && !requestsTab ? data.length : null },
+              { value: 'resolved', label: 'Resolved', count: data && tab === 'resolved' && !requestsTab ? data.length : null },
+              { value: 'requests', label: 'Requests', count: queue.data ? queue.data.total : null },
             ]}
           />
         }
       />
       <div className="body">
-        {error && !data ? (
+        {requestsTab ? (
+          <RequestQueue onChanged={queue.reload} />
+        ) : error && !data ? (
           <div className="card">
             <ErrorState error={error} onRetry={reload} />
           </div>

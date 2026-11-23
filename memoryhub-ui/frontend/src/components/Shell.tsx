@@ -151,7 +151,13 @@ export const USER_NAV: NavSection[] = [
       { path: '/entities', label: 'Entities' },
     ],
   },
-  { group: 'Work', items: [{ path: '/projects', label: 'Projects' }] },
+  {
+    group: 'Work',
+    items: [
+      { path: '/projects', label: 'Projects' },
+      { path: '/review', label: 'My requests' },
+    ],
+  },
   {
     group: 'Agents',
     items: [

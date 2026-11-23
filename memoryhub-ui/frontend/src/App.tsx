@@ -13,6 +13,7 @@ import Identities from '@/pages/Identities';
 import Memories from '@/pages/Memories';
 import MemoryDetail from '@/pages/MemoryDetail';
 import Overview from '@/pages/Overview';
+import MyRequests from '@/pages/MyRequests';
 import Review from '@/pages/Review';
 import Search from '@/pages/Search';
 import MyAgents from '@/pages/MyAgents';
@@ -48,7 +49,7 @@ const SCREENS: Record<string, Screen> = {
   '/search': { nav: '/search', title: 'Search playground', render: (r) => <Search route={r} /> },
   '/projects': { nav: '/projects', title: 'Projects', render: (r) => <ByRole user={<MyProjects route={r} />} other={<AdminProjects route={r} />} /> },
   '/project': { nav: '/projects', title: 'Project', render: (r) => <ByRole user={<Redirect to="/projects" params={{ project: decodeURIComponent(r.path.slice(9)) }} />} other={<ProjectSettings route={r} />} /> },
-  '/review': { nav: '/review', title: 'Contradictions', render: (r) => <Review route={r} /> },
+  '/review': { nav: '/review', title: 'Review', render: (r) => <ByRole user={<MyRequests route={r} />} other={<Review route={r} />} /> },
   '/curation': { nav: '/curation', title: 'Curation rules', render: (r) => <Curation route={r} /> },
   '/identities': { nav: '/identities', title: 'Agents & identities', render: (r) => <ByRole user={<MyAgents route={r} />} other={<Identities route={r} />} /> },
   '/clients': { nav: '/clients', title: 'OAuth clients & keys', render: (r) => <Clients route={r} /> },
